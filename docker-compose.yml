@@ -148,8 +148,8 @@ services:
     # Tag resolution (highest precedence wins):
     #   FRONTEND_TAG   — per-side override, decouples FE from BE
     #   IMAGE_TAG      — unified knob, sets both FE and BE (BE only relevant in ghcr.yml)
-    #   latest         — fallback
-    image: ${FRONTEND_IMAGE:-ghcr.io/brokermr810/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-latest}}
+    #   3.0.10         — fallback (pinned; bundled frontend/dist was removed in v3.0.10)
+    image: ${FRONTEND_IMAGE:-ghcr.io/brokermr810/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-3.0.10}}
     build:
       context: ${FRONTEND_SRC_PATH:-./QuantDinger-Vue}
       dockerfile: Dockerfile

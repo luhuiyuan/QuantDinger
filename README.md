@@ -46,7 +46,7 @@
 
   <p style="margin-top: 1.45rem; margin-bottom: 10px;">
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square&logo=apache" alt="License"></a>
-    <img src="https://img.shields.io/badge/Version-3.0.9-orange?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/Version-3.0.10-orange?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/Python-3.10%2B%20%7C%20Docker%20image%203.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/Docker-Compose%20Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
     <img src="https://img.shields.io/badge/Frontend-Prebuilt-1f8b4c?style=flat-square" alt="Frontend">
@@ -334,7 +334,7 @@ The backend entrypoint auto-generates a random `SECRET_KEY` on first start and a
 
 ```env
 # Common case: lockstep both sides to one tag
-IMAGE_TAG=v3.0.9
+IMAGE_TAG=3.0.10
 
 # Advanced (opt-in): decouple sides. Either var alone overrides only
 # that side; the other still follows IMAGE_TAG.
@@ -345,7 +345,7 @@ IMAGE_TAG=v3.0.9
 # FRONTEND_IMAGE=ghcr.io/<your-fork>/quantdinger-frontend
 ```
 
-Tag resolution: `BACKEND_TAG` / `FRONTEND_TAG` → `IMAGE_TAG` → `latest`. Defaults: `ghcr.io/brokermr810/quantdinger-backend:latest` + `ghcr.io/brokermr810/quantdinger-frontend:latest`.
+Tag resolution: `BACKEND_TAG` / `FRONTEND_TAG` → `IMAGE_TAG` → compose defaults. Without a root `.env`, `docker-compose.yml` pulls `ghcr.io/brokermr810/quantdinger-frontend:3.0.10` (bundled `frontend/dist` was removed); `docker-compose.ghcr.yml` defaults to backend `3.0.9` + frontend `3.0.10`.
 
 #### Alternative: build the frontend from Vue source
 

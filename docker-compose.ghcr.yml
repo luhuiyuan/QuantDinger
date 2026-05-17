@@ -22,7 +22,7 @@
 # mount is needed (unlike docker-compose.yml).
 #
 # Orchestration override knobs (project-root .env, all optional):
-#   IMAGE_TAG       - unified tag for backend AND frontend  (default: latest)
+#   IMAGE_TAG       - unified tag for backend AND frontend  (optional; see per-side defaults below)
 #   BACKEND_TAG     - per-side override: pins backend only  (default: $IMAGE_TAG)
 #   FRONTEND_TAG    - per-side override: pins frontend only (default: $IMAGE_TAG)
 #   BACKEND_IMAGE   - backend image path  (default: ghcr.io/brokermr810/quantdinger-backend)
@@ -78,8 +78,8 @@ services:
       retries: 5
 
   backend:
-    # Tag resolution: BACKEND_TAG > IMAGE_TAG > latest. See header comment.
-    image: ${BACKEND_IMAGE:-ghcr.io/brokermr810/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-latest}}
+    # Tag resolution: BACKEND_TAG > IMAGE_TAG > 3.0.9. See header comment.
+    image: ${BACKEND_IMAGE:-ghcr.io/brokermr810/quantdinger-backend}:${BACKEND_TAG:-${IMAGE_TAG:-3.0.9}}
     container_name: quantdinger-backend
     restart: unless-stopped
     depends_on:
@@ -125,8 +125,8 @@ services:
       retries: 3
 
   frontend:
-    # Tag resolution: FRONTEND_TAG > IMAGE_TAG > latest. See header comment.
-    image: ${FRONTEND_IMAGE:-ghcr.io/brokermr810/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-latest}}
+    # Tag resolution: FRONTEND_TAG > IMAGE_TAG > 3.0.10. See header comment.
+    image: ${FRONTEND_IMAGE:-ghcr.io/brokermr810/quantdinger-frontend}:${FRONTEND_TAG:-${IMAGE_TAG:-3.0.10}}
     container_name: quantdinger-frontend
     restart: unless-stopped
     ports:

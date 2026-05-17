@@ -46,7 +46,7 @@
 
   <p style="margin-top: 1.45rem; margin-bottom: 10px;">
     <a href="../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square&logo=apache" alt="License"></a>
-    <img src="https://img.shields.io/badge/Version-3.0.9-orange?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/Version-3.0.10-orange?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/Python-3.10%2B%20%7C%20Docker%20镜像%203.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
     <img src="https://img.shields.io/badge/Docker-Compose%20Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
     <img src="https://img.shields.io/badge/Frontend-预构建-1f8b4c?style=flat-square" alt="Frontend">
@@ -334,7 +334,7 @@ docker compose -f docker-compose.ghcr.yml up -d
 
 ```env
 # 常规场景：前后端同步 pin 到同一个 tag
-IMAGE_TAG=v3.0.9
+IMAGE_TAG=3.0.10
 
 # 进阶（按需启用）：单独覆盖某一边，另一边仍跟随 IMAGE_TAG
 # BACKEND_TAG=v3.0.9
@@ -344,7 +344,7 @@ IMAGE_TAG=v3.0.9
 # FRONTEND_IMAGE=ghcr.io/<你的fork>/quantdinger-frontend
 ```
 
-Tag 解析优先级：`BACKEND_TAG` / `FRONTEND_TAG` → `IMAGE_TAG` → `latest`。默认镜像：`ghcr.io/brokermr810/quantdinger-backend:latest` + `ghcr.io/brokermr810/quantdinger-frontend:latest`。
+Tag 解析优先级：`BACKEND_TAG` / `FRONTEND_TAG` → `IMAGE_TAG` → compose 默认值。无根目录 `.env` 时，`docker-compose.yml` 拉取 `ghcr.io/brokermr810/quantdinger-frontend:3.0.10`（仓库已不再包含 `frontend/dist`）；`docker-compose.ghcr.yml` 默认后端 `3.0.9`、前端 `3.0.10`。
 
 #### 备选方案：从 Vue 源码本地构建前端
 
