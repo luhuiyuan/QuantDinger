@@ -45,11 +45,14 @@ def main() -> int:
         return 2
 
     drift: list[str] = []
+    skipped: list[str] = []
     checked = 0
     for rel_path, pattern in CHECKS:
         path = REPO_ROOT / rel_path
         if not path.is_file():
-            drift.append(f"  MISSING : {rel_path}")
+            # Frontend source lives in a private repo and is gitignored here;
+            # only verify paths that are actually tracked in this checkout.
+            skipped.append(f"  SKIP    : {rel_path} (not in repo)")
             continue
         text = path.read_text(encoding="utf-8")
         # MULTILINE so ``^`` works for env-style files.
@@ -69,7 +72,12 @@ def main() -> int:
         print("\nRun: python scripts/bump_version.py " + canonical, file=sys.stderr)
         return 1
 
-    print(f"Version check OK. Canonical = {canonical} ({checked} declarations verified).")
+    msg = f"Version check OK. Canonical = {canonical} ({checked} declarations verified)."
+    if skipped:
+        msg += f" Skipped {len(skipped)} missing path(s)."
+    print(msg)
+    for line in skipped:
+        print(line)
     return 0
 
 
