@@ -55,10 +55,10 @@ my_indicator_description = (
 )
 
 # ===== Default risk controls (overridable in the backtest panel) =====
-# Unit: percent (4 = 4%; write decimals for sub-1% e.g. 0.5 = 0.5%)
-# @strategy stopLossPct 4
-# @strategy takeProfitPct 10
-# @strategy entryPct 100
+# Unit: 0–1 ratio (0.04 = 4% underlying price move; 0.001 = 0.1%; entryPct 1 = 100% capital)
+# @strategy stopLossPct 0.04
+# @strategy takeProfitPct 0.10
+# @strategy entryPct 1
 # @strategy trailingEnabled false
 # @strategy tradeDirection both
 

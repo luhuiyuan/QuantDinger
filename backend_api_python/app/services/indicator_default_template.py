@@ -30,10 +30,11 @@ my_indicator_name = "{safe_name}"
 my_indicator_description = "{safe_desc}"
 
 # ===== 平台默认风控（引擎退出；指标内勿再写窄 tp/sl）=====
-# 单位：percent（3 = 3%；亚 1% 直接写小数，如 0.5 = 0.5%）
-# @strategy stopLossPct 3
-# @strategy takeProfitPct 6
-# @strategy entryPct 25
+# 单位：0–1 小数比例（与回测/实盘一致；按标的涨跌幅，不除杠杆）
+#   stopLossPct 0.03 = 3% 价格止损；0.001 = 0.1%；entryPct 1 = 100% 资金
+# @strategy stopLossPct 0.03
+# @strategy takeProfitPct 0.06
+# @strategy entryPct 0.25
 # @strategy trailingEnabled false
 # @strategy tradeDirection both
 

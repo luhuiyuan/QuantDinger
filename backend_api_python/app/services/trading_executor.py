@@ -24,7 +24,7 @@ from app.utils.db import get_db_connection
 from app.utils.strategy_runtime_logs import append_strategy_log
 from app.data_sources import DataSourceFactory, UnsupportedMarketError
 from app.services.kline import KlineService
-from app.services.indicator_params import IndicatorParamsParser, IndicatorCaller
+from app.services.indicator_params import IndicatorParamsParser, IndicatorCaller, StrategyConfigParser
 from app.services.strategy_script_runtime import (
     ScriptBar,
     StrategyScriptContext,
@@ -398,6 +398,47 @@ class TradingExecutor:
             return 1.0
         return float(x)
 
+    def _code_strategy_cfg(self, trading_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        tc = trading_config if isinstance(trading_config, dict) else {}
+        code_cfg = tc.get("_strategy_cfg_from_code")
+        return code_cfg if isinstance(code_cfg, dict) else {}
+
+    def _risk_params_from_trading_config(self, trading_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Resolve risk/position ratios for live execution.
+
+        When indicator code carries @strategy annotations, use the same 0–1
+        ratio semantics as BacktestService. Otherwise fall back to flat
+        trading_config *_pct fields (stored as percent numbers).
+        """
+        code_cfg = self._code_strategy_cfg(trading_config)
+        if code_cfg:
+            risk = code_cfg.get("risk") or {}
+            trailing = risk.get("trailing") or {}
+            pos = code_cfg.get("position") or {}
+            return {
+                "entry_ratio": float(
+                    pos.get("entryPct")
+                    if pos.get("entryPct") is not None
+                    else StrategyConfigParser.normalize_entry_ratio(None)
+                ),
+                "stop_loss_ratio": float(risk.get("stopLossPct") or 0),
+                "take_profit_ratio": float(risk.get("takeProfitPct") or 0),
+                "trailing_enabled": bool(trailing.get("enabled")),
+                "trailing_stop_ratio": float(trailing.get("pct") or 0),
+                "trailing_activation_ratio": float(trailing.get("activationPct") or 0),
+            }
+
+        tc = trading_config or {}
+        return {
+            "entry_ratio": self._to_ratio(tc.get("entry_pct"), default=1.0),
+            "stop_loss_ratio": self._to_ratio(tc.get("stop_loss_pct")),
+            "take_profit_ratio": self._to_ratio(tc.get("take_profit_pct")),
+            "trailing_enabled": bool(tc.get("trailing_enabled")),
+            "trailing_stop_ratio": self._to_ratio(tc.get("trailing_stop_pct")),
+            "trailing_activation_ratio": self._to_ratio(tc.get("trailing_activation_pct")),
+        }
+
     def _build_cfg_from_trading_config(self, trading_config: Dict[str, Any]) -> Dict[str, Any]:
         """
         Build a backtest-modal compatible config dict for indicator scripts.
@@ -410,16 +451,28 @@ class TradingExecutor:
         - `cfg`: a normalized nested dict (so scripts can reuse backtest-style helpers)
         """
         tc = trading_config or {}
-
-        # Risk / trailing
-        stop_loss_pct = self._to_ratio(tc.get("stop_loss_pct"))
-        take_profit_pct = self._to_ratio(tc.get("take_profit_pct"))
-        trailing_enabled = bool(tc.get("trailing_enabled"))
-        trailing_stop_pct = self._to_ratio(tc.get("trailing_stop_pct"))
-        trailing_activation_pct = self._to_ratio(tc.get("trailing_activation_pct"))
-
-        # Position sizing
-        entry_pct = self._to_ratio(tc.get("entry_pct"))
+        code_cfg = self._code_strategy_cfg(tc)
+        if code_cfg:
+            risk = code_cfg.get("risk") or {}
+            trailing = risk.get("trailing") or {}
+            pos = code_cfg.get("position") or {}
+            stop_loss_pct = float(risk.get("stopLossPct") or 0)
+            take_profit_pct = float(risk.get("takeProfitPct") or 0)
+            trailing_enabled = bool(trailing.get("enabled"))
+            trailing_stop_pct = float(trailing.get("pct") or 0)
+            trailing_activation_pct = float(trailing.get("activationPct") or 0)
+            entry_pct = float(
+                pos.get("entryPct")
+                if pos.get("entryPct") is not None
+                else StrategyConfigParser.normalize_entry_ratio(None)
+            )
+        else:
+            stop_loss_pct = self._to_ratio(tc.get("stop_loss_pct"))
+            take_profit_pct = self._to_ratio(tc.get("take_profit_pct"))
+            trailing_enabled = bool(tc.get("trailing_enabled"))
+            trailing_stop_pct = self._to_ratio(tc.get("trailing_stop_pct"))
+            trailing_activation_pct = self._to_ratio(tc.get("trailing_activation_pct"))
+            entry_pct = self._to_ratio(tc.get("entry_pct"))
 
         # Scale-in
         trend_add_enabled = bool(tc.get("trend_add_enabled"))
@@ -594,9 +647,9 @@ class TradingExecutor:
 
     def _script_default_position_ratio(self, trading_config: Dict[str, Any]) -> float:
         try:
-            ep = (trading_config or {}).get('entry_pct')
-            if ep is not None:
-                return float(self._to_ratio(ep, default=0.06))
+            entry_ratio = self._risk_params_from_trading_config(trading_config).get("entry_ratio")
+            if entry_ratio is not None and float(entry_ratio) > 0:
+                return float(entry_ratio)
         except Exception:
             pass
         return 0.06
@@ -1470,6 +1523,15 @@ class TradingExecutor:
                             indicator_code.replace('\\n', '\n').replace('\\t', '\t').replace('\\r', '\r')
                             .replace('\\"', '"').replace("\\'", "'").replace('\\\\', '\\')
                         )
+
+                code_cfg = StrategyConfigParser.build_nested_cfg_from_code(indicator_code)
+                if code_cfg:
+                    trading_config = dict(trading_config or {})
+                    trading_config["_strategy_cfg_from_code"] = code_cfg
+                    td = code_cfg.get("tradeDirection")
+                    if td and not trading_config.get("trade_direction"):
+                        trading_config["trade_direction"] = td
+                    strategy["trading_config"] = trading_config
 
             # Check if this is a cross-sectional strategy（仅指标策略支持）
             cs_strategy_type = trading_config.get('cs_strategy_type', 'single')
@@ -2641,10 +2703,8 @@ class TradingExecutor:
             if entry_price <= 0 or current_price <= 0:
                 return None
 
-            # Stop-loss is config-driven: ``stop_loss_pct`` is stored as
-            # percent (e.g. 9 = 9%, 0.01 = 0.01%); use the canonical
-            # conversion to ratio. <= 0 means disabled.
-            sl = self._to_ratio(trading_config.get('stop_loss_pct'))
+            # Stop-loss: prefer @strategy ratios (same as backtest), else flat percent fields.
+            sl = float(self._risk_params_from_trading_config(trading_config).get("stop_loss_ratio") or 0)
             if sl <= 0:
                 return None
 
@@ -2697,12 +2757,13 @@ class TradingExecutor:
         timeframe_seconds: int,
     ) -> Optional[Dict[str, Any]]:
         """
-        Server-side exits driven by trading_config (no indicator script required):
-        - Fixed take-profit: take_profit_pct
-        - Trailing stop: trailing_enabled + trailing_stop_pct + trailing_activation_pct
+        Server-side exits driven by trading_config / @strategy code annotations:
+        - Fixed take-profit: takeProfitPct
+        - Trailing stop: trailingEnabled + trailingStopPct + trailingActivationPct
 
         Semantics align with BacktestService:
-        - Percentages are defined on margin PnL; effective price threshold = pct / leverage.
+        - Percentages are the underlying's % price move (0.001 = 0.1%).
+        - Leverage does NOT divide or scale trigger thresholds.
         - When trailing is enabled, fixed take-profit is disabled to avoid ambiguity.
         """
         try:
@@ -2732,10 +2793,11 @@ class TradingExecutor:
 
             # TP / trailing are the underlying's % price move; leverage does not
             # affect trigger thresholds (only PnL magnitude / liquidation).
-            tp = self._to_ratio(trading_config.get('take_profit_pct'))
-            trailing_enabled = bool(trading_config.get('trailing_enabled'))
-            trailing_pct = self._to_ratio(trading_config.get('trailing_stop_pct'))
-            trailing_act = self._to_ratio(trading_config.get('trailing_activation_pct'))
+            risk_params = self._risk_params_from_trading_config(trading_config)
+            tp = float(risk_params.get("take_profit_ratio") or 0)
+            trailing_enabled = bool(risk_params.get("trailing_enabled"))
+            trailing_pct = float(risk_params.get("trailing_stop_ratio") or 0)
+            trailing_act = float(risk_params.get("trailing_activation_ratio") or 0)
 
             tp_eff = tp if tp > 0 else 0.0
             trailing_pct_eff = trailing_pct if trailing_pct > 0 else 0.0
@@ -3018,8 +3080,6 @@ class TradingExecutor:
         For non-bot strategies: enabled by default (historical behavior).
         For bot strategies: enabled only when the corresponding pct value > 0,
         since the user explicitly configured it in the risk form.
-        Bot TP/SL from bot_params is applied by the script after ctx._params merge;
-        top-level take_profit_pct/stop_loss_pct still enable server-side exits (margin-PnL semantics).
         """
         tc = trading_config if isinstance(trading_config, dict) else {}
         bot_type = str(tc.get('bot_type') or '').strip().lower()
@@ -3034,11 +3094,13 @@ class TradingExecutor:
             return True
 
         if config_key == 'enable_server_side_stop_loss':
-            pct = float(tc.get('stop_loss_pct') or 0)
-            return pct > 0
+            sl = float(self._risk_params_from_trading_config(tc).get('stop_loss_ratio') or 0)
+            return sl > 0
         if config_key == 'enable_server_side_take_profit':
-            pct = float(tc.get('take_profit_pct') or 0)
-            return pct > 0
+            risk = self._risk_params_from_trading_config(tc)
+            tp = float(risk.get('take_profit_ratio') or 0)
+            trailing = bool(risk.get('trailing_enabled')) and float(risk.get('trailing_stop_ratio') or 0) > 0
+            return tp > 0 or trailing
 
         return False
     
@@ -3734,9 +3796,9 @@ class TradingExecutor:
                 and sig in ("open_long", "open_short")
                 and isinstance(trading_config, dict)
             ):
-                ep = trading_config.get("entry_pct")
-                if ep is not None:
-                    position_size = self._to_ratio(ep, default=position_size if position_size is not None else 0.0)
+                entry_ratio = self._risk_params_from_trading_config(trading_config).get("entry_ratio")
+                if entry_ratio is not None and float(entry_ratio) > 0:
+                    position_size = float(entry_ratio)
 
             # Open / add sizing
             if ('open' in sig or 'add' in sig):
@@ -3753,7 +3815,11 @@ class TradingExecutor:
                      else:
                          amount = (usdt_notional * leverage) / current_price
                  else:
-                     position_ratio = self._to_ratio(position_size, default=0.05)
+                     use_code_ratios = bool(self._code_strategy_cfg(trading_config))
+                     if use_code_ratios and sig in ("open_long", "open_short", "add_long", "add_short"):
+                         position_ratio = float(position_size)
+                     else:
+                         position_ratio = self._to_ratio(position_size, default=0.05)
                      if market_type == 'spot':
                          from app.services.live_trading.spot_sizing import scale_spot_open_notional
                          quote_stake = scale_spot_open_notional(available_capital * position_ratio)

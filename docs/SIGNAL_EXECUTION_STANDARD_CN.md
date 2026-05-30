@@ -173,10 +173,10 @@ df['close_short'] = edge(raw_close_short)
 | Key | 类型 | 说明 |
 |-----|------|------|
 | `tradeDirection` | `long` \| `short` \| `both` | 与执行列一致 |
-| `entryPct` | 0.01–1.0 | 开仓资金占比 |
-| `stopLossPct` / `takeProfitPct` | 0–1 | 引擎风控；与「指标退出」模式协调 |
+| `entryPct` | 0.01–1.0 | 开仓资金占比（`1` = 100%） |
+| `stopLossPct` / `takeProfitPct` | 0–1 | **标的涨跌幅**阈值；亚 1% 写 `0.001` 等小数 |
 | `trailingEnabled` | bool | 见第 5 节 |
-| `trailingStopPct` / `trailingActivationPct` | 0–1 | 仅 trailing 开启时 |
+| `trailingStopPct` / `trailingActivationPct` | 0–1 | 追踪回撤/激活阈值（同为价格涨跌幅，**不除杠杆**） |
 
 **MUST NOT** 在 `@strategy` 中写 `leverage`（由产品 UI / 策略配置）。
 

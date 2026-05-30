@@ -1024,10 +1024,10 @@ Place **after** name/description lines, **one key per line**, no extra prose on 
 
 Supported keys (parser-enforced):
 
-- `stopLossPct`, `takeProfitPct`: float **0–1** (e.g. `0.03` = 3% on margin PnL semantics as used by the engine).
-- `entryPct`: float **0.01–1.0** (fraction of capital).
+- `stopLossPct`, `takeProfitPct`: float **0–1** = **underlying price move** (e.g. `0.03` = 3% adverse price move; `0.001` = 0.1%). **Not** margin PnL; **do not** divide by leverage.
+- `entryPct`: float **0.01–1.0** = fraction of capital (`1` = 100%, `0.25` = 25%).
 - `trailingEnabled`: `true` or `false`.
-- `trailingStopPct`, `trailingActivationPct`: float **0–1**.
+- `trailingStopPct`, `trailingActivationPct`: float **0–1** = price retracement / activation thresholds (same basis as stop/take-profit).
 - `tradeDirection`: exactly `long`, `short`, or `both`.
 
 **`tradeDirection both` execution semantics:** `df['buy']` → open long (close short first if short); `df['sell']` → open short (close long first if long). Do not document `buy` as a separate close-short column. If the strategy uses in-code tp/sl on `high`/`low` touches, prefer **not** also setting `trailingEnabled true` unless the user explicitly wants engine trailing — see `docs/STRATEGY_DEV_GUIDE.md`.

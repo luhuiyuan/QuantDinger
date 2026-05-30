@@ -575,18 +575,18 @@ def _heuristic_ai_advice(runs: list[dict], lang: str) -> str:
     lines.append("\n" + h["params"])
     if stop_loss <= 0:
         if lang == "en-US":
-            lines.append("- Stop-loss: set stopLossPct (margin PnL basis). For crypto leverage, start with 2%~6% (then consider leverage conversion) and grid test.")
+            lines.append("- Stop-loss: set stopLossPct as 0–1 price move (e.g. 0.03 = 3% adverse price; not margin PnL, no ÷ leverage). Try 0.02–0.06 and grid test.")
         elif lang == "zh-TW":
-            lines.append("- 止損：建議設定 stopLossPct（按保證金口徑）。在加密+槓桿下，先從 2%~6%（再結合槓桿換算）做網格測試。")
+            lines.append("- 止損：stopLossPct 用 0–1 小數表示標的漲跌幅（如 0.03=3% 價格反向；非保證金口徑、不除槓桿）。可先試 0.02–0.06 做網格測試。")
         else:
-            lines.append("- 止损：建议设置 stopLossPct（按保证金口径）。在加密+杠杆下，先从 2%~6%（再结合杠杆换算）做网格测试。")
+            lines.append("- 止损：stopLossPct 用 0–1 小数表示标的涨跌幅（如 0.03=3% 价格反向；非保证金口径、不除杠杆）。可先试 0.02–0.06 做网格测试。")
     else:
         if lang == "en-US":
-            lines.append(f"- Stop-loss: current stopLossPct={stop_loss:.4f} (margin basis). Test ±30% around it and monitor drawdown/liquidations.")
+            lines.append(f"- Stop-loss: current stopLossPct={stop_loss:.4f} (underlying price move). Test ±30% around it and monitor drawdown/liquidations.")
         elif lang == "zh-TW":
-            lines.append(f"- 止損：目前 stopLossPct={stop_loss:.4f}（保證金口徑）。建議圍繞它做 ±30% 區間測試，並觀察回撤/爆倉次數變化。")
+            lines.append(f"- 止損：目前 stopLossPct={stop_loss:.4f}（標的漲跌幅）。建議圍繞它做 ±30% 區間測試，並觀察回撤/爆倉次數變化。")
         else:
-            lines.append(f"- 止损：当前 stopLossPct={stop_loss:.4f}（保证金口径）。建议围绕它做 ±30% 的区间测试，并观察回撤/爆仓次数变化。")
+            lines.append(f"- 止损：当前 stopLossPct={stop_loss:.4f}（标的涨跌幅）。建议围绕它做 ±30% 的区间测试，并观察回撤/爆仓次数变化。")
     if take_profit > 0 and (not trailing_enabled):
         if lang == "en-US":
             lines.append(f"- Take-profit: current takeProfitPct={take_profit:.4f}. Also test enabling trailing to reduce profit giveback.")
@@ -603,11 +603,11 @@ def _heuristic_ai_advice(runs: list[dict], lang: str) -> str:
             lines.append(f"- 移动止盈：已启用，pct={trailing_pct:.4f}, activationPct={trailing_act:.4f}。建议把 activationPct 设为略低于常见单笔盈利水平，并把 pct 做 0.5x~1.5x 测试。")
     else:
         if lang == "en-US":
-            lines.append("- Trailing: consider trailing.enabled=true; start with pct=1%~3% (margin basis) and test.")
+            lines.append("- Trailing: consider trailing.enabled=true; start with trailingStopPct 0.01–0.03 (1%–3% price retracement) and test.")
         elif lang == "zh-TW":
-            lines.append("- 移動止盈：建議開啟 trailing.enabled=true，並從 pct=1%~3%（保證金口徑換算後）開始測試。")
+            lines.append("- 移動止盈：建議開啟 trailing.enabled=true，trailingStopPct 可從 0.01–0.03（標的回撤 1%–3%）開始測試。")
         else:
-            lines.append("- 移动止盈：建议开启 trailing.enabled=true，并从 pct=1%~3%（保证金口径换算后）开始测试。")
+            lines.append("- 移动止盈：建议开启 trailing.enabled=true，trailingStopPct 可从 0.01–0.03（标的回撤 1%–3%）开始测试。")
     if lang == "en-US":
         lines.append(f"- Entry sizing: entryPct={entry_pct:.4f}. Test 0.2/0.3/0.5/0.8 to find a better return/drawdown sweet spot.")
     elif lang == "zh-TW":

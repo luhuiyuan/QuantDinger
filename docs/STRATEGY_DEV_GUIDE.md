@@ -134,9 +134,9 @@ Best practice:
 
 Use `# @strategy` for strategy defaults such as:
 
-- `stopLossPct`: stop-loss ratio, for example `0.03` = 3%
-- `takeProfitPct`: take-profit ratio, for example `0.06` = 6%
-- `entryPct`: fraction of capital to allocate on entry
+- `stopLossPct`: stop-loss ratio, for example `0.03` = **3% adverse underlying price move** (`0.001` = 0.1%)
+- `takeProfitPct`: take-profit ratio, for example `0.06` = **6% favorable price move**
+- `entryPct`: fraction of capital on entry (`1` = **100%**, `0.25` = 25%)
 - `trailingEnabled`
 - `trailingStopPct`
 - `trailingActivationPct`
@@ -1223,6 +1223,9 @@ Use this section as a fast "what is supported right now?" reference when writing
 Important:
 
 - these keys are for indicator-side strategy defaults
+- **all values use 0–1 decimal ratios** (same as `StrategyConfigParser`, backtest, and live)
+- **stop/take-profit/trailing thresholds are underlying price moves, not divided by leverage**
+- **`entryPct 1` means 100% of available capital**, not 1%
 - do not put `leverage` in `# @strategy`
 - keep exchange, symbol, credentials, and leverage in product configuration
 

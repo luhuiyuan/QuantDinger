@@ -134,9 +134,9 @@ my_indicator_description = "Buy pullbacks in an uptrend and exit on weakness."
 
 `# @strategy` 用来定义策略默认配置，比如：
 
-- `stopLossPct`：止损比例，例如 `0.03` 表示 3%
-- `takeProfitPct`：止盈比例，例如 `0.06` 表示 6%
-- `entryPct`：开仓资金占比
+- `stopLossPct`：止损比例，例如 `0.03` 表示 **标的价格下跌 3%** 触发（0–1 小数；`0.001` = 0.1%）
+- `takeProfitPct`：止盈比例，例如 `0.06` 表示 **标的价格上涨 6%** 触发
+- `entryPct`：开仓资金占比（0–1；**`1` = 100%**，`0.25` = 25%）
 - `trailingEnabled`
 - `trailingStopPct`
 - `trailingActivationPct`
@@ -1233,6 +1233,9 @@ df['sell'] = entry_short | long_tp | long_sl
 要点：
 
 - 这些 key 用于指标侧默认策略配置
+- **数值单位统一为 0–1 小数比例**（与 `StrategyConfigParser`、回测、实盘一致）
+- **止损/止盈/追踪按标的涨跌幅计算，不除以杠杆**（杠杆只影响盈亏金额与爆仓）
+- **`entryPct 1` 表示 100% 可用资金开仓**，不是 1%
 - 不要把 `leverage` 写进 `# @strategy`
 - 交易所、标的、凭证、杠杆都应该放在产品配置层
 

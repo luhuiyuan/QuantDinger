@@ -116,6 +116,29 @@ def _strip_legacy_risk_pct_basis(trading_config: Dict[str, Any]) -> Dict[str, An
     return tc
 
 
+def _apply_risk_flat_from_indicator_code(
+    trading_config: Dict[str, Any],
+    indicator_config: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    When indicator code declares @strategy risk keys, persist matching flat
+    trading_config.*_pct fields (percent units) so DB/UI/backtest-center stay
+    aligned with the same semantics as live runtime code parsing.
+    """
+    ic = indicator_config if isinstance(indicator_config, dict) else {}
+    code = ic.get("indicator_code") or ""
+    if not str(code).strip():
+        return dict(trading_config or {})
+    from app.services.indicator_params import StrategyConfigParser
+
+    flat = StrategyConfigParser.to_trading_config_risk_flat(str(code))
+    if not flat:
+        return dict(trading_config or {})
+    tc = dict(trading_config or {})
+    tc.update(flat)
+    return tc
+
+
 # Note: broker / market / market_type / trade_direction / bot_type compatibility
 # rules used to live in this file as scattered if-blocks plus a local
 # _enforce_long_only_for_stock_brokers helper. They have been moved into
@@ -1108,6 +1131,10 @@ class StrategyService:
         trading_config = _strip_legacy_risk_pct_basis(
             _apply_default_strict_mode(payload.get('trading_config') or {})
         )
+        if strategy_type == 'IndicatorStrategy':
+            trading_config = _apply_risk_flat_from_indicator_code(
+                trading_config, indicator_config
+            )
         from app.services.exchange_execution import coalesce_exchange_config_from_payload, resolve_exchange_config
 
         exchange_config = coalesce_exchange_config_from_payload(payload)
@@ -1452,6 +1479,11 @@ class StrategyService:
             trading_config = merged_tc
         else:
             trading_config = existing_tc
+
+        if (existing.get('strategy_type') or payload.get('strategy_type') or 'IndicatorStrategy') == 'IndicatorStrategy':
+            trading_config = _apply_risk_flat_from_indicator_code(
+                trading_config, indicator_config
+            )
 
         # When credential_id is present, strip raw API keys to avoid
         # storing secrets in the strategy record — they live in qd_exchange_credentials.
