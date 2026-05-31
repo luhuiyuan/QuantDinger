@@ -9,4 +9,7 @@ GitHub only exposes ~14 days of detail per API call; this file **merges daily ro
 | **Page views** | **0** |
 | **Git clones** | **0** |
 
+Last updated: `2026-05-31T15:59:52Z` (UTC)
+
 _No daily rows yet — run the traffic workflow once on GitHub Actions._
+
