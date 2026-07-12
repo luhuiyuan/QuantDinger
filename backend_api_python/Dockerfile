@@ -42,6 +42,7 @@ RUN set -eux; \
       python3-dev \
       libffi-dev \
       libssl-dev \
+      gosu \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -62,6 +63,9 @@ RUN set -eux; \
 
 COPY . .
 
+RUN groupadd --gid 10001 quantdinger \
+    && useradd --uid 10001 --gid quantdinger --create-home --shell /usr/sbin/nologin quantdinger
+
 RUN printf '%s\n' "$APP_VERSION" > /app/BUILD_VERSION \
     && printf '%s\n' "$GIT_TAG" > /app/BUILD_GIT_TAG
 
@@ -69,13 +73,15 @@ COPY docker-entrypoint.sh /usr/local/bin/
 RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
     && chmod +x /usr/local/bin/docker-entrypoint.sh
 
-RUN mkdir -p logs data/memory
+RUN mkdir -p logs data/memory \
+    && chown -R quantdinger:quantdinger /app/logs /app/data
 
 EXPOSE 5000
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHON_API_HOST=0.0.0.0
 ENV PYTHON_API_PORT=5000
+ENV HOME=/home/quantdinger
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["gunicorn", "-c", "gunicorn_config.py", "run:app"]

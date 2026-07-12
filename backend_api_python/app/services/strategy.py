@@ -1414,8 +1414,10 @@ class StrategyService:
         
         for sid in strategy_ids:
             try:
-                self.delete_strategy(sid, user_id=user_id)
-                success_ids.append(sid)
+                if self.delete_strategy(sid, user_id=user_id):
+                    success_ids.append(sid)
+                else:
+                    failed_ids.append({'id': sid, 'error': 'delete failed'})
             except Exception as e:
                 logger.error(f"Failed to delete strategy {sid}: {e}")
                 failed_ids.append({'id': sid, 'error': str(e)})

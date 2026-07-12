@@ -6,9 +6,8 @@ HTTP clients (especially LLM-driven agents) prefer "submit + poll" semantics.
 We persist every job in `qd_agent_jobs` so the API survives worker restarts
 and so audit can correlate jobs with the agent that triggered them.
 
-Why not Celery?  Local-first deployments do not want another broker.  A
-bounded thread pool keeps the operational surface small.  If/when you outgrow
-this, swap the executor for Celery/RQ without changing the route layer.
+Production deployments dispatch supported jobs to Celery. Local development
+and tests retain a bounded thread-pool fallback when Celery is disabled.
 
 Progress streaming
 ------------------
@@ -140,7 +139,19 @@ def submit_job(
                 terminal=True,
             )
 
-    _get_executor().submit(_run)
+    celery_enabled = os.getenv("CELERY_TASKS_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if celery_enabled:
+        from app.tasks.agent_jobs import execute_agent_job, supports_kind
+
+        if supports_kind(kind):
+            execute_agent_job.delay(job_id)
+        else:
+            logger.warning("No Celery runner registered for agent job kind=%s; using local executor", kind)
+            _get_executor().submit(_run)
+    else:
+        _get_executor().submit(_run)
 
     return {
         "job_id": job_id,
@@ -261,6 +272,7 @@ def stream_progress(job_id: str, *, since_seq: int = 0, idle_timeout_s: float = 
     buf, lock = _job_buffer(job_id)
     last_seq = since_seq
     deadline = time.monotonic() + idle_timeout_s
+    last_persisted = None
 
     while True:
         with lock:
@@ -268,17 +280,54 @@ def stream_progress(job_id: str, *, since_seq: int = 0, idle_timeout_s: float = 
         for rec in pending:
             yield rec
             last_seq = rec["seq"]
+            last_persisted = json.dumps(rec.get("data") or {}, sort_keys=True, default=str)
             if rec.get("terminal"):
                 _gc_job_state(job_id)
                 return
             deadline = time.monotonic() + idle_timeout_s
+
+        try:
+            row = get_job_for_worker(job_id)
+            snapshot = row.get("progress") if row else {}
+            if isinstance(snapshot, str):
+                snapshot = json.loads(snapshot)
+            serialized = json.dumps(snapshot, sort_keys=True, default=str)
+            terminal = bool(row) and str(row.get("status") or "") in {
+                "succeeded", "failed", "cancelled",
+            }
+            if snapshot and serialized != last_persisted:
+                last_seq += 1
+                record = {
+                    "seq": last_seq,
+                    "ts": time.time(),
+                    "data": snapshot,
+                    "terminal": terminal,
+                }
+                yield record
+                last_persisted = serialized
+                deadline = time.monotonic() + idle_timeout_s
+                if terminal:
+                    _gc_job_state(job_id)
+                    return
+            elif terminal:
+                last_seq += 1
+                yield {
+                    "seq": last_seq,
+                    "ts": time.time(),
+                    "data": {"phase": str(row.get("status") or "failed")},
+                    "terminal": True,
+                }
+                _gc_job_state(job_id)
+                return
+        except Exception as exc:
+            logger.debug("agent_jobs: persisted progress poll failed for %s: %s", job_id, exc)
 
         # Wait for the next signal or until the idle window expires.
         ev = _job_signal(job_id)
         wait_for = max(0.0, deadline - time.monotonic())
         if wait_for == 0.0:
             return
-        ev.wait(timeout=min(wait_for, 5.0))
+        ev.wait(timeout=min(wait_for, 1.0))
         ev.clear()
 
 
@@ -352,6 +401,25 @@ def get_job(job_id: str, *, user_id: int) -> Optional[dict]:
         row = cur.fetchone()
         cur.close()
     return row
+
+
+def get_job_for_worker(job_id: str) -> Optional[dict]:
+    """Internal unscoped lookup for a worker processing an already-authorized job."""
+    with get_db_connection() as db:
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT job_id, user_id, agent_token_id, kind, status, request,
+                       result, error, progress, created_at, started_at, finished_at
+                FROM qd_agent_jobs
+                WHERE job_id = %s
+                """,
+                (job_id,),
+            )
+            return cur.fetchone()
+        finally:
+            cur.close()
 
 
 def list_jobs(*, user_id: int, kind: Optional[str] = None, limit: int = 50) -> list[dict]:

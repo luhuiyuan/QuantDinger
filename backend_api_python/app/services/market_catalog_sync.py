@@ -117,6 +117,15 @@ def start_market_catalog_sync(trigger: str = "manual") -> dict:
         return {"started": True, "run_id": run_id}
 
 
+def run_market_catalog_sync_inline(trigger: str = "scheduled") -> dict:
+    """Claim and execute one catalog sync in the current durable worker."""
+    run_id = _claim_run(trigger)
+    if run_id is None:
+        return {"started": False, "reason": "already_running"}
+    _run_sync(run_id)
+    return {"started": True, "run_id": run_id}
+
+
 def start_market_catalog_sync_on_boot() -> None:
     if os.getenv("MARKET_CATALOG_AUTO_SYNC", "true").strip().lower() not in ("1", "true", "yes", "on"):
         logger.info("Automatic market catalog sync is disabled")

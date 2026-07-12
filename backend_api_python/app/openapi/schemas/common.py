@@ -69,3 +69,12 @@ class HealthStatusSchema(Schema):
 
     status = fields.String(metadata={"example": "healthy"})
     timestamp = fields.DateTime(format="iso")
+    role = fields.String(metadata={"example": "api"})
+
+
+class ReadinessStatusSchema(HealthStatusSchema):
+    checks = fields.Dict(keys=fields.String(), values=fields.Boolean())
+
+
+class WorkerHealthSchema(HealthStatusSchema):
+    workers = fields.List(fields.Dict())

@@ -198,8 +198,17 @@ def analyze():
                 try_refund_credits(
                     user_id=int(user_id),
                     amount=int(credits_charged),
-                    remark=f'Auto refund: fast-analysis exception ({market}:{symbol}:{timeframe})'
+                    remark=f'Auto refund: fast-analysis exception ({market}:{symbol}:{timeframe})',
+                    reference_id=(
+                        f'fast-analysis-refund:{int(pending_id)}'
+                        if 'pending_id' in locals() and pending_id else ''
+                    ),
                 )
+        except Exception:
+            pass
+        try:
+            if 'pending_id' in locals() and pending_id:
+                get_analysis_memory().fail_pending_task(int(pending_id), str(e))
         except Exception:
             pass
         logger.error(f"Fast analysis API failed: {e}", exc_info=True)

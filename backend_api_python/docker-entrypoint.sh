@@ -93,5 +93,11 @@ if [ -z "$CURRENT_CREDENTIAL_KEY" ]; then
     fi
 fi
 
-# Start the application
+# Runtime processes do not need root privileges. The entrypoint keeps root only
+# long enough to initialize bind-mounted secrets and volume ownership.
+if [ "$(id -u)" = "0" ] && id quantdinger >/dev/null 2>&1; then
+    chown -R quantdinger:quantdinger /app/logs /app/data 2>/dev/null || true
+    exec gosu quantdinger "$@"
+fi
+
 exec "$@"

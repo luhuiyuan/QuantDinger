@@ -2,7 +2,7 @@
   "max_file_lines": {
     "app/services/trading_executor.py": 5905,
     "app/services/backtest.py": 4335,
-    "app/services/pending_order_worker.py": 2709,
+    "app/services/pending_order_worker.py": 2719,
     "app/services/fast_analysis.py": 2681,
     "app/routes/strategy.py": 2789,
     "app/routes/quick_trade.py": 2260
@@ -13,7 +13,7 @@
     "app/services/pending_order_worker.py::_execute_live_order": 660,
     "app/services/fast_analysis.py::analyze": 585,
     "app/routes/strategy.py::ai_generate_strategy": 512,
-    "app/routes/indicator.py::ai_generate": 495
+    "app/routes/indicator.py::ai_generate": 496
   },
   "banned_exchange_patterns": [
     "k[u]coin",

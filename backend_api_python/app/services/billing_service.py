@@ -419,7 +419,6 @@ class BillingService:
         if not self.is_billing_enabled():
             return True, 'billing_disabled'
         
-        config = self.get_billing_config()
         cost = self.get_feature_cost(feature)
         
         if cost <= 0:
@@ -482,12 +481,26 @@ class BillingService:
             return False, 'amount_must_be_positive'
         
         try:
-            credits = self.get_user_credits(user_id)
-            new_balance = credits + Decimal(str(amount))
-            
             with get_db_connection() as db:
                 cur = db.cursor()
-                
+                cur.execute("SELECT credits FROM qd_users WHERE id = ? FOR UPDATE", (user_id,))
+                row = cur.fetchone() or {}
+                if reference_id:
+                    cur.execute(
+                        """
+                        SELECT balance_after FROM qd_credits_log
+                        WHERE user_id = ? AND action = ? AND reference_id = ?
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (user_id, action, reference_id),
+                    )
+                    existing = cur.fetchone()
+                    if existing:
+                        cur.close()
+                        return True, str(existing.get("balance_after") or "")
+
+                credits = Decimal(str(row.get("credits", 0) or 0))
+                new_balance = credits + Decimal(str(amount))
                 cur.execute(
                     "UPDATE qd_users SET credits = ?, updated_at = NOW() WHERE id = ?",
                     (float(new_balance), user_id)

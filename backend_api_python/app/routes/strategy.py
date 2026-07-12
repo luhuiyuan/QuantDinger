@@ -2,14 +2,13 @@
 Trading Strategy API Routes
 """
 from flask import g, jsonify, request
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import json
 import re
 import traceback
 import time
 
-from app.services.strategy_compiler import StrategyCompiler
 from app.services.ai_generation_contracts import (
     INDICATOR_TO_STRATEGY_SYSTEM_PROMPT,
     SCRIPT_STRATEGY_REPAIR_REQUIREMENTS,
@@ -425,16 +424,26 @@ def batch_delete_strategies():
         if not strategy_ids:
             return jsonify({'code': 0, 'msg': 'Please provide strategy IDs', 'data': None}), 400
         
-        # Stop executor first
+        safe_to_delete = []
+        failed_to_stop = []
         executor = get_trading_executor()
         for sid in strategy_ids:
             try:
-                executor.stop_strategy(sid)
-            except Exception as e:
-                pass  # Ignore stop errors
+                strategy = get_strategy_service().get_strategy(int(sid), user_id=user_id)
+                if not strategy:
+                    failed_to_stop.append({'id': sid, 'error': 'strategy not found'})
+                    continue
+                get_strategy_service().update_strategy_status(int(sid), 'stopped', user_id=user_id)
+                if executor.stop_strategy(int(sid), persist_status=False):
+                    safe_to_delete.append(int(sid))
+                else:
+                    failed_to_stop.append({'id': sid, 'error': 'runtime stop was not confirmed'})
+            except Exception as exc:
+                failed_to_stop.append({'id': sid, 'error': str(exc)})
         
-        # Then delete
-        result = get_strategy_service().batch_delete_strategies(strategy_ids, user_id=user_id)
+        result = get_strategy_service().batch_delete_strategies(safe_to_delete, user_id=user_id)
+        result.setdefault('failed_ids', []).extend(failed_to_stop)
+        result['success'] = bool(result.get('success_ids')) and not result.get('failed_ids')
         
         return jsonify({
             'code': 1 if result['success'] else 0,
@@ -476,6 +485,17 @@ def delete_strategy():
         strategy_id = request.args.get('id', type=int)
         if not strategy_id:
             return jsonify({'code': 0, 'msg': 'Missing strategy id parameter', 'data': None}), 400
+        strategy = get_strategy_service().get_strategy(strategy_id, user_id=user_id)
+        if not strategy:
+            return jsonify({'code': 0, 'msg': 'Strategy not found', 'data': None}), 404
+        if not get_strategy_service().update_strategy_status(strategy_id, 'stopped', user_id=user_id):
+            return jsonify({'code': 0, 'msg': 'Failed to persist stopped status', 'data': None}), 500
+        if not get_trading_executor().stop_strategy(strategy_id, persist_status=False):
+            return jsonify({
+                'code': 0,
+                'msg': 'Runtime stop was not confirmed; strategy was not deleted',
+                'data': {'status': 'stopped'},
+            }), 503
         ok = get_strategy_service().delete_strategy(strategy_id, user_id=user_id)
         return jsonify({'code': 1 if ok else 0, 'msg': 'success' if ok else 'failed', 'data': None})
     except Exception as e:

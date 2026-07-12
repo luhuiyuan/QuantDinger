@@ -7,6 +7,7 @@ __pycache__/
 env/
 venv/
 .venv/
+.test_deps/
 ENV/
 
 # IDE

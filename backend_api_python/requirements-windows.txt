@@ -1,2 +1,3 @@
 # Windows-specific optional dependencies.
 pytest>=8.0,<9
+celery[redis]>=5.5.0,<6
