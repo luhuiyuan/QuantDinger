@@ -46,6 +46,7 @@ def test_economic_calendar_not_empty(monkeypatch):
 
     monkeypatch.setenv("TRADING_ECONOMICS_CLIENT", "test_client")
     monkeypatch.setenv("TRADING_ECONOMICS_KEY", "test_key")
+    monkeypatch.setattr("app.utils.config_loader.load_addon_config", lambda: {})
     monkeypatch.setattr(
         "app.data_providers.economic_calendar.requests.get",
         lambda *args, **kwargs: FakeResponse(),

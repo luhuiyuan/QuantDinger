@@ -253,8 +253,24 @@ class StrategyService:
             return {"success": False, "message": str(exc), "data": None}
 
     def _batch_status(self, strategy_ids: List[int], status: str, user_id: int | None) -> Dict[str, Any]:
-        updated = [int(item) for item in strategy_ids if self.update_strategy_status(int(item), status, user_id=user_id)]
-        return {"success": len(updated) == len(strategy_ids), "updated_ids": updated, "status": status}
+        success_ids: list[int] = []
+        failed_ids: list[dict[str, Any]] = []
+        for item in strategy_ids:
+            strategy_id = int(item)
+            try:
+                if self.update_strategy_status(strategy_id, status, user_id=user_id):
+                    success_ids.append(strategy_id)
+                else:
+                    failed_ids.append({"id": strategy_id, "error": "status update affected 0 rows"})
+            except Exception as exc:
+                failed_ids.append({"id": strategy_id, "error": str(exc)})
+        return {
+            "success": True,
+            "success_ids": success_ids,
+            "failed_ids": failed_ids,
+            "updated_ids": success_ids,
+            "status": status,
+        }
 
     @staticmethod
     def _deployment_payload(payload: Dict[str, Any]) -> Dict[str, Any]:

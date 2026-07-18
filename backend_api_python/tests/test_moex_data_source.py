@@ -152,17 +152,12 @@ def test_get_ticker_parses_marketdata():
 
 
 def test_live_trading_blocked_for_moex():
-    """The strategy service source must reject MOEX as a live-trading market_category.
+    """The canonical broker policy must reject MOEX for live trading."""
+    from app.services.broker_market_policy import validate_strategy_config
 
-    Read the file directly rather than importing it — importing pulls heavy
-    optional deps (yfinance, etc.) that aren't required for offline tests.
-    """
-    import os
-    import app
-    app_pkg_dir = os.path.dirname(app.__file__)
-    strat_path = os.path.join(app_pkg_dir, "services", "strategy.py")
-    with open(strat_path, "r", encoding="utf-8") as f:
-        src = f.read()
-    # The guard appears in create / batch / update strategy paths.
-    assert src.count("market_category == 'MOEX'") >= 3
-    assert "Live order placement on MOEX is not implemented" in src
+    with pytest.raises(ValueError, match="MOEX.*analysis-only"):
+        validate_strategy_config(
+            exchange_id="",
+            market_category="MOEX",
+            require_exchange=False,
+        )

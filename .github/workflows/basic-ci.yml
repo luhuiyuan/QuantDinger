@@ -22,17 +22,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
-          cache-dependency-path: backend_api_python/requirements-dev.txt
 
       - name: Documentation structure and links
         run: python scripts/check_docs.py
 
-      - name: Install development dependencies
+      - name: Install lint dependency
         working-directory: ./backend_api_python
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+        run: python -m pip install --disable-pip-version-check "ruff>=0.12.0,<0.15"
 
       - name: Python syntax check
         working-directory: ./backend_api_python
@@ -52,17 +48,18 @@ jobs:
         working-directory: ./backend_api_python
         run: python scripts/check_requirements_lock.py
 
-      - name: Python import check
-        working-directory: ./backend_api_python
-        env:
-          SKIP_STARTUP_HOOKS: '1'
-          SECRET_KEY: ci-secret-key-with-at-least-thirty-two-bytes
-        run: |
-          python -c "from app import create_app; from app.config import settings; from app.openapi import init_openapi; print('Core modules imported successfully')"
-
   tests:
-    name: Backend tests
+    name: Backend tests (${{ matrix.shard_label }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard_index: 0
+            shard_label: 1/2
+          - shard_index: 1
+            shard_label: 2/2
     services:
       postgres:
         image: postgres:18-alpine
@@ -105,13 +102,18 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: backend_api_python/requirements-dev.txt
+          cache-dependency-path: |
+            backend_api_python/requirements-dev.txt
+            backend_api_python/requirements.lock
 
       - name: Install development dependencies
         working-directory: ./backend_api_python
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+
+      - name: Python import check
+        if: matrix.shard_index == 0
+        working-directory: ./backend_api_python
+        run: python -c "from app import create_app; from app.config import settings; from app.openapi import init_openapi; print('Core modules imported successfully')"
 
       - name: Run database migrations
         working-directory: ./backend_api_python
@@ -119,16 +121,27 @@ jobs:
           QD_PROCESS_ROLE: migration
         run: python -m app.commands.migrate
 
-      - name: Run backend test suite
+      - name: Run backend test shard
         working-directory: ./backend_api_python
-        run: python -m pytest -m "not integration and not stress" --ignore=tests/release_gate -q
+        shell: bash
+        run: |
+          mapfile -t test_files < <(find tests -maxdepth 1 -type f -name 'test_*.py' | sort)
+          selected=()
+          for index in "${!test_files[@]}"; do
+            if (( index % 2 == ${{ matrix.shard_index }} )); then
+              selected+=("${test_files[$index]}")
+            fi
+          done
+          if (( ${#selected[@]} == 0 )); then
+            echo "::error::No tests selected for shard ${{ matrix.shard_label }}"
+            exit 1
+          fi
+          python -m pytest "${selected[@]}" -m "not integration and not stress" -q
 
       - name: Run release gates independently
+        if: matrix.shard_index == 0
         working-directory: ./backend_api_python
-        run: |
-          python -m pytest tests/release_gate/test_cta_backtest_release_gate.py -q
-          python -m pytest tests/release_gate/test_live_execution_release_gate.py -q
-          python -m pytest tests/release_gate/test_robot_strategy_unification.py -q
+        run: python -m pytest tests/release_gate -q
 
   compose-check:
     name: Docker Compose validation

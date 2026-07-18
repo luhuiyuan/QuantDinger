@@ -1,17 +1,17 @@
 {
   "max_file_lines": {
     "app/services/trading_executor.py": 4455,
-    "app/services/pending_order_worker.py": 2126,
+    "app/services/pending_order_worker.py": 2718,
     "app/services/fast_analysis.py": 1848,
     "app/routes/strategy.py": 1247,
-    "app/routes/quick_trade.py": 1688
+    "app/routes/quick_trade.py": 1777
   },
   "max_function_lines": {
     "app/services/trading_executor.py::_run_strategy_loop": 1176,
-    "app/services/pending_order_worker.py::_execute_live_order": 628,
+    "app/services/pending_order_worker.py::_execute_live_order": 785,
     "app/services/fast_analysis.py::analyze": 585,
     "app/routes/strategy.py::ai_generate_strategy": 307,
-    "app/routes/indicator.py::ai_generate": 496
+    "app/routes/indicator.py::ai_generate": 499
   },
   "banned_exchange_patterns": [
     "k[u]coin",

@@ -20,6 +20,10 @@ on:
       - '.spectral.yaml'
       - '.github/workflows/openapi-ci.yml'
 
+concurrency:
+  group: openapi-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   openapi:
     name: OpenAPI export, lint & diff
@@ -33,13 +37,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend_api_python/requirements.txt
 
       - name: Install Python dependencies
         working-directory: ./backend_api_python
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check pytest
 
       - name: Export OpenAPI spec
         working-directory: ./backend_api_python

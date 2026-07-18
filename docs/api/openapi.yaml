@@ -598,8 +598,8 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
-    UNPROCESSABLE_CONTENT:
-      description: Unprocessable Content
+    UNPROCESSABLE_ENTITY:
+      description: Unprocessable Entity
       content:
         application/json:
           schema:
@@ -827,7 +827,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
+          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
         '200':
           description: OK
           content:
@@ -937,7 +937,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
+          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
         '200':
           description: OK
           content:
@@ -976,7 +976,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
+          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
         '400':
           description: Bad Request
           content:
@@ -1011,7 +1011,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
+          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
         '400':
           description: Bad Request
           content:
@@ -1932,6 +1932,12 @@ paths:
       tags:
       - Users
       operationId: postApiUsersAdminOrdersOrderIdManualConfirm
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -2450,6 +2456,12 @@ paths:
       - Universe
       operationId: postApiUniversesUniverseIdClone
       summary: Post Api Universes Universe Id Clone
+      parameters:
+      - name: universe_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -2517,6 +2529,12 @@ paths:
       - Universe
       operationId: getApiUniversesUniverseId
       summary: Get Api Universes Universe Id
+      parameters:
+      - name: universe_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -2544,6 +2562,12 @@ paths:
       - Universe
       operationId: getApiUniversesUniverseIdMembers
       summary: Get Api Universes Universe Id Members
+      parameters:
+      - name: universe_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -2570,6 +2594,12 @@ paths:
       - Universe
       operationId: putApiUniversesUniverseIdMembers
       summary: Put Api Universes Universe Id Members
+      parameters:
+      - name: universe_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
   /api/universes/{universe_id}/snapshots:
     post:
@@ -2590,6 +2620,12 @@ paths:
       - Universe
       operationId: postApiUniversesUniverseIdSnapshots
       summary: Post Api Universes Universe Id Snapshots
+      parameters:
+      - name: universe_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -2637,6 +2673,12 @@ paths:
       - Factor
       operationId: getApiFactorsFactorId
       summary: Get Api Factors Factor Id
+      parameters:
+      - name: factor_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -2804,6 +2846,12 @@ paths:
       tags:
       - AIChat
       operationId: patchApiAiSkillsSkillId
+      parameters:
+      - name: skill_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -2830,6 +2878,12 @@ paths:
       tags:
       - AIChat
       operationId: deleteApiAiSkillsSkillId
+      parameters:
+      - name: skill_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
   /api/ai/skills/{skill_id}/prompt:
     post:
@@ -2850,6 +2904,12 @@ paths:
       tags:
       - AIChat
       operationId: postApiAiSkillsSkillIdPrompt
+      parameters:
+      - name: skill_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -2956,6 +3016,12 @@ paths:
       tags:
       - AIChat
       operationId: deleteApiAiMemoryMemoryId
+      parameters:
+      - name: memory_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -3043,6 +3109,12 @@ paths:
       tags:
       - AIChat
       operationId: deleteApiAiChatSessionsSessionId
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -3216,6 +3288,12 @@ paths:
       tags:
       - Indicator
       operationId: getApiIndicatorVersionsVersionId
+      parameters:
+      - name: version_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -3389,6 +3467,12 @@ paths:
       tags:
       - Indicator
       operationId: putApiIndicatorSignalAlertsTaskId
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -3415,6 +3499,12 @@ paths:
       tags:
       - Indicator
       operationId: deleteApiIndicatorSignalAlertsTaskId
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
   /api/indicator/signal-alerts/{task_id}/pause:
     post:
@@ -3435,6 +3525,12 @@ paths:
       tags:
       - Indicator
       operationId: postApiIndicatorSignalAlertsTaskIdPause
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -3462,6 +3558,12 @@ paths:
       tags:
       - Indicator
       operationId: postApiIndicatorSignalAlertsTaskIdResume
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -3489,6 +3591,12 @@ paths:
       tags:
       - Indicator
       operationId: postApiIndicatorSignalAlertsTaskIdTest
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -3714,6 +3822,12 @@ paths:
       - Strategy
       operationId: getApiStrategiesScriptSourcesVersionsVersionId
       summary: Get Api Strategies Script Sources Versions Version Id
+      parameters:
+      - name: version_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -4240,6 +4354,12 @@ paths:
       - Strategy
       operationId: getApiStrategiesStrategyId
       summary: Get Api Strategies Strategy Id
+      parameters:
+      - name: strategy_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -4266,6 +4386,12 @@ paths:
       - Strategy
       operationId: putApiStrategiesStrategyId
       summary: Put Api Strategies Strategy Id
+      parameters:
+      - name: strategy_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     delete:
       responses:
@@ -4285,6 +4411,12 @@ paths:
       - Strategy
       operationId: deleteApiStrategiesStrategyId
       summary: Delete Api Strategies Strategy Id
+      parameters:
+      - name: strategy_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
   /api/strategies/{strategy_id}/start:
     post:
@@ -4305,6 +4437,12 @@ paths:
       - Strategy
       operationId: postApiStrategiesStrategyIdStart
       summary: Post Api Strategies Strategy Id Start
+      parameters:
+      - name: strategy_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -4332,6 +4470,12 @@ paths:
       - Strategy
       operationId: postApiStrategiesStrategyIdStop
       summary: Post Api Strategies Strategy Id Stop
+      parameters:
+      - name: strategy_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -4473,7 +4617,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
+          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
         '400':
           description: Bad Request
           content:
@@ -4501,7 +4645,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
+          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
         '200':
           description: OK
           content:
@@ -4578,7 +4722,7 @@ paths:
         required: true
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
+          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
         '400':
           description: Bad Request
           content:
@@ -4656,6 +4800,12 @@ paths:
       tags:
       - Dashboard
       operationId: deleteApiDashboardPendingOrdersOrderId
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -4913,6 +5063,12 @@ paths:
       tags:
       - Portfolio
       operationId: putApiPortfolioPositionsPositionId
+      parameters:
+      - name: position_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -4939,6 +5095,12 @@ paths:
       tags:
       - Portfolio
       operationId: deleteApiPortfolioPositionsPositionId
+      parameters:
+      - name: position_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
   /api/portfolio/summary:
     get:
@@ -5020,6 +5182,12 @@ paths:
       tags:
       - Portfolio
       operationId: putApiPortfolioMonitorsMonitorId
+      parameters:
+      - name: monitor_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -5046,6 +5214,12 @@ paths:
       tags:
       - Portfolio
       operationId: deleteApiPortfolioMonitorsMonitorId
+      parameters:
+      - name: monitor_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
   /api/portfolio/monitors/{monitor_id}/run:
     post:
@@ -5073,6 +5247,12 @@ paths:
       tags:
       - Portfolio
       operationId: postApiPortfolioMonitorsMonitorIdRun
+      parameters:
+      - name: monitor_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -5139,6 +5319,12 @@ paths:
       tags:
       - Portfolio
       operationId: putApiPortfolioAlertsAlertId
+      parameters:
+      - name: alert_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -5165,6 +5351,12 @@ paths:
       tags:
       - Portfolio
       operationId: deleteApiPortfolioAlertsAlertId
+      parameters:
+      - name: alert_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
   /api/portfolio/groups:
     get:
@@ -5390,6 +5582,12 @@ paths:
       tags:
       - IBKR
       operationId: deleteApiIbkrOrderOrderId
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -5601,6 +5799,12 @@ paths:
       tags:
       - Alpaca
       operationId: deleteApiAlpacaOrderOrderId
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: internal
     parameters:
     - in: path
@@ -5631,6 +5835,12 @@ paths:
       tags:
       - Alpaca
       operationId: getApiAlpacaQuoteSymbol
+      parameters:
+      - name: symbol
+        in: path
+        required: true
+        schema:
+          type: string
       x-visibility: internal
     parameters:
     - in: path
@@ -5848,6 +6058,12 @@ paths:
       tags:
       - Community
       operationId: getApiCommunityIndicatorsIndicatorId
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -5884,6 +6100,12 @@ paths:
       tags:
       - Community
       operationId: postApiCommunityIndicatorsIndicatorIdPurchase
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -5916,6 +6138,12 @@ paths:
       tags:
       - Community
       operationId: postApiCommunityIndicatorsIndicatorIdSync
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -6026,6 +6254,12 @@ paths:
       tags:
       - Community
       operationId: postApiCommunityAuthorIndicatorsIndicatorIdUnpublish
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -6053,6 +6287,12 @@ paths:
       tags:
       - Community
       operationId: getApiCommunityIndicatorsIndicatorIdComments
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -6082,6 +6322,12 @@ paths:
       tags:
       - Community
       operationId: postApiCommunityIndicatorsIndicatorIdComments
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
   /api/community/indicators/{indicator_id}/comments/{comment_id}:
     put:
@@ -6107,6 +6353,17 @@ paths:
       tags:
       - Community
       operationId: putApiCommunityIndicatorsIndicatorIdCommentsCommentId
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: comment_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -6140,6 +6397,12 @@ paths:
       tags:
       - Community
       operationId: getApiCommunityIndicatorsIndicatorIdMyComment
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -6167,6 +6430,12 @@ paths:
       tags:
       - Community
       operationId: getApiCommunityIndicatorsIndicatorIdPerformance
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -6254,6 +6523,12 @@ paths:
       tags:
       - Community
       operationId: postApiCommunityAdminIndicatorsIndicatorIdReview
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -6284,6 +6559,12 @@ paths:
       tags:
       - Community
       operationId: postApiCommunityAdminIndicatorsIndicatorIdUnpublish
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -6311,6 +6592,12 @@ paths:
       tags:
       - Community
       operationId: deleteApiCommunityAdminIndicatorsIndicatorId
+      parameters:
+      - name: indicator_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -6414,6 +6701,12 @@ paths:
       tags:
       - FastAnalysis
       operationId: deleteApiFastAnalysisHistoryMemoryId
+      parameters:
+      - name: memory_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: public
     parameters:
     - in: path
@@ -6538,7 +6831,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
+          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
         '400':
           description: Bad Request
           content:
@@ -6585,6 +6878,12 @@ paths:
       tags:
       - Billing
       operationId: getApiBillingUsdtOrderOrderId
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
       x-visibility: private
     parameters:
     - in: path
@@ -6597,7 +6896,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
+          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
         '400':
           description: Bad Request
           content:
@@ -6685,7 +6984,7 @@ paths:
     post:
       responses:
         '422':
-          $ref: '#/components/responses/UNPROCESSABLE_CONTENT'
+          $ref: '#/components/responses/UNPROCESSABLE_ENTITY'
         '400':
           description: Bad Request
           content:

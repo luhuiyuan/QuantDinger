@@ -193,6 +193,7 @@ def enrich_spec(spec_dict: dict) -> dict:
 
     for path, item in paths.items():
         tag = None
+        path_parameter_names = re.findall(r"\{([^{}]+)\}", path)
         for prefix, t in _PREFIX_TAGS:
             if path.startswith(prefix):
                 tag = t
@@ -211,6 +212,24 @@ def enrich_spec(spec_dict: dict) -> dict:
             _normalize_operation_docs(op)
             if tag:
                 op["tags"] = [tag]
+            if path_parameter_names:
+                parameters = op.setdefault("parameters", [])
+                documented = {
+                    str(parameter.get("name"))
+                    for parameter in parameters
+                    if isinstance(parameter, dict) and parameter.get("in") == "path"
+                }
+                for name in path_parameter_names:
+                    if name in documented:
+                        continue
+                    parameters.append(
+                        {
+                            "name": name,
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "integer" if name == "id" or name.endswith("_id") else "string"},
+                        }
+                    )
             responses = op.setdefault("responses", {})
             has_success = any(str(code).startswith(("2", "3")) for code in responses)
             if not has_success:
