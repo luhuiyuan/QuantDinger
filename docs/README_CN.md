@@ -33,16 +33,16 @@
     <a href="https://t.me/quantdinger"><img src="https://img.shields.io/badge/Telegram-加入群组-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram"></a>
     <a href="https://discord.com/invite/tyx5B6TChr"><img src="https://img.shields.io/badge/Discord-服务器-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
     <a href="https://youtube.com/@quantdinger"><img src="https://img.shields.io/badge/YouTube-%40quantdinger-FF0000?style=flat-square&logo=youtube&logoColor=white" alt="YouTube"></a>
-    <a href="https://x.com/QuantDinger_EN"><img src="https://img.shields.io/badge/X-%40QuantDinger_EN-000000?style=flat-square&logo=x&logoColor=white" alt="X"></a>
+    <a href="https://x.com/QuantDinger_EN"><img src="badges/x-quantdinger.svg" alt="X @QuantDinger_EN"></a>
   </p>
 
   <p>
     <a href="../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="Apache 2.0"></a>
-    <img src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.12">
+    <img src="badges/python-3.12.svg" alt="Python 3.12">
     <img src="https://img.shields.io/badge/PostgreSQL-18-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 18">
     <img src="https://img.shields.io/badge/Redis-8-DC382D?style=flat-square&logo=redis&logoColor=white" alt="Redis 8">
-    <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose">
-    <img src="https://img.shields.io/github/v/release/OpenByteInc/QuantDinger?style=flat-square&label=Release" alt="最新版本">
+    <img src="badges/docker-compose.svg" alt="Docker Compose">
+    <a href="https://github.com/OpenByteInc/QuantDinger/releases/latest"><img src="badges/latest-release.svg" alt="最新版本"></a>
   </p>
 </div>
 
@@ -505,7 +505,7 @@ QuantDinger 仅用于**合法的研究、教育和合规交易场景**，不得�
 ## 社区与支持
 
 <p>
-  <a href="https://t.me/quantdinger"><img src="https://img.shields.io/badge/Telegram-群组-26A5E4?style=for-the-badge&logo=telegram" alt="Telegram"></a>
+  <a href="https://t.me/quantdinger"><img src="badges/telegram-group.svg" alt="Telegram"></a>
   <a href="https://discord.com/invite/tyx5B6TChr"><img src="https://img.shields.io/badge/Discord-服务器-5865F2?style=for-the-badge&logo=discord" alt="Discord"></a>
   <a href="https://youtube.com/@quantdinger"><img src="https://img.shields.io/badge/YouTube-频道-FF0000?style=for-the-badge&logo=youtube" alt="YouTube"></a>
   <a href="https://x.com/QuantDinger_EN"><img src="https://img.shields.io/badge/X-关注-000000?style=for-the-badge&logo=x" alt="X"></a>
