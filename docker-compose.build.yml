@@ -1,4 +1,4 @@
-# Override file for local frontend builds.
+# Override file for local low-memory source builds and host PostgreSQL.
 # Usage:
 #   git clone <QuantDinger-Vue> ./QuantDinger-Vue
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
@@ -9,7 +9,72 @@
 # Tip: set `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` in your
 # root `.env` to make `docker compose up --build` pick this up automatically.
 
+x-host-postgres-runtime: &host-postgres-runtime
+  env_file:
+    - ./backend_api_python/.env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
 services:
+  postgres:
+    # This server uses its already-installed PostgreSQL. The container remains
+    # available only when explicitly enabled with --profile container-postgres.
+    profiles: ["container-postgres"]
+
+  migration:
+    <<: *host-postgres-runtime
+    environment:
+      DATABASE_URL: !reset null
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
+  backend:
+    <<: *host-postgres-runtime
+    environment:
+      DATABASE_URL: !reset null
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
+  trading-worker:
+    <<: *host-postgres-runtime
+    environment:
+      DATABASE_URL: !reset null
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
+  scheduler-worker:
+    <<: *host-postgres-runtime
+    environment:
+      DATABASE_URL: !reset null
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
+  celery-worker:
+    <<: *host-postgres-runtime
+    environment:
+      DATABASE_URL: !reset null
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
+  celery-beat:
+    <<: *host-postgres-runtime
+    environment:
+      DATABASE_URL: !reset null
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+
   frontend:
     # Disable the `pull_policy: always` inherited from docker-compose.yml.
     # Without this, a plain `docker compose up` (or `pull frontend`) would
@@ -22,12 +87,5 @@ services:
       args:
         APP_VERSION: ${APP_VERSION:-}
         GIT_TAG: ${GIT_TAG:-${FRONTEND_TAG:-${IMAGE_TAG:-}}}
-
-  mobile:
-    pull_policy: build
-    build:
-      context: ${MOBILE_SRC_PATH:-./QuantDinger-Mobile}
-      dockerfile: Dockerfile
-      args:
-        APP_VERSION: ${APP_VERSION:-}
-        GIT_TAG: ${GIT_TAG:-${MOBILE_TAG:-${IMAGE_TAG:-}}}
+        NODE_OPTIONS: ${BUILD_NODE_OPTIONS:---max-old-space-size=1536}
+        NPM_CONFIG_JOBS: ${BUILD_NPM_JOBS:-1}

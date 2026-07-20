@@ -213,7 +213,6 @@ services:
       - PYTHON_API_PORT=5000
       - GIT_TAG=${GIT_TAG:-${IMAGE_TAG:-}}
       - TZ=${TZ:-Asia/Shanghai}
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-quantdinger}:${POSTGRES_PASSWORD:-quantdinger123}@postgres:5432/${POSTGRES_DB:-quantdinger}
       - DB_TYPE=postgresql
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -460,4 +459,3 @@ volumes:
 networks:
   quantdinger-network:
     driver: bridge
-

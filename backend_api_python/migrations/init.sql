@@ -337,6 +337,11 @@ CREATE TABLE IF NOT EXISTS qd_script_sources (
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Upgrade installations created before reusable script assets were typed.
+-- CREATE TABLE IF NOT EXISTS does not add columns to an existing table, so
+-- this must run before idx_script_sources_asset_type is created below.
+ALTER TABLE qd_script_sources ADD COLUMN IF NOT EXISTS asset_type VARCHAR(32) NOT NULL DEFAULT 'script';
+
 CREATE INDEX IF NOT EXISTS idx_script_sources_user_id ON qd_script_sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_script_sources_marketplace ON qd_script_sources(source_marketplace_indicator_id);
 CREATE INDEX IF NOT EXISTS idx_script_sources_asset_type ON qd_script_sources(user_id, asset_type);
@@ -1082,6 +1087,13 @@ CREATE TABLE IF NOT EXISTS qd_backtest_runs (
     result_json TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Upgrade pre-v5 backtest history in place. Legacy rows did not carry the
+-- Strategy API V2 source/manifest fields; source_id=0 means no reusable source.
+ALTER TABLE qd_backtest_runs ADD COLUMN IF NOT EXISTS source_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE qd_backtest_runs ADD COLUMN IF NOT EXISTS market_type VARCHAR(20) NOT NULL DEFAULT 'spot';
+ALTER TABLE qd_backtest_runs ADD COLUMN IF NOT EXISTS params_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE qd_backtest_runs ADD COLUMN IF NOT EXISTS manifest_json TEXT NOT NULL DEFAULT '{}';
 
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_user_id ON qd_backtest_runs(user_id);
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy_id ON qd_backtest_runs(strategy_id);
