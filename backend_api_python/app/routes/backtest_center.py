@@ -21,6 +21,7 @@ from app.services.backtest_execution import (
 from app.services.backtest_limits import BacktestRangeLimitError
 from app.services.script_source import get_script_source_service
 from app.services.strategy_v2 import (
+    CNHistoryCoverageError,
     FactorResearchRepository,
     StrategyBacktestRepository,
     StrategyV2BacktestService,
@@ -116,6 +117,8 @@ def run_strategy_backtest():
         return jsonify({"code": 1, "msg": "success", "data": {**result, "runId": run_id}})
     except BacktestRangeLimitError as exc:
         return jsonify({"code": 0, "msg": str(exc), "data": exc.details}), 400
+    except CNHistoryCoverageError as exc:
+        return jsonify({"code": 0, "msg": exc.code, "data": exc.details}), 409
     except ValueError as exc:
         return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
     except Exception as exc:

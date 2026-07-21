@@ -1,0 +1,21 @@
+schema: spec-driven
+
+context: |
+  OpenSpec 文档统一使用中文；代码标识符、路径、API 名称和必要技术术语保留英文。
+
+  easy_tdx 开发期依赖决策（2026-07-20）：
+  - 当前处于开发阶段，暂不发布 easy_tdx 到 PyPI、GitHub Release 或其他公共包仓库。
+  - QuantDinger 使用 `/home/quantadinger/easy_tdx` 本地仓库构建的 wheel 进行集成开发。
+  - 当前开发基线为 easy_tdx 1.20.4、Git 提交 `3b7ce97`；升级必须显式更新基线并重新验证。
+  - 不把 sibling 源码复制进 QuantDinger，也不以 editable install 或运行时源码挂载作为生产依赖。
+  - 正式发布和生产制品来源留到发布阶段另行决策；不得在未确认前假设公共包已发布。
+
+rules:
+  proposal:
+    - 使用中文撰写；代码标识符、路径和必要技术术语可保留英文。
+  design:
+    - 使用中文撰写，并遵守项目 context 中记录的依赖与部署决策。
+  specs:
+    - 使用中文撰写；保留 OpenSpec 要求的 SHALL/MUST、WHEN/THEN 规范关键词。
+  tasks:
+    - 使用中文撰写，并将开发期本地 wheel 与正式发布制品明确区分。

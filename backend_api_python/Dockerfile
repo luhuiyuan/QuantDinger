@@ -9,6 +9,7 @@ FROM ${BASE_IMAGE}
 ARG BUILD_REGION=global
 ARG APP_VERSION=""
 ARG GIT_TAG=""
+ARG INSTALL_LOCAL_EASY_TDX=0
 
 WORKDIR /app
 
@@ -46,6 +47,7 @@ RUN set -eux; \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements.lock ./
+COPY vendor/ /tmp/vendor/
 
 # Pip: when BUILD_REGION=cn, try Aliyun PyPI first; on any failure retry default index.
 # Otherwise install from PyPI official directly.
@@ -62,6 +64,15 @@ RUN set -eux; \
       python -m pip install --no-cache-dir --timeout 180 --retries 5 --upgrade "pip>=26.1.2,<27"; \
       pip install --no-cache-dir --prefer-binary --timeout 180 -r requirements.lock; \
     fi; \
+    case "$INSTALL_LOCAL_EASY_TDX" in \
+      1|true|TRUE|yes|YES) \
+        wheel="$(find /tmp/vendor -maxdepth 1 -type f -name 'easy_tdx-*.whl' -print -quit)"; \
+        test -n "$wheel"; \
+        (cd /tmp/vendor && sha256sum -c easy_tdx-wheel.sha256); \
+        pip install --no-cache-dir --no-deps "$wheel"; \
+        ;; \
+    esac; \
+    rm -rf /tmp/vendor; \
     apt-get purge -y --auto-remove build-essential python3-dev libffi-dev libssl-dev; \
     rm -rf /var/lib/apt/lists/*
 

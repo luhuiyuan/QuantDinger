@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
+from datetime import timedelta
 
 from app.celery_app import celery_app
 
@@ -96,3 +97,32 @@ def run_market_catalog_sync(self):
     from app.services.market_catalog_sync import run_market_catalog_sync_inline
 
     return run_market_catalog_sync_inline("celery-beat")
+
+
+@celery_app.task(name="quantdinger.tasks.cn_market_history_sync")
+def run_cn_market_history_sync(run_id: str) -> dict:
+    from app.services.cn_market_history.sync_service import CNMarketHistorySyncService
+
+    return CNMarketHistorySyncService().run(run_id)
+
+
+@celery_app.task(name="quantdinger.tasks.cn_market_history_daily")
+def run_cn_market_history_daily() -> dict:
+    from app.services.cn_market_history.config import load_cn_market_history_settings
+    from app.services.cn_market_history.sync_service import CNMarketHistorySyncService
+    from app.services.market_schedule import latest_completed_session
+
+    settings = load_cn_market_history_settings()
+    if not settings.sync_enabled or not settings.daily_symbols:
+        return {"skipped": True, "reason": "disabled_or_empty_universe"}
+    end_date = latest_completed_session("CNStock").date()
+    start_date = end_date - timedelta(days=settings.incremental_lookback_days)
+    service = CNMarketHistorySyncService(settings=settings)
+    run_id = service.create_targeted_run(
+        settings.daily_symbols,
+        start_date,
+        end_date,
+        requested_by=None,
+        request_kind="scheduled",
+    )
+    return service.run(run_id)

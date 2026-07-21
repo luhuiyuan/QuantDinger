@@ -17,13 +17,23 @@ from .protection import ProtectionDecision, ProtectionEngine, ProtectionSpec, Pr
 from .service import StrategyV2BacktestService
 from .deployment import StrategyV2DeploymentService, get_strategy_v2_deployment_service
 from .storage import FactorResearchRepository, StrategyBacktestRepository
+from .market_data import CNHistoryCoverageError
+from .execution_policy import (
+    CNStockExecutionPolicy,
+    DefaultExecutionPolicy,
+    MarketExecutionPolicy,
+)
 
 __all__ = [
     "CompiledStrategyV2",
+    "CNHistoryCoverageError",
+    "CNStockExecutionPolicy",
+    "DefaultExecutionPolicy",
     "DiscoveryContext",
     "InstrumentParseError",
     "InstrumentSpec",
     "MultiAssetDataPortal",
+    "MarketExecutionPolicy",
     "ScheduleSpec",
     "StateNamespace",
     "StrategyManifest",

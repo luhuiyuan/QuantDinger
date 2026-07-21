@@ -250,10 +250,15 @@ def daily_event(context):
     if len(bars) >= 1 and position.amount == 0:
         order_target_value(g.sec_code, context.portfolio.available_cash)
 """
+    frame = _frame([100, 101, 102])
+    frame["previous_close"] = [99, 100, 101]
+    frame["board_classification"] = "main_board"
+    frame["status_classification"] = "non_st"
+    frame["classification_confirmed"] = True
     runner = StrategyV2BacktestRunner(
         code=code,
-        frames={"CNStock:600519.SH": _frame([100, 101, 102])},
-        initial_capital=10000,
+        frames={"CNStock:600519.SH": frame},
+        initial_capital=20000,
         commission=0,
         slippage=0,
     )

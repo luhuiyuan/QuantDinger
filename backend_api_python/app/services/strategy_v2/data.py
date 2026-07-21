@@ -156,6 +156,10 @@ class MultiAssetDataPortal:
                 "is_limit_down",
                 "lot_size",
                 "industry",
+                "previous_close",
+                "board_classification",
+                "status_classification",
+                "classification_confirmed",
             ):
                 if name in row.index:
                     bar[name] = row.get(name)

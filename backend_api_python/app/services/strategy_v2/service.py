@@ -16,13 +16,15 @@ from app.services.backtest_limits import (
     validate_backtest_range,
 )
 from app.services.fundamental_data import get_fundamental_data_service
+from app.services.cn_market_history import AdjustmentMode, load_cn_market_history_settings
 from app.services.universe import UniverseService, get_universe_service
 
 from .contract import StrategyV2ContractError, compile_strategy_v2
 from .factor_research import FactorResearchEngine
 from .models import InstrumentSpec, StrategyManifest
-from .market_data import load_strategy_frame
+from .market_data import CNHistoryCoverageError, load_cn_strategy_frame, load_strategy_frame
 from .runtime import StrategyV2BacktestRunner
+from .execution_policy import CNStockExecutionPolicy
 from .snapshot import MarketDataSnapshotStore, canonical_frame_bytes
 from .storage import StrategyBacktestRepository
 
@@ -38,6 +40,9 @@ class StrategyV2BacktestService:
         data_kind: str = "market",
         data_source: str = "system_market_data_router",
         snapshot_store: MarketDataSnapshotStore | None = None,
+        cn_frame_fetcher: Callable[..., pd.DataFrame] | None = None,
+        cn_history_enabled: bool | None = None,
+        cn_adjustment_mode: AdjustmentMode = AdjustmentMode.RAW,
     ) -> None:
         self.repository = repository or StrategyBacktestRepository()
         self.universe_service = universe_service or get_universe_service()
@@ -46,6 +51,13 @@ class StrategyV2BacktestService:
         self.data_kind = str(data_kind or "market")
         self.data_source = str(data_source or "system_market_data_router")
         self.snapshot_store = snapshot_store or MarketDataSnapshotStore()
+        self.cn_frame_fetcher = cn_frame_fetcher or load_cn_strategy_frame
+        self.cn_history_enabled = (
+            load_cn_market_history_settings().enabled
+            if cn_history_enabled is None
+            else bool(cn_history_enabled)
+        )
+        self.cn_adjustment_mode = cn_adjustment_mode
 
     def compile(self, code: str) -> dict[str, Any]:
         return compile_strategy_v2(code).manifest.metadata()
@@ -90,7 +102,14 @@ class StrategyV2BacktestService:
             warmup_bars=warmup_bars,
             fetch_start=fetch_start,
         )
-        frames, skipped = self.fetch_frames(candidates, frequency, fetch_start, end_date)
+        frames, skipped = self.fetch_frames(
+            candidates,
+            frequency,
+            fetch_start,
+            end_date,
+            requested_start=start_date,
+            warmup_bars=warmup_bars,
+        )
         if not frames:
             raise StrategyV2ContractError("strategyV2.noMarketData")
         if len(frames) < minimum_symbols:
@@ -166,7 +185,21 @@ class StrategyV2BacktestService:
             warmup_bars=manifest.warmup_bars,
             fetch_start=fetch_start,
         )
-        frames, skipped = self.fetch_frames(candidates, frequency, fetch_start, end_date)
+        try:
+            frames, skipped = self.fetch_frames(
+                candidates,
+                frequency,
+                fetch_start,
+                end_date,
+                requested_start=start_date,
+                warmup_bars=manifest.warmup_bars,
+            )
+        except CNHistoryCoverageError as exc:
+            exc.details["executionAssumptions"] = CNStockExecutionPolicy(
+                commission
+            ).assumptions()
+            exc.details["executionAssumptions"]["slippage"] = float(slippage)
+            raise
         if not frames:
             raise StrategyV2ContractError("strategyV2.noMarketData")
         if manifest.fundamental_dependencies:
@@ -260,6 +293,7 @@ class StrategyV2BacktestService:
             "sourceControlled": True,
         }
         result["executionAssumptions"] = {
+            **(result.get("executionAssumptions") or {}),
             "engineVersion": StrategyV2BacktestRunner.VERSION,
             "fillRule": "scheduled_current_open_or_signal_next_open",
             "protectionRule": "gap_open_then_intrabar_trigger",
@@ -271,6 +305,27 @@ class StrategyV2BacktestService:
             "commission": float(commission),
             "slippage": float(slippage),
         }
+        cn_provenance = [
+            item
+            for item in result["dataProvenance"]["symbols"]
+            if item.get("provider") == "easy_tdx"
+        ]
+        if cn_provenance:
+            result["executionAssumptions"].update(
+                {
+                    "adjustmentMode": self.cn_adjustment_mode.value,
+                    "dataVersion": sorted(
+                        {str(item.get("dataVersion") or "") for item in cn_provenance}
+                    ),
+                    "factorVersion": sorted(
+                        {
+                            str(item.get("factorVersion"))
+                            for item in cn_provenance
+                            if item.get("factorVersion")
+                        }
+                    ),
+                }
+            )
 
         run_id = None
         if persist:
@@ -330,9 +385,45 @@ class StrategyV2BacktestService:
         frequency: str,
         start_date: datetime,
         end_date: datetime,
+        *,
+        requested_start: datetime | None = None,
+        warmup_bars: int = 0,
     ) -> tuple[dict[str, pd.DataFrame], list[dict[str, str]]]:
         frames: dict[str, pd.DataFrame] = {}
         skipped: list[dict[str, str]] = []
+
+        local_cn = [
+            member
+            for member in candidates
+            if self.cn_history_enabled
+            and member.get("market") == "CNStock"
+            and str(frequency).lower() == "1d"
+        ]
+        local_keys = {member.get("key") for member in local_cn}
+        coverage_errors: list[CNHistoryCoverageError] = []
+        for member in local_cn:
+            try:
+                frame = self.cn_frame_fetcher(
+                    member["market"],
+                    member["symbol"],
+                    frequency,
+                    start_date,
+                    end_date,
+                    requested_start=requested_start or start_date,
+                    warmup_bars=warmup_bars,
+                    market_type=member.get("market_type") or "",
+                    exchange_id=member.get("exchange_id") or "",
+                    adjustment_mode=self.cn_adjustment_mode,
+                )
+                frames[member["key"]] = frame
+            except CNHistoryCoverageError as exc:
+                coverage_errors.append(exc)
+        if coverage_errors:
+            raise CNHistoryCoverageError.combine(coverage_errors)
+
+        remote_candidates = [
+            member for member in candidates if member.get("key") not in local_keys
+        ]
 
         def fetch(member: dict[str, Any]):
             frame = self.frame_fetcher(
@@ -346,9 +437,11 @@ class StrategyV2BacktestService:
             )
             return member, frame
 
-        workers = min(8, max(1, len(candidates)))
+        if not remote_candidates:
+            return dict(sorted(frames.items())), skipped
+        workers = min(8, max(1, len(remote_candidates)))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="strategy-v2-data") as executor:
-            futures = [executor.submit(fetch, member) for member in candidates]
+            futures = [executor.submit(fetch, member) for member in remote_candidates]
             for future in as_completed(futures):
                 try:
                     member, frame = future.result()
@@ -496,12 +589,14 @@ def _frame_provenance(
 ) -> dict[str, Any]:
     fingerprint = hashlib.sha256(canonical_frame_bytes(frame)).hexdigest()
     snapshot = snapshot_store.save(frame) if snapshot_store is not None else {}
+    local_provenance = dict(frame.attrs.get("cn_history_provenance") or {})
     return {
         "instrument": key,
         "bars": int(len(frame.index)),
         "firstBar": str(pd.Timestamp(frame.index.min())) if not frame.empty else "",
         "lastBar": str(pd.Timestamp(frame.index.max())) if not frame.empty else "",
         "contentHash": fingerprint,
+        **local_provenance,
         **snapshot,
     }
 

@@ -22,6 +22,11 @@ from app.services.factors import (
 
 from .contract import CompiledStrategyV2, StrategyV2ContractError, compile_strategy_v2
 from .data import MultiAssetDataPortal
+from .execution_policy import (
+    CNStockExecutionPolicy,
+    DefaultExecutionPolicy,
+    MarketExecutionPolicy,
+)
 from .protection import ProtectionDecision, ProtectionEngine, ProtectionSpec, ProtectionState
 
 
@@ -472,6 +477,8 @@ class MultiAssetSimulationBroker:
         self.protection_engine = ProtectionEngine()
         self.equity_curve: list[dict[str, Any]] = []
         self._order_sequence = 0
+        self._default_execution_policy = DefaultExecutionPolicy(self.commission)
+        self._cn_execution_policy = CNStockExecutionPolicy(self.commission)
 
     def execute(
         self,
@@ -495,7 +502,32 @@ class MultiAssetSimulationBroker:
             override = (price_overrides or {}).get(order.symbol)
             bar = portal.bar_at(order.symbol, timestamp)
             open_price = float(override) if override is not None else (float(bar["open"]) if bar else None)
-            blocked_reason = self._execution_block_reason(order, bar, open_price)
+            policy = self._execution_policy(order.symbol)
+            policy.begin_session(timestamp, self.portfolio.positions)
+            position_key = _position_key(order.symbol, order.position_side)
+            current = self.portfolio.positions.get(position_key) or Position(
+                order.symbol,
+                position_side=_normalize_position_side(order.position_side),
+            )
+            equity = self.mark_to_market(portal, timestamp)
+            if open_price is None or not math.isfinite(open_price) or open_price <= 0:
+                target_qty = current.amount
+                delta = 0.0
+                blocked_reason = "no_price"
+            else:
+                target_qty = self._target_quantity(order, current, open_price, equity)
+                target_reason = policy.validate_target(current.amount, target_qty)
+                delta = target_qty - current.amount
+                side = "buy" if delta > 0 else "sell" if delta < 0 else ""
+                blocked_reason = target_reason
+                if side and not blocked_reason:
+                    blocked_reason = policy.block_reason(
+                        symbol=order.symbol,
+                        side=side,
+                        bar=bar,
+                        open_price=open_price,
+                        timestamp=timestamp,
+                    )
             if blocked_reason:
                 status = "rejected" if order.attempts >= 4 else "deferred"
                 event = self._order_event(order_id, order, timestamp, status, blocked_reason)
@@ -504,15 +536,7 @@ class MultiAssetSimulationBroker:
                 if status == "deferred":
                     deferred.append(replace(order, attempts=order.attempts + 1))
                 continue
-            position_key = _position_key(order.symbol, order.position_side)
-            current = self.portfolio.positions.get(position_key) or Position(
-                order.symbol,
-                position_side=_normalize_position_side(order.position_side),
-            )
-            equity = self.mark_to_market(portal, timestamp)
-            target_qty = self._target_quantity(order, current, open_price, equity)
             target_weights[position_key] = target_qty * open_price / equity if equity else 0.0
-            delta = target_qty - current.amount
             direction = 1 if delta > 0 else -1 if delta < 0 else 0
             if order.pending_direction and direction != order.pending_direction:
                 self.order_ledger.append(self._order_event(
@@ -535,8 +559,13 @@ class MultiAssetSimulationBroker:
                 continue
             fill_price = open_price * (1.0 + self.slippage if delta > 0 else 1.0 - self.slippage)
             requested_delta = delta
-            lot_size = self._lot_size(order.symbol, bar)
-            delta = self._round_to_lot(delta, lot_size)
+            lot_size = policy.lot_size(order.symbol, bar)
+            delta = policy.normalize_delta(
+                delta,
+                current_amount=current.amount,
+                target_amount=target_qty,
+                lot_size=lot_size,
+            )
             if abs(delta) < lot_size - 1e-12:
                 self.order_ledger.append(self._order_event(
                     order_id, order, timestamp, "rejected", "minimum_trade_unit",
@@ -554,6 +583,9 @@ class MultiAssetSimulationBroker:
                 equity=equity,
                 lot_size=lot_size,
                 position_key=position_key,
+                policy=policy,
+                symbol=order.symbol,
+                timestamp=timestamp,
             )
             if abs(feasible_delta) < lot_size - 1e-12:
                 self.order_ledger.append(self._order_event(
@@ -575,7 +607,12 @@ class MultiAssetSimulationBroker:
             )
             execution_status = "partial" if has_tradable_remainder else "filled"
             notional = abs(delta * fill_price)
-            fee = notional * self.commission
+            fee_breakdown = policy.fee_breakdown(
+                "buy" if delta > 0 else "sell",
+                notional,
+                pd.Timestamp(timestamp).date(),
+            )
+            fee = float(fee_breakdown["total"])
             projected_cash = self.portfolio.available_cash - delta * fill_price - fee
             old_amount = current.amount
             old_cost = current.avg_cost
@@ -583,6 +620,11 @@ class MultiAssetSimulationBroker:
             current.avg_cost = _next_average_cost(old_amount, current.avg_cost, delta, fill_price)
             current.last_price = fill_price
             self.portfolio.available_cash = projected_cash
+            policy.record_fill(
+                order.symbol,
+                "buy" if delta > 0 else "sell",
+                abs(delta),
+            )
             if abs(current.amount) <= 1e-12:
                 self.portfolio.positions.pop(position_key, None)
                 self._protections.pop(position_key, None)
@@ -618,6 +660,7 @@ class MultiAssetSimulationBroker:
                 "price": fill_price,
                 "notional": notional,
                 "commission": fee,
+                "feeBreakdown": fee_breakdown,
                 "balance": self.portfolio.total_value,
                 "reason": order.reason,
                 "signal_time": str(order.signal_time) if order.signal_time is not None else str(pd.Timestamp(timestamp)),
@@ -644,6 +687,7 @@ class MultiAssetSimulationBroker:
                 filled_quantity=abs(delta),
                 price=fill_price,
                 commission=fee,
+                fee_breakdown=fee_breakdown,
             ))
             batch_event_indexes.append(len(self.order_ledger) - 1)
             self._record_closed_trade(
@@ -680,29 +724,6 @@ class MultiAssetSimulationBroker:
         )
         return deferred
 
-    def _execution_block_reason(
-        self,
-        order: OrderIntent,
-        bar: Mapping[str, Any] | None,
-        open_price: float | None,
-    ) -> str:
-        if bar is None or open_price is None or not math.isfinite(open_price) or open_price <= 0:
-            return "no_price"
-        if _truthy(bar.get("suspended")) or _truthy(bar.get("is_suspended")):
-            return "suspended"
-        position_key = _position_key(order.symbol, order.position_side)
-        current = self.portfolio.positions.get(position_key) or Position(
-            order.symbol,
-            position_side=_normalize_position_side(order.position_side),
-        )
-        target = self._target_quantity(order, current, open_price, max(self.portfolio.total_value, 0.0))
-        delta = target - current.amount
-        if delta > 0 and (_truthy(bar.get("limit_up")) or _truthy(bar.get("is_limit_up"))):
-            return "limit_up"
-        if delta < 0 and (_truthy(bar.get("limit_down")) or _truthy(bar.get("is_limit_down"))):
-            return "limit_down"
-        return ""
-
     def _feasible_delta(
         self,
         *,
@@ -712,16 +733,29 @@ class MultiAssetSimulationBroker:
         equity: float,
         lot_size: float,
         position_key: str,
+        policy: MarketExecutionPolicy,
+        symbol: str,
+        timestamp: Any,
     ) -> tuple[float, str]:
         feasible = delta
         reason = ""
         if feasible > 0:
             borrowing_floor = -equity * (self.leverage - 1.0)
             spendable = max(0.0, self.portfolio.available_cash - borrowing_floor)
-            cash_cap = spendable / max(fill_price * (1.0 + self.commission), 1e-12)
-            if feasible > cash_cap:
-                feasible = cash_cap
+            affordable = policy.max_affordable_buy(
+                feasible,
+                price=fill_price,
+                cash=spendable,
+                lot_size=lot_size,
+                trade_date=pd.Timestamp(timestamp).date(),
+            )
+            if feasible > affordable + 1e-12:
+                feasible = affordable
                 reason = "insufficient_cash"
+        elif feasible < 0:
+            feasible, sell_reason = policy.cap_sell_quantity(symbol, feasible)
+            if sell_reason:
+                reason = sell_reason
         gross_limit = max(0.0, equity * self.leverage - self._gross_value(exclude=position_key))
         max_target_abs = gross_limit / max(fill_price, 1e-12)
         desired_target = current.amount + feasible
@@ -729,7 +763,12 @@ class MultiAssetSimulationBroker:
             capped_target = math.copysign(max_target_abs, desired_target)
             feasible = capped_target - current.amount
             reason = "position_limit"
-        return self._round_to_lot(feasible, lot_size), reason
+        return policy.normalize_delta(
+            feasible,
+            current_amount=current.amount,
+            target_amount=current.amount + feasible,
+            lot_size=lot_size,
+        ), reason
 
     @staticmethod
     def _lot_size(symbol: str, bar: Mapping[str, Any] | None) -> float:
@@ -766,6 +805,7 @@ class MultiAssetSimulationBroker:
         filled_quantity: float = 0.0,
         price: float = 0.0,
         commission: float = 0.0,
+        fee_breakdown: Mapping[str, float] | None = None,
     ) -> dict[str, Any]:
         return {
             "orderId": order_id,
@@ -783,6 +823,19 @@ class MultiAssetSimulationBroker:
             "filledQuantity": filled_quantity,
             "price": price,
             "commission": commission,
+            "feeBreakdown": dict(fee_breakdown or {}),
+        }
+
+    def _execution_policy(self, symbol: str) -> MarketExecutionPolicy:
+        if str(symbol).startswith("CNStock:"):
+            return self._cn_execution_policy
+        return self._default_execution_policy
+
+    def execution_assumptions(self) -> dict[str, Any]:
+        return {
+            "default": self._default_execution_policy.assumptions(),
+            "CNStock": self._cn_execution_policy.assumptions(),
+            "slippage": self.slippage,
         }
 
     def _record_rebalance(
@@ -1277,15 +1330,30 @@ class StrategyV2BacktestRunner:
             "logs": list(self.logs),
             "manifest": self.program.manifest.metadata(),
             "engine": {"version": self.VERSION},
+            "executionAssumptions": {
+                "marketRules": self.broker.execution_assumptions(),
+            },
             "audit": self._reconcile(),
         }
 
     def _attribution(self, initial: float) -> dict[str, Any]:
         commission_by_symbol: dict[str, float] = {}
+        fee_breakdown = {
+            "brokerCommission": 0.0,
+            "minimumCommissionAdjustment": 0.0,
+            "commission": 0.0,
+            "stampDuty": 0.0,
+            "transferFee": 0.0,
+            "total": 0.0,
+        }
         realized_by_symbol: dict[str, float] = {}
         for execution in self.broker.executions:
             symbol = str(execution.get("position_key") or execution.get("symbol") or "")
             commission_by_symbol[symbol] = commission_by_symbol.get(symbol, 0.0) + float(execution.get("commission") or 0.0)
+            for name in fee_breakdown:
+                fee_breakdown[name] += float(
+                    (execution.get("feeBreakdown") or {}).get(name) or 0.0
+                )
         for trade in self.broker.closed_trades:
             symbol = str(trade.get("symbol") or "")
             realized_by_symbol[symbol] = realized_by_symbol.get(symbol, 0.0) + float(trade.get("profit") or 0.0)
@@ -1315,6 +1383,7 @@ class StrategyV2BacktestRunner:
                 "commission": total_commission,
             }],
             "feeDrag": total_commission / initial if initial else 0.0,
+            "feeBreakdown": fee_breakdown,
             "orderStatus": statuses,
         }
 
@@ -1330,7 +1399,12 @@ class StrategyV2BacktestRunner:
             quantity = float(execution.get("quantity") or 0.0)
             notional = float(execution.get("notional") or 0.0)
             fee = float(execution.get("commission") or 0.0)
-            expected_fee = notional * self.broker.commission
+            policy = self.broker._execution_policy(str(execution.get("symbol") or ""))
+            expected_fee = policy.fee_breakdown(
+                side,
+                notional,
+                pd.Timestamp(execution.get("time")).date(),
+            )["total"]
             if abs(fee - expected_fee) > max(1e-8, abs(expected_fee) * 1e-9):
                 fee_mismatches.append(index)
             signed_quantity = quantity if side == "buy" else -quantity

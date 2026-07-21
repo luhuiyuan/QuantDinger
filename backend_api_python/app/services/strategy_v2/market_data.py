@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Optional
 
 import pandas as pd
 
 from app.data_sources import DataSourceFactory
 from app.services.backtest_cache import KlineCache
+from app.services.cn_market_history import (
+    AdjustmentMode,
+    CNMarketHistoryQueryService,
+    CNMarketHistoryQualityService,
+    load_cn_market_history_settings,
+    parse_cn_instrument,
+)
+from app.services.cn_market_history.query_service import AdjustmentCoverageError
+from app.services.cn_market_history.calendar import expected_a_share_sessions
+from app.services.market_schedule import latest_completed_session
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -35,6 +45,60 @@ PROVIDER_TIMEFRAMES = {
 }
 
 
+class CNHistoryCoverageError(ValueError):
+    code = "strategyV2.cnHistoryCoverageIncomplete"
+
+    def __init__(self, instruments: list[dict[str, Any]]):
+        self.details = {
+            "code": self.code,
+            "market": "CNStock",
+            "instruments": instruments,
+        }
+        super().__init__(self.code)
+
+    @classmethod
+    def for_instrument(
+        cls,
+        *,
+        instrument: str,
+        requested_start: date,
+        requested_end: date,
+        warmup_start: date | None,
+        warmup_end: date | None,
+        available_through: date,
+        adjustment_mode: AdjustmentMode,
+        issues: list[dict[str, Any]],
+    ) -> "CNHistoryCoverageError":
+        sync_start = min(
+            item for item in (warmup_start, requested_start) if item is not None
+        )
+        return cls(
+            [
+                {
+                    "instrument": instrument,
+                    "requestedRange": _date_range(requested_start, requested_end),
+                    "warmupRange": _date_range(warmup_start, warmup_end),
+                    "availableThrough": available_through.isoformat(),
+                    "adjustmentMode": adjustment_mode.value,
+                    "issues": issues,
+                    "suggestedAction": {
+                        "type": "admin_targeted_sync",
+                        "instrument": instrument,
+                        "startDate": sync_start.isoformat(),
+                        "endDate": requested_end.isoformat(),
+                    },
+                }
+            ]
+        )
+
+    @classmethod
+    def combine(cls, errors: list["CNHistoryCoverageError"]) -> "CNHistoryCoverageError":
+        instruments = []
+        for error in errors:
+            instruments.extend(error.details.get("instruments") or [])
+        return cls(instruments)
+
+
 def _normalize_utc_datetime(value: datetime) -> datetime:
     """Return an aware UTC datetime, interpreting naive inputs as UTC."""
     if value.tzinfo is None:
@@ -52,10 +116,24 @@ def load_strategy_frame(
     market_type: Optional[str] = None,
     exchange_id: Optional[str] = None,
 ) -> pd.DataFrame:
+    normalized_timeframe = str(timeframe or "1d").strip().lower()
+    if (
+        str(market or "").strip() == "CNStock"
+        and normalized_timeframe == "1d"
+        and load_cn_market_history_settings().enabled
+    ):
+        return load_cn_strategy_frame(
+            market,
+            symbol,
+            normalized_timeframe,
+            start_date,
+            end_date,
+            requested_start=start_date,
+            warmup_bars=0,
+        )
     start_utc = _normalize_utc_datetime(start_date)
     end_utc = _normalize_utc_datetime(end_date)
     total_seconds = max(1.0, (end_utc - start_utc).total_seconds())
-    normalized_timeframe = str(timeframe or "1d").strip().lower()
     timeframe_seconds = TIMEFRAME_SECONDS.get(normalized_timeframe, 86400)
     provider_timeframe = PROVIDER_TIMEFRAMES.get(normalized_timeframe, normalized_timeframe)
     limit = int(math.ceil(total_seconds / timeframe_seconds * 1.15) + 200)
@@ -129,3 +207,257 @@ def load_strategy_frame(
     if not frame.empty:
         _cache.put(cache_key, frame, timeframe)
     return frame.copy()
+
+
+def load_cn_strategy_frame(
+    market: str,
+    symbol: str,
+    timeframe: str,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    requested_start: datetime,
+    warmup_bars: int,
+    market_type: Optional[str] = None,
+    exchange_id: Optional[str] = None,
+    adjustment_mode: AdjustmentMode = AdjustmentMode.RAW,
+    provider: str = "easy_tdx",
+    quality_service: CNMarketHistoryQualityService | None = None,
+    query_service: CNMarketHistoryQueryService | None = None,
+    completed_through: date | None = None,
+) -> pd.DataFrame:
+    del market_type, exchange_id
+    if str(market or "").strip() != "CNStock" or str(timeframe).lower() != "1d":
+        raise ValueError("strategyV2.cnHistoryDailyOnly")
+
+    instrument = parse_cn_instrument(f"CNStock:{symbol}").canonical
+    fetch_start = start_date.date()
+    requested_start_date = requested_start.date()
+    requested_end = end_date.date()
+    available_through = completed_through or latest_completed_session("CNStock").date()
+    effective_end = min(requested_end, available_through)
+    warmup_end = requested_start_date - timedelta(days=1) if warmup_bars > 0 else None
+    warmup_start = fetch_start if warmup_end is not None else None
+
+    if effective_end < requested_start_date:
+        raise CNHistoryCoverageError.for_instrument(
+            instrument=instrument,
+            requested_start=requested_start_date,
+            requested_end=requested_end,
+            warmup_start=warmup_start,
+            warmup_end=warmup_end,
+            available_through=available_through,
+            adjustment_mode=adjustment_mode,
+            issues=[
+                {
+                    "scope": "requested",
+                    "type": "unfinished_session",
+                    "startDate": requested_start_date.isoformat(),
+                    "endDate": requested_end.isoformat(),
+                }
+            ],
+        )
+
+    quality = quality_service or CNMarketHistoryQualityService()
+    issues: list[dict[str, Any]] = []
+    coverage: dict[str, Any] = {}
+    if warmup_start is not None and warmup_end is not None and warmup_start <= warmup_end:
+        warmup = quality.assess(
+            instrument, warmup_start, warmup_end, provider=provider, persist=False
+        )
+        coverage["warmup"] = _coverage_metadata(warmup.report)
+        issues.extend(_assessment_issues("warmup", warmup))
+        if warmup.report.actual_sessions < warmup_bars:
+            issues.append(
+                {
+                    "scope": "warmup",
+                    "type": "warmup_bars_incomplete",
+                    "requiredBars": int(warmup_bars),
+                    "availableBars": int(warmup.report.actual_sessions),
+                    "startDate": warmup_start.isoformat(),
+                    "endDate": warmup_end.isoformat(),
+                }
+            )
+
+    requested = quality.assess(
+        instrument,
+        requested_start_date,
+        effective_end,
+        provider=provider,
+        persist=False,
+    )
+    coverage["requested"] = _coverage_metadata(requested.report)
+    issues.extend(_assessment_issues("requested", requested))
+    if issues:
+        error = CNHistoryCoverageError.for_instrument(
+            instrument=instrument,
+            requested_start=requested_start_date,
+            requested_end=requested_end,
+            warmup_start=warmup_start,
+            warmup_end=warmup_end,
+            available_through=available_through,
+            adjustment_mode=adjustment_mode,
+            issues=issues,
+        )
+        error.details["instruments"][0]["coverage"] = coverage
+        raise error
+
+    query = query_service or CNMarketHistoryQueryService()
+    prior_sessions = expected_a_share_sessions(
+        requested_start_date - timedelta(days=40),
+        requested_start_date - timedelta(days=1),
+    )
+    query_start = min(fetch_start, prior_sessions[-1]) if prior_sessions else fetch_start
+    try:
+        result = query.load(
+            instrument,
+            query_start,
+            effective_end,
+            mode=adjustment_mode,
+            provider=provider,
+        )
+    except AdjustmentCoverageError as exc:
+        raise CNHistoryCoverageError.for_instrument(
+            instrument=instrument,
+            requested_start=requested_start_date,
+            requested_end=requested_end,
+            warmup_start=warmup_start,
+            warmup_end=warmup_end,
+            available_through=available_through,
+            adjustment_mode=adjustment_mode,
+            issues=[
+                {
+                    "scope": "adjustment",
+                    "type": "adjustment_factor_incomplete",
+                    "startDate": query_start.isoformat(),
+                    "endDate": effective_end.isoformat(),
+                }
+            ],
+        ) from exc
+
+    frame = result.frame.copy()
+    if frame.empty:
+        raise CNHistoryCoverageError.for_instrument(
+            instrument=instrument,
+            requested_start=requested_start_date,
+            requested_end=requested_end,
+            warmup_start=warmup_start,
+            warmup_end=warmup_end,
+            available_through=available_through,
+            adjustment_mode=adjustment_mode,
+            issues=[
+                {
+                    "scope": "requested",
+                    "type": "local_history_empty",
+                    "startDate": fetch_start.isoformat(),
+                    "endDate": effective_end.isoformat(),
+                }
+            ],
+        )
+    frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index)).tz_localize(None).normalize()
+    frame = frame[~frame.index.duplicated(keep="last")].sort_index()
+    requested_frame = frame[
+        (frame.index.date >= requested_start_date) & (frame.index.date <= effective_end)
+    ]
+    missing_rule_dates = [
+        pd.Timestamp(timestamp).date()
+        for timestamp, row in requested_frame.iterrows()
+        if not bool(row.get("classification_confirmed"))
+        or not _positive_number(row.get("previous_close"))
+    ]
+    if missing_rule_dates:
+        raise CNHistoryCoverageError.for_instrument(
+            instrument=instrument,
+            requested_start=requested_start_date,
+            requested_end=requested_end,
+            warmup_start=warmup_start,
+            warmup_end=warmup_end,
+            available_through=available_through,
+            adjustment_mode=adjustment_mode,
+            issues=[
+                {
+                    "scope": "market_rules",
+                    "type": "market_rule_data_incomplete",
+                    "startDate": min(missing_rule_dates).isoformat(),
+                    "endDate": max(missing_rule_dates).isoformat(),
+                    "dates": [item.isoformat() for item in missing_rule_dates],
+                }
+            ],
+        )
+    frame.attrs["cn_history_provenance"] = {
+        **result.provenance,
+        "coverage": coverage,
+        "requestedStart": requested_start_date.isoformat(),
+        "requestedEnd": requested_end.isoformat(),
+        "availableThrough": available_through.isoformat(),
+        "truncatedUnfinishedSession": requested_end > effective_end,
+    }
+    return frame
+
+
+def _assessment_issues(scope: str, assessment: Any) -> list[dict[str, Any]]:
+    issues = []
+    for gap in assessment.report.gaps:
+        issues.append(
+            {
+                "scope": scope,
+                "type": gap.reason,
+                "startDate": gap.start_date.isoformat(),
+                "endDate": gap.end_date.isoformat(),
+                "dates": [item.isoformat() for item in gap.dates],
+            }
+        )
+    for finding in assessment.findings:
+        if str(finding.severity.value) != "blocking":
+            continue
+        issues.append(
+            {
+                "scope": scope,
+                "type": finding.finding_type,
+                "startDate": finding.start_date.isoformat(),
+                "endDate": finding.end_date.isoformat(),
+                "evidence": dict(finding.evidence),
+            }
+        )
+    if not assessment.report.complete and not issues:
+        issues.append(
+            {
+                "scope": scope,
+                "type": "coverage_incomplete",
+                "startDate": assessment.report.requested_start.isoformat(),
+                "endDate": assessment.report.requested_end.isoformat(),
+            }
+        )
+    return issues
+
+
+def _coverage_metadata(report: Any) -> dict[str, Any]:
+    return {
+        "requestedStart": report.requested_start.isoformat(),
+        "requestedEnd": report.requested_end.isoformat(),
+        "firstTradeDate": report.first_trade_date.isoformat()
+        if report.first_trade_date
+        else None,
+        "lastTradeDate": report.last_trade_date.isoformat()
+        if report.last_trade_date
+        else None,
+        "expectedSessions": int(report.expected_sessions),
+        "actualSessions": int(report.actual_sessions),
+        "blockingFindings": int(report.blocking_findings),
+        "complete": bool(report.complete),
+        "dataVersion": report.data_version,
+    }
+
+
+def _date_range(start: date | None, end: date | None) -> dict[str, str] | None:
+    if start is None or end is None:
+        return None
+    return {"startDate": start.isoformat(), "endDate": end.isoformat()}
+
+
+def _positive_number(value: Any) -> bool:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(parsed) and parsed > 0

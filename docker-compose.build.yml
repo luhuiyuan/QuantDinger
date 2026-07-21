@@ -32,6 +32,9 @@ services:
 
   backend:
     <<: *host-postgres-runtime
+    build:
+      args:
+        INSTALL_LOCAL_EASY_TDX: ${INSTALL_LOCAL_EASY_TDX:-1}
     environment:
       DATABASE_URL: !reset null
     depends_on:

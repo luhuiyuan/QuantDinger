@@ -82,6 +82,7 @@ _tmp_*.txt
 _i18n_*.txt
 backend_api_python/logs/
 backend_api_python/dist/
+backend_api_python/vendor/*.whl
 
 # MCP server build artifacts (PyPI release output, never committed)
 mcp_server/dist/
