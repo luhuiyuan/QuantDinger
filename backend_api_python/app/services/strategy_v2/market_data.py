@@ -18,7 +18,7 @@ from app.services.cn_market_history import (
     parse_cn_instrument,
 )
 from app.services.cn_market_history.query_service import AdjustmentCoverageError
-from app.services.cn_market_history.calendar import expected_a_share_sessions
+from app.services.cn_market_history.calendar import previous_a_share_sessions
 from app.services.market_schedule import latest_completed_session
 from app.utils.logger import get_logger
 
@@ -236,8 +236,11 @@ def load_cn_strategy_frame(
     requested_end = end_date.date()
     available_through = completed_through or latest_completed_session("CNStock").date()
     effective_end = min(requested_end, available_through)
-    warmup_end = requested_start_date - timedelta(days=1) if warmup_bars > 0 else None
-    warmup_start = fetch_start if warmup_end is not None else None
+    warmup_sessions = previous_a_share_sessions(
+        requested_start_date, warmup_bars
+    )
+    warmup_start = warmup_sessions[0] if warmup_sessions else None
+    warmup_end = warmup_sessions[-1] if warmup_sessions else None
 
     if effective_end < requested_start_date:
         raise CNHistoryCoverageError.for_instrument(
@@ -303,11 +306,7 @@ def load_cn_strategy_frame(
         raise error
 
     query = query_service or CNMarketHistoryQueryService()
-    prior_sessions = expected_a_share_sessions(
-        requested_start_date - timedelta(days=40),
-        requested_start_date - timedelta(days=1),
-    )
-    query_start = min(fetch_start, prior_sessions[-1]) if prior_sessions else fetch_start
+    query_start = min(fetch_start, warmup_start) if warmup_start else fetch_start
     try:
         result = query.load(
             instrument,

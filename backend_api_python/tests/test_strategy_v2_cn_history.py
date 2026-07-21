@@ -122,6 +122,54 @@ def test_cn_daily_loader_preserves_shanghai_session_dates_and_provenance():
     assert query.calls[0][3] is AdjustmentMode.RAW
 
 
+def test_cn_daily_loader_uses_previous_trading_session_for_monday_warmup():
+    quality = _QualityService(
+        [
+            _assessment(date(2025, 7, 18), date(2025, 7, 18)),
+            _assessment(date(2025, 7, 21), date(2025, 7, 22)),
+        ]
+    )
+
+    load_cn_strategy_frame(
+        "CNStock",
+        "600519.SH",
+        "1d",
+        datetime(2025, 7, 19),
+        datetime(2025, 7, 22, 23, 59),
+        requested_start=datetime(2025, 7, 21),
+        warmup_bars=1,
+        quality_service=quality,
+        query_service=_QueryService(_query_result()),
+        completed_through=date(2025, 7, 22),
+    )
+
+    assert quality.calls[0][1:3] == (date(2025, 7, 18), date(2025, 7, 18))
+
+
+def test_cn_daily_loader_uses_sessions_before_exchange_holiday_for_warmup():
+    quality = _QualityService(
+        [
+            _assessment(date(2025, 9, 29), date(2025, 9, 30)),
+            _assessment(date(2025, 10, 9), date(2025, 10, 10)),
+        ]
+    )
+
+    load_cn_strategy_frame(
+        "CNStock",
+        "600519.SH",
+        "1d",
+        datetime(2025, 10, 6),
+        datetime(2025, 10, 10, 23, 59),
+        requested_start=datetime(2025, 10, 9),
+        warmup_bars=2,
+        quality_service=quality,
+        query_service=_QueryService(_query_result()),
+        completed_through=date(2025, 10, 10),
+    )
+
+    assert quality.calls[0][1:3] == (date(2025, 9, 29), date(2025, 9, 30))
+
+
 def test_cn_daily_loader_reports_separate_warmup_coverage_error():
     gap = CoverageGap(
         start_date=date(2026, 7, 15),
