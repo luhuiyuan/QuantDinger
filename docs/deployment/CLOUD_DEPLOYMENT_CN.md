@@ -4,6 +4,11 @@
 
 首次安装时如果遇到 Docker 拉镜像或 Postgres 启动问题，也请参考 [安装排错指南](INSTALL_TROUBLESHOOTING.md)。
 
+> 需要复现本项目当前低资源开发服务器的“宿主机 PostgreSQL + 本地后端/Web 源码构建
+> + 本地 easy_tdx wheel + 不启动 Mobile/H5”拓扑时，请使用
+> [当前环境本地源码 Docker 部署指南](LOCAL_SOURCE_DOCKER_DEPLOYMENT_CN.md)，不要直接套用
+> 本文的通用源码启动命令。
+
 ## 推荐架构
 
 推荐使用一个公网域名加宿主机 Nginx 反向代理：

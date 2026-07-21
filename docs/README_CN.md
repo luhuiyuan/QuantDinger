@@ -168,6 +168,11 @@ irm https://raw.githubusercontent.com/OpenByteInc/QuantDinger/main/install.ps1 |
 
 ### 方案 B：从源码启动
 
+> 本项目当前低资源开发服务器采用“宿主机 PostgreSQL + 本地后端/Web 源码构建 +
+> 本地 easy_tdx wheel + 不启动 Mobile/H5”的多仓库模式。完整首装、升级、A 股回填、
+> 验收、备份和回滚步骤见
+> [当前环境本地源码 Docker 部署指南](deployment/LOCAL_SOURCE_DOCKER_DEPLOYMENT_CN.md)。
+
 ```bash
 git clone https://github.com/OpenByteInc/QuantDinger.git
 cd QuantDinger
