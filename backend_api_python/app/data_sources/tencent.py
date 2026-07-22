@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+import re
 
 from app.data_sources.rate_limiter import get_request_headers, retry_with_backoff, get_tencent_limiter
 from app.utils.logger import get_logger
@@ -107,6 +108,31 @@ def fetch_quote(code: str, timeout: int = 8) -> Optional[List[str]]:
     return parts if len(parts) > 5 else None
 
 
+@retry_with_backoff(max_attempts=3, base_delay=1.0, max_delay=6.0, exceptions=(Exception,))
+def fetch_quote_map(codes: List[str], timeout: int = 8) -> Dict[str, List[str]]:
+    """Fetch a bounded batch of Tencent quotes in one request."""
+    normalized = [_lower_code(code) for code in codes if str(code or '').strip()]
+    if not normalized:
+        return {}
+    assert_fd_available("Tencent quote batch")
+    limiter = get_tencent_limiter()
+    limiter.wait()
+    url = f"https://qt.gtimg.cn/q={','.join(normalized)}"
+    with requests.get(url, headers=get_request_headers(referer="https://qt.gtimg.cn/"), timeout=timeout) as resp:
+        resp.raise_for_status()
+        try:
+            resp.encoding = "gbk"
+        except Exception:
+            pass
+        body = resp.text or ""
+    result: Dict[str, List[str]] = {}
+    for match in re.finditer(r'v_([a-z0-9]+)="([^"]*)"', body, re.IGNORECASE):
+        values = match.group(2).split("~")
+        if len(values) > 5:
+            result[match.group(1).lower()] = values
+    return result
+
+
 def parse_quote_to_ticker(parts: List[str]) -> Dict[str, Any]:
     """
     Best-effort conversion to a unified ticker dict.
@@ -144,6 +170,32 @@ def parse_quote_to_ticker(parts: List[str]) -> Dict[str, Any]:
         "open": open_ or last_,
         "previousClose": prev,
         "raw": parts,
+    }
+
+
+def parse_quote_to_market_row(parts: List[str]) -> Dict[str, Any]:
+    """Convert Tencent's batch row into the fields used by CN market pages."""
+    ticker = parse_quote_to_ticker(parts)
+    def _f(index: int) -> Optional[float]:
+        try:
+            value = float(parts[index])
+            return value if value == value else None
+        except (IndexError, TypeError, ValueError):
+            return None
+    volume = _f(6)
+    amount = _f(37)
+    return {
+        "code": ticker.get("symbol", ""),
+        "name": ticker.get("name", ""),
+        "latest": ticker.get("last"),
+        "change": ticker.get("change"),
+        "changePercent": ticker.get("changePercent"),
+        "open": ticker.get("open"),
+        "high": ticker.get("high"),
+        "low": ticker.get("low"),
+        "previousClose": ticker.get("previousClose"),
+        "volume": volume,
+        "amount": amount * 10000 if amount is not None else None,
     }
 
 
@@ -239,4 +291,3 @@ def fetch_kline(code: str, period: str, count: int = 300, adj: str = "qfq", time
         if isinstance(v, list) and v and str(k).lower().endswith(str(period).lower()):
             return v
     return []
-

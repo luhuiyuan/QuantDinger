@@ -438,6 +438,56 @@ docker compose logs --tail=100 trading-worker
 4. 检查后台任务与系统设置页面；
 5. 当前阶段不要验收 Mobile/H5。
 
+### 12.3 A 股行情页面验收
+
+登录后从左侧菜单进入“**A股行情**”，或直接访问：
+
+```text
+http://<服务器地址>/quantdinger/#/cn-stocks
+```
+
+按以下顺序验收：
+
+1. 页面显示上证指数、深证成指、创业板指；单个指数不可用时，其他指数仍应保留，失败项不得显示伪造的零值；
+2. 市场统计显示沪深成交额、上涨、下跌、平盘、涨停和跌停家数，并显示数据时间和来源；
+3. 使用股票代码或名称搜索，分别选择沪市、深市以及上涨、下跌、平盘筛选，确认分页总数会随筛选条件变化；
+4. 确认 A 股使用红色表示上涨、绿色表示下跌，同时保留正负号或文字，不能只依赖颜色；
+5. 点击股票名称进入 `/cn-stocks/<代码.交易所>`，确认报价摘要、日 K 线、成交量以及 MA、MACD、RSI、KDJ、BOLL、ATR 指标可见；
+6. 核对个股详情中的报价时间、最后交易日、供应商、数据版本、复权方式和历史数据等级；
+7. 在列表或详情加入/移出自选，返回另一页面后状态应一致；
+8. 点击“进入回测”，回测中心应显示从详情带入的 `CNStock:<code>.<exchange>` 上下文，但不得自动执行回测；
+9. 切换到其他浏览器标签页超过 30 秒后返回，确认页面恢复刷新；离开页面后不应继续产生定时行情请求。
+
+行情列表和市场概览使用服务端共享快照。默认环境变量为：
+
+```dotenv
+CN_MARKET_SNAPSHOT_TTL_SEC=30
+CN_MARKET_SNAPSHOT_STALE_TTL_SEC=900
+CN_MARKET_SNAPSHOT_TIMEOUT_SEC=12
+```
+
+当上游临时失败但存在允许使用的缓存时，页面必须明确显示“缓存行情”和最后成功时间；没有任何可用缓存时显示可重试错误，不能把全市场显示为零。
+
+个股日线遵循以下边界：
+
+- 本地 PostgreSQL 历史覆盖完整且质量通过时，页面标记为“本地权威历史”，并可显示 `backtestEligible=true`；
+- 本地覆盖不足时可以展示现有行情链路的日线，但必须标记为“展示级历史”和 `backtestEligible=false`；
+- 展示级日线不会写入权威历史表，也不会绕过回测中心的覆盖门禁；
+- 管理员仍需在“设置 → 市场数据”中执行定向同步，普通用户打开详情不会隐式创建同步任务。
+
+如需直接检查新增 API，可使用已登录用户的临时 JWT（不要把令牌写入文档、日志或 Git）：
+
+```bash
+curl -H "Authorization: Bearer <临时JWT>" \
+  http://127.0.0.1:5000/api/market/cn/overview
+curl -H "Authorization: Bearer <临时JWT>" \
+  "http://127.0.0.1:5000/api/market/cn/stocks?page=1&pageSize=20&exchange=SH"
+curl -H "Authorization: Bearer <临时JWT>" \
+  http://127.0.0.1:5000/api/market/cn/stocks/600519.SH
+curl -H "Authorization: Bearer <临时JWT>" \
+  "http://127.0.0.1:5000/api/market/cn/stocks/600519.SH/history?limit=260&adjustment=forward"
+```
+
 ## 13. A 股历史数据初始化与验收
 
 ### 13.1 批准口径

@@ -112,6 +112,14 @@ def find_market_symbol(
     if not market or not symbol:
         return None
 
+    lookup_symbol = symbol
+    if market == "CNStock":
+        try:
+            from app.services.cn_market_history.instruments import parse_cn_instrument
+            lookup_symbol = parse_cn_instrument(symbol).code
+        except Exception:
+            return None
+
     if market == "Crypto":
         exchange_id = normalize_exchange_id(exchange_id) or default_crypto_exchange_id()
         if exchange_id not in SUPPORTED_CRYPTO_EXCHANGE_IDS:
@@ -120,20 +128,20 @@ def find_market_symbol(
         rows = _search_cached_crypto_symbols(symbol, 20, exchange_id, market_type)
     elif market in {"USStock", "CNStock", "HKStock"}:
         local = dedupe_symbol_results(
-            seed_search_symbols(market=market, keyword=symbol, limit=10),
+            seed_search_symbols(market=market, keyword=lookup_symbol, limit=10),
             10,
         )
-        exact = _first_exact_match(local, market, symbol)
+        exact = _first_exact_match(local, market, lookup_symbol)
         if exact:
             return exact
-        rows = _search_external_symbols(market, symbol, 10, set())
+        rows = _search_external_symbols(market, lookup_symbol, 10, set())
     else:
         rows = dedupe_symbol_results(
             seed_search_symbols(market=market, keyword=symbol, limit=10),
             10,
         )
 
-    return _first_exact_match(rows, market, symbol)
+    return _first_exact_match(rows, market, lookup_symbol)
 
 
 def find_available_crypto_symbol(
@@ -481,4 +489,3 @@ def _search_external_symbols(market: str, keyword: str, limit: int, existing: se
     if rows:
         _market_cache.set(cache_key, rows, SYMBOL_SEARCH_CACHE_TTL_SEC)
     return [r for r in rows if r.get("symbol") not in existing][:limit]
-

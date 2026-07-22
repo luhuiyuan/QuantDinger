@@ -15,6 +15,18 @@ from app.services.market.symbol_search import (
     get_hot_symbols as search_hot_symbols,
     search_market_symbols,
 )
+from app.services.market.cn_stock_market import (
+    CNMarketSnapshotService,
+    CNMarketSnapshotUnavailable,
+    CNStockDetailService,
+    build_catalog_page,
+    build_market_breadth,
+    fetch_core_indices,
+    fetch_cn_quote_rows,
+    load_cn_symbol,
+    load_cn_symbol_catalog,
+    load_cn_watchlist_symbols,
+)
 from app.services.market.watchlist import (
     add_watchlist_item,
     get_user_watchlist_pairs,
@@ -30,6 +42,8 @@ from app.utils.market_visibility import is_market_visible, filter_market_items
 logger = get_logger(__name__)
 
 market_blp = Blueprint('market', __name__)
+_cn_snapshot_service = CNMarketSnapshotService()
+_cn_detail_service = CNStockDetailService(snapshot_service=_cn_snapshot_service)
 
 def _ensure_watchlist_table():
     # Table is created by db schema init; this is only a sanity hook.
@@ -356,8 +370,155 @@ def get_price():
         }), 500
 
 
+@market_blp.route('/cn/overview', methods=['GET'])
+@login_required
+def get_cn_market_overview():
+    """Return core indices and breadth derived from one Shanghai/Shenzhen snapshot."""
+    try:
+        try:
+            snapshot = _cn_snapshot_service.get_snapshot()
+        except CNMarketSnapshotUnavailable as exc:
+            snapshot = {
+                'rows': [], 'asOf': None, 'source': 'unavailable',
+                'freshness': 'unavailable', 'status': 'unavailable', 'warning': str(exc),
+            }
+        breadth = build_market_breadth(snapshot.get('rows') or [])
+        breadth['status'] = snapshot.get('status')
+        breadth['warning'] = snapshot.get('warning')
+        return jsonify({
+            'code': 1,
+            'msg': 'success',
+            'data': {
+                'indices': fetch_core_indices(),
+                'breadth': breadth,
+                'snapshot': {
+                    'asOf': snapshot.get('asOf'),
+                    'source': snapshot.get('source'),
+                    'freshness': snapshot.get('freshness'),
+                    'status': snapshot.get('status'),
+                    'warning': snapshot.get('warning'),
+                },
+            },
+        })
+    except Exception as exc:
+        return jsonify({'code': 0, 'msg': 'cn_market.overview_unavailable', 'data': {'warning': str(exc)}}), 503
+
+
+@market_blp.route('/cn/stocks', methods=['GET'])
+@login_required
+def get_cn_stock_catalog():
+    """Search, filter and paginate the Shanghai/Shenzhen A-share catalog."""
+    try:
+        page = int(request.args.get('page') or 1)
+        page_size = int(request.args.get('pageSize') or request.args.get('page_size') or 20)
+    except (TypeError, ValueError):
+        return jsonify({'code': 0, 'msg': 'cn_market.invalid_pagination', 'data': None}), 400
+    exchange = (request.args.get('exchange') or '').strip().upper()
+    change_state = (request.args.get('changeState') or request.args.get('change_state') or '').strip().lower()
+    keyword = (request.args.get('keyword') or '').strip()
+    if page < 1 or page_size < 1 or page_size > 100:
+        return jsonify({'code': 0, 'msg': 'cn_market.invalid_pagination', 'data': None}), 400
+    if exchange not in {'', 'SH', 'SZ'}:
+        return jsonify({'code': 0, 'msg': 'cn_market.invalid_exchange', 'data': None}), 400
+    if change_state not in {'', 'up', 'down', 'flat'}:
+        return jsonify({'code': 0, 'msg': 'cn_market.invalid_change_state', 'data': None}), 400
+    try:
+        try:
+            snapshot = _cn_snapshot_service.get_snapshot()
+        except CNMarketSnapshotUnavailable as exc:
+            snapshot = {
+                'rows': [], 'asOf': None, 'source': 'unavailable',
+                'freshness': 'unavailable', 'status': 'unavailable', 'warning': str(exc),
+            }
+        catalog = load_cn_symbol_catalog(keyword=keyword, exchange=exchange)
+        if not snapshot.get('rows'):
+            if change_state:
+                quote_symbols = [item['symbol'] for item in catalog[:100]]
+            else:
+                start = (page - 1) * page_size
+                quote_symbols = [item['symbol'] for item in catalog[start:start + page_size]]
+            snapshot['rows'] = fetch_cn_quote_rows(
+                quote_symbols
+            )
+            snapshot['source'] = 'tencent-batch'
+            snapshot['asOf'] = snapshot['rows'][0].get('asOf') if snapshot['rows'] else None
+            snapshot['freshness'] = 'partial' if snapshot['rows'] else 'unavailable'
+            snapshot['status'] = 'degraded' if snapshot['rows'] else 'unavailable'
+            snapshot['partial'] = True
+            snapshot['quotedCount'] = len(snapshot['rows'])
+            snapshot['catalogCount'] = len(catalog)
+            snapshot['warning'] = snapshot.get('warning') or 'Full-market snapshot unavailable; current catalog rows use Tencent batch quotes.'
+        else:
+            snapshot['partial'] = False
+        data = build_catalog_page(
+            catalog,
+            snapshot,
+            page=page,
+            page_size=page_size,
+            change_state=change_state,
+            watchlist_loader=lambda symbols: load_cn_watchlist_symbols(g.user_id, symbols),
+        )
+        data['query'] = {
+            'keyword': keyword,
+            'exchange': exchange,
+            'changeState': change_state,
+        }
+        data['partial'] = bool(snapshot.get('partial'))
+        data['quotedCount'] = snapshot.get('quotedCount', len(snapshot.get('rows') or []))
+        data['catalogCount'] = snapshot.get('catalogCount', len(catalog))
+        if change_state and data['partial']:
+            data['query']['changeStateComplete'] = False
+        return jsonify({'code': 1, 'msg': 'success', 'data': data})
+    except Exception as exc:
+        return jsonify({'code': 0, 'msg': 'cn_market.catalog_unavailable', 'data': {'warning': str(exc)}}), 503
+
+
+@market_blp.route('/cn/stocks/<string:symbol>', methods=['GET'])
+@login_required
+def get_cn_stock_detail(symbol: str):
+    identity = load_cn_symbol(symbol)
+    if not identity:
+        return jsonify({'code': 0, 'msg': 'cn_market.symbol_not_found', 'data': None}), 404
+    try:
+        watched = load_cn_watchlist_symbols(g.user_id, [identity['symbol'], identity['code']])
+        data = _cn_detail_service.detail(
+            identity,
+            watchlisted=identity['symbol'] in watched or identity['code'] in watched,
+        )
+        return jsonify({'code': 1, 'msg': 'success', 'data': data})
+    except CNMarketSnapshotUnavailable as exc:
+        return jsonify({
+            'code': 0,
+            'msg': exc.code,
+            'data': {'identity': identity, 'status': 'unavailable', 'warning': str(exc)},
+        }), 503
+    except Exception as exc:
+        logger.error("CN stock detail failed: %s", exc)
+        return jsonify({
+            'code': 0,
+            'msg': 'cn_market.detail_unavailable',
+            'data': {'identity': identity, 'status': 'unavailable', 'warning': str(exc)},
+        }), 503
+
+
+@market_blp.route('/cn/stocks/<string:symbol>/history', methods=['GET'])
+@login_required
+def get_cn_stock_history(symbol: str):
+    identity = load_cn_symbol(symbol)
+    if not identity:
+        return jsonify({'code': 0, 'msg': 'cn_market.symbol_not_found', 'data': None}), 404
+    try:
+        limit = int(request.args.get('limit') or 260)
+    except (TypeError, ValueError):
+        return jsonify({'code': 0, 'msg': 'cn_market.invalid_history_limit', 'data': None}), 400
+    adjustment = (request.args.get('adjustment') or 'forward').strip().lower()
+    if limit < 40 or limit > 1000:
+        return jsonify({'code': 0, 'msg': 'cn_market.invalid_history_limit', 'data': None}), 400
+    if adjustment not in {'raw', 'forward', 'backward'}:
+        return jsonify({'code': 0, 'msg': 'cn_market.invalid_adjustment', 'data': None}), 400
+    data = _cn_detail_service.history(identity, limit=limit, adjustment=adjustment)
+    return jsonify({'code': 1, 'msg': 'success', 'data': data})
+
+
 # openapi-compat: legacy import name
 market_bp = market_blp
-
-
-

@@ -149,9 +149,83 @@ def calculate_indicators(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
         high_20 = max(highs[-20:])
         low_20 = min(lows[-20:])
         indicators["price_position"] = round((current_price - low_20) / (high_20 - low_20) * 100, 1) if high_20 > low_20 else 50.0
+    if len(klines) >= 9:
+        indicators["kdj"] = calc_kdj(klines, period=9)
     indicators["trend"] = ma_trend
     indicators["current_price"] = round(current_price, 6)
     return indicators
+
+
+def calculate_indicator_package(klines: List[Dict[str, Any]], *, data_version: str = "") -> Dict[str, Any]:
+    """Return indicators plus explicit availability/provenance for UI display."""
+    rows = list(klines or [])
+    values = calculate_indicators(rows)
+    required = {"ma": 20, "macd": 34, "rsi": 15, "kdj": 9, "boll": 20, "atr": 14}
+    keys = {
+        "ma": "moving_averages",
+        "macd": "macd",
+        "rsi": "rsi",
+        "kdj": "kdj",
+        "boll": "bollinger",
+        "atr": "volatility",
+    }
+    availability = {}
+    for name, required_bars in required.items():
+        available = len(rows) >= required_bars and keys[name] in values
+        availability[name] = {
+            "available": available,
+            "requiredBars": required_bars,
+            "actualBars": len(rows),
+            "reason": None if available else "insufficient_history",
+        }
+    last = rows[-1] if rows else {}
+    return {
+        "values": values,
+        "availability": availability,
+        "parameters": {
+            "ma": [5, 10, 20],
+            "macd": [12, 26, 9],
+            "rsi": [14],
+            "kdj": [9, 3, 3],
+            "boll": [20, 2],
+            "atr": [14],
+        },
+        "calculatedThrough": last.get("date") or last.get("time"),
+        "dataVersion": data_version,
+    }
+
+
+def calc_kdj(klines: List[Dict[str, Any]], period: int = 9) -> Dict[str, float | str]:
+    """Calculate the latest Chinese-market KDJ value using 1/3 smoothing."""
+    if len(klines) < period:
+        return {}
+    k_value = 50.0
+    d_value = 50.0
+    for index in range(period - 1, len(klines)):
+        window = klines[index - period + 1:index + 1]
+        highest = max(float(row.get("high", 0)) for row in window)
+        lowest = min(float(row.get("low", 0)) for row in window)
+        close = float(klines[index].get("close", 0))
+        rsv = (close - lowest) / (highest - lowest) * 100 if highest > lowest else 50.0
+        k_value = (2.0 * k_value + rsv) / 3.0
+        d_value = (2.0 * d_value + k_value) / 3.0
+    j_value = 3.0 * k_value - 2.0 * d_value
+    if j_value > 80:
+        signal = "overbought"
+    elif j_value < 20:
+        signal = "oversold"
+    elif k_value > d_value:
+        signal = "bullish"
+    elif k_value < d_value:
+        signal = "bearish"
+    else:
+        signal = "neutral"
+    return {
+        "k": round(k_value, 2),
+        "d": round(d_value, 2),
+        "j": round(j_value, 2),
+        "signal": signal,
+    }
 
 
 def calc_rsi(closes: List[float], period: int = 14) -> float:
