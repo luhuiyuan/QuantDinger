@@ -14,6 +14,7 @@ from app.services.market.cn_stock_market import (
 )
 from app.services.market.technical_indicators import calculate_indicator_package
 from app.services.market import symbol_search
+from app.data_sources.tencent import parse_quote_to_market_row
 
 
 class _Cache:
@@ -49,6 +50,15 @@ def test_snapshot_row_normalizes_shenzhen_and_rejects_beijing():
     assert sz["instrument"] == "CNStock:000001.SZ"
     assert sz["changePercent"] == 5.0
     assert _row(code="830001") is None
+
+
+def test_tencent_market_row_preserves_provider_quote_time():
+    parts = [""] * 38
+    parts[1], parts[2], parts[3], parts[4], parts[5] = "平安银行", "000001", "10.8", "10.7", "10.6"
+    parts[6], parts[30], parts[33], parts[34], parts[37] = "100", "20260722150102", "11", "10", "123"
+    row = parse_quote_to_market_row(parts)
+    assert row["quoteTime"] == "2026-07-22T15:01:02+08:00"
+    assert row["amount"] == 1230000
 
 
 def test_symbol_lookup_accepts_canonical_cn_suffix(monkeypatch):

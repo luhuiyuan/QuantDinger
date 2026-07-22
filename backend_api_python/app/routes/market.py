@@ -27,6 +27,11 @@ from app.services.market.cn_stock_market import (
     load_cn_symbol_catalog,
     load_cn_watchlist_symbols,
 )
+from app.services.market.cn_stock_quote_snapshots import (
+    get_cn_market_overview_cache,
+    load_persisted_cn_market_snapshot,
+    query_cn_stock_snapshot_page,
+)
 from app.services.market.watchlist import (
     add_watchlist_item,
     get_user_watchlist_pairs,
@@ -375,13 +380,18 @@ def get_price():
 def get_cn_market_overview():
     """Return core indices and breadth derived from one Shanghai/Shenzhen snapshot."""
     try:
-        try:
-            snapshot = _cn_snapshot_service.get_snapshot()
-        except CNMarketSnapshotUnavailable as exc:
-            snapshot = {
-                'rows': [], 'asOf': None, 'source': 'unavailable',
-                'freshness': 'unavailable', 'status': 'unavailable', 'warning': str(exc),
-            }
+        cached_overview = get_cn_market_overview_cache()
+        if cached_overview:
+            return jsonify({'code': 1, 'msg': 'success', 'data': cached_overview})
+        snapshot = load_persisted_cn_market_snapshot()
+        if not snapshot:
+            try:
+                snapshot = _cn_snapshot_service.get_snapshot()
+            except CNMarketSnapshotUnavailable as exc:
+                snapshot = {
+                    'rows': [], 'asOf': None, 'source': 'unavailable',
+                    'freshness': 'unavailable', 'status': 'unavailable', 'warning': str(exc),
+                }
         breadth = build_market_breadth(snapshot.get('rows') or [])
         breadth['status'] = snapshot.get('status')
         breadth['warning'] = snapshot.get('warning')
@@ -416,13 +426,32 @@ def get_cn_stock_catalog():
     exchange = (request.args.get('exchange') or '').strip().upper()
     change_state = (request.args.get('changeState') or request.args.get('change_state') or '').strip().lower()
     keyword = (request.args.get('keyword') or '').strip()
+    sort_by = (request.args.get('sortBy') or request.args.get('sort_by') or 'symbol').strip().lower()
+    sort_order = (request.args.get('sortOrder') or request.args.get('sort_order') or 'asc').strip().lower()
     if page < 1 or page_size < 1 or page_size > 100:
         return jsonify({'code': 0, 'msg': 'cn_market.invalid_pagination', 'data': None}), 400
     if exchange not in {'', 'SH', 'SZ'}:
         return jsonify({'code': 0, 'msg': 'cn_market.invalid_exchange', 'data': None}), 400
     if change_state not in {'', 'up', 'down', 'flat'}:
         return jsonify({'code': 0, 'msg': 'cn_market.invalid_change_state', 'data': None}), 400
+    if sort_by not in {'symbol', 'name', 'change_percent', 'volume', 'amount', 'quote_time'} or sort_order not in {'asc', 'desc'}:
+        return jsonify({'code': 0, 'msg': 'cn_market.invalid_sort', 'data': None}), 400
     try:
+        try:
+            persisted = query_cn_stock_snapshot_page(
+                user_id=g.user_id, keyword=keyword, exchange=exchange,
+                change_state=change_state, page=page, page_size=page_size,
+                sort_by=sort_by, sort_order=sort_order,
+            )
+            if int((persisted.get('coverage') or {}).get('coveredCount') or 0) > 0:
+                persisted['query'] = {
+                    'keyword': keyword, 'exchange': exchange, 'changeState': change_state,
+                    'sortBy': sort_by, 'sortOrder': sort_order,
+                    'changeStateComplete': True,
+                }
+                return jsonify({'code': 1, 'msg': 'success', 'data': persisted})
+        except Exception as persisted_error:
+            logger.warning("Persistent CN quote query unavailable; using request fallback: %s", persisted_error)
         try:
             snapshot = _cn_snapshot_service.get_snapshot()
         except CNMarketSnapshotUnavailable as exc:
@@ -462,6 +491,8 @@ def get_cn_stock_catalog():
             'keyword': keyword,
             'exchange': exchange,
             'changeState': change_state,
+            'sortBy': sort_by,
+            'sortOrder': sort_order,
         }
         data['partial'] = bool(snapshot.get('partial'))
         data['quotedCount'] = snapshot.get('quotedCount', len(snapshot.get('rows') or []))

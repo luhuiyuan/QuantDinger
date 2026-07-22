@@ -11,6 +11,7 @@ This is used as a stable alternative when Yahoo/yfinance gets rate-limited.
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -184,6 +185,15 @@ def parse_quote_to_market_row(parts: List[str]) -> Dict[str, Any]:
             return None
     volume = _f(6)
     amount = _f(37)
+    quote_time = None
+    try:
+        raw_time = str(parts[30] or "").strip()
+        if len(raw_time) == 14 and raw_time.isdigit():
+            quote_time = datetime.strptime(raw_time, "%Y%m%d%H%M%S").replace(
+                tzinfo=ZoneInfo("Asia/Shanghai")
+            ).isoformat()
+    except (IndexError, TypeError, ValueError):
+        quote_time = None
     return {
         "code": ticker.get("symbol", ""),
         "name": ticker.get("name", ""),
@@ -196,6 +206,7 @@ def parse_quote_to_market_row(parts: List[str]) -> Dict[str, Any]:
         "previousClose": ticker.get("previousClose"),
         "volume": volume,
         "amount": amount * 10000 if amount is not None else None,
+        "quoteTime": quote_time,
     }
 
 

@@ -46,6 +46,13 @@ class MemoryCache:
         with self._lock:
             self._cache.clear()
 
+    def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
+        with self._lock:
+            if nx and key in self._cache and self._cache[key][1] > time.time():
+                return False
+            self._cache[key] = (value, time.time() + max(1, int(ex or 60)))
+            return True
+
 
 class CacheManager:
     """缓存管理器"""
@@ -117,8 +124,36 @@ class CacheManager:
             self._client.delete(cache_key(key))
         except Exception as e:
             logger.error(f"Cache delete failed: {e}")
+
+    def acquire_lock(self, key: str, owner: str, ttl: int) -> bool:
+        """Acquire a bounded ownership lock; Redis makes it process-safe."""
+        try:
+            return bool(self._client.set(cache_key(key), owner, nx=True, ex=max(1, int(ttl))))
+        except Exception as e:
+            logger.error(f"Cache lock acquisition failed: {e}")
+            return False
+
+    def release_lock(self, key: str, owner: str) -> bool:
+        """Release a lock only when the caller still owns it."""
+        full_key = cache_key(key)
+        try:
+            if self._use_redis:
+                script = """
+                if redis.call('get', KEYS[1]) == ARGV[1] then
+                    return redis.call('del', KEYS[1])
+                end
+                return 0
+                """
+                return bool(self._client.eval(script, 1, full_key, owner))
+            current = self._client.get(full_key)
+            if current == owner:
+                self._client.delete(full_key)
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Cache lock release failed: {e}")
+            return False
     
     @property
     def is_redis(self) -> bool:
         return self._use_redis
-

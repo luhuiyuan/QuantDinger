@@ -55,6 +55,8 @@ def test_overview_requires_login(client):
 
 
 def test_overview_returns_indices_and_breadth(client, monkeypatch):
+    monkeypatch.setattr(routes, "get_cn_market_overview_cache", lambda: None)
+    monkeypatch.setattr(routes, "load_persisted_cn_market_snapshot", lambda: None)
     monkeypatch.setattr(routes, "_cn_snapshot_service", _Snapshots())
     monkeypatch.setattr(routes, "fetch_core_indices", lambda: [{"symbol": "000001.SH", "status": "available"}])
     response = client.get("/api/market/cn/overview", headers=_headers())
@@ -64,7 +66,23 @@ def test_overview_returns_indices_and_breadth(client, monkeypatch):
     assert body["indices"][0]["symbol"] == "000001.SH"
 
 
+def test_overview_prefers_persisted_snapshot_without_network_refresh(client, monkeypatch):
+    snapshot = _snapshot()
+    cached = {"indices": [], "breadth": {"coveredCount": 1}, "snapshot": snapshot}
+    monkeypatch.setattr(routes, "get_cn_market_overview_cache", lambda: cached)
+
+    class _MustNotRefresh:
+        def get_snapshot(self):
+            raise AssertionError("request path must not refresh the full-market provider")
+
+    monkeypatch.setattr(routes, "_cn_snapshot_service", _MustNotRefresh())
+    response = client.get("/api/market/cn/overview", headers=_headers())
+    assert response.status_code == 200
+    assert response.get_json()["data"]["breadth"]["coveredCount"] == 1
+
+
 def test_catalog_validates_and_returns_user_watchlist(client, monkeypatch):
+    monkeypatch.setattr(routes, "query_cn_stock_snapshot_page", lambda **_kwargs: {"coverage": {"coveredCount": 0}})
     monkeypatch.setattr(routes, "_cn_snapshot_service", _Snapshots())
     monkeypatch.setattr(routes, "load_cn_symbol_catalog", lambda **_kwargs: [{
         "instrument": "CNStock:600519.SH", "code": "600519", "symbol": "600519.SH",
@@ -76,6 +94,8 @@ def test_catalog_validates_and_returns_user_watchlist(client, monkeypatch):
     assert response.get_json()["data"]["items"][0]["watchlisted"] is True
     invalid = client.get("/api/market/cn/stocks?pageSize=1000", headers=_headers())
     assert invalid.status_code == 400
+    invalid_sort = client.get("/api/market/cn/stocks?sortBy=latest%3BDROP", headers=_headers())
+    assert invalid_sort.status_code == 400
 
 
 def test_detail_and_history_reject_unknown_symbol(client, monkeypatch):

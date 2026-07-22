@@ -126,3 +126,12 @@ def run_cn_market_history_daily() -> dict:
         request_kind="scheduled",
     )
     return service.run(run_id)
+
+
+@celery_app.task(name="quantdinger.tasks.cn_stock_quote_refresh")
+def run_cn_stock_quote_refresh() -> dict:
+    if not _enabled("CN_QUOTE_REFRESH_ENABLED"):
+        return {"skipped": True, "reason": "disabled"}
+    from app.services.market.cn_stock_quote_snapshots import CNStockQuoteRefreshService
+
+    return CNStockQuoteRefreshService().run(trigger_kind="scheduled")

@@ -8,7 +8,7 @@ import threading
 import hashlib
 import json
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable, Iterable
 
 from app.data_sources.tencent import (
@@ -129,8 +129,9 @@ def fetch_cn_quote_rows(symbols: Iterable[str]) -> list[dict]:
         raw = by_code.get(code.lower())
         if not raw:
             continue
+        market_row = parse_quote_to_market_row(raw)
         normalized = normalize_cn_snapshot_row(
-            parse_quote_to_market_row(raw), as_of=fetched_at, source="tencent-batch"
+            market_row, as_of=market_row.get("quoteTime") or fetched_at, source="tencent-batch"
         )
         if normalized:
             rows.append(normalized)
@@ -491,6 +492,24 @@ class CNStockDetailService:
         self.cache = cache or CacheManager()
 
     def detail(self, identity: dict, *, watchlisted: bool = False) -> dict:
+        try:
+            from app.services.market.cn_stock_quote_snapshots import CNStockQuoteSnapshotRepository, SHANGHAI_TZ
+            persisted_quote = CNStockQuoteSnapshotRepository().get_quote(identity["instrument"])
+        except Exception:
+            persisted_quote = None
+        if persisted_quote:
+            return {
+                **identity,
+                "quote": persisted_quote,
+                "quoteStatus": "available",
+                "watchlisted": bool(watchlisted),
+                "snapshot": {
+                    "asOf": persisted_quote.get("asOf"),
+                    "source": "postgres-latest-snapshot",
+                    "freshness": "closed" if datetime.now(SHANGHAI_TZ).time() > time(15, 0) else "fresh",
+                    "warning": None,
+                },
+            }
         try:
             snapshot = self.snapshot_service.get_snapshot()
         except CNMarketSnapshotUnavailable as exc:

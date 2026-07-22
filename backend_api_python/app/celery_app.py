@@ -55,6 +55,7 @@ celery_app.conf.update(
         "quantdinger.tasks.market_catalog_sync": {"queue": "maintenance"},
         "quantdinger.tasks.cn_market_history_sync": {"queue": "maintenance"},
         "quantdinger.tasks.cn_market_history_daily": {"queue": "maintenance"},
+        "quantdinger.tasks.cn_stock_quote_refresh": {"queue": "maintenance"},
         "quantdinger.tasks.worker_heartbeat": {"queue": "maintenance"},
         "quantdinger.tasks.cleanup_runtime_metadata": {"queue": "maintenance"},
     },
@@ -74,6 +75,10 @@ celery_app.conf.update(
         "cn-market-history-daily": {
             "task": "quantdinger.tasks.cn_market_history_daily",
             "schedule": max(3600, int(os.getenv("CN_HISTORY_DAILY_SYNC_INTERVAL_SEC", "86400"))),
+        },
+        "cn-stock-quote-refresh": {
+            "task": "quantdinger.tasks.cn_stock_quote_refresh",
+            "schedule": max(300, int(os.getenv("CN_QUOTE_REFRESH_INTERVAL_SEC", "300"))),
         },
         "celery-worker-heartbeat": {
             "task": "quantdinger.tasks.worker_heartbeat",
