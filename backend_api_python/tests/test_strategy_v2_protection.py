@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 from app.services.strategy_v2 import (
+    OrderIntent,
     ProtectionEngine,
     ProtectionSpec,
     ProtectionState,
@@ -149,6 +150,70 @@ def test_live_protection_uses_price_ticks_without_new_bar():
     assert exits[0].reason == "stop_loss"
     assert exits[0].kind == "target_quantity"
     assert exits[0].value == 0
+    assert session.evaluate_protections(
+        {"Crypto:BTC/USDT@spot": 97.0},
+        timestamp="2026-01-01 00:00:31",
+    ) == []
+
+
+def test_live_protection_pending_exit_survives_snapshot_and_clears_when_flat():
+    frame = _frame([(100, 101, 99, 100, 1000)])
+    first = StrategyV2LiveSession(
+        code=PROTECTED_ENTRY,
+        frames={"Crypto:BTC/USDT": frame},
+        initial_capital=10_000,
+    )
+    first.process({"Crypto:BTC/USDT": frame})
+    position = {
+        "BTC/USDT": {"side": "long", "amount": 1, "avg_cost": 100, "last_price": 100}
+    }
+    first.synchronize_positions(position)
+    assert len(first.evaluate_protections(
+        {"Crypto:BTC/USDT@spot": 97.5},
+        timestamp="2026-01-01 00:00:30",
+    )) == 1
+
+    restored = StrategyV2LiveSession(
+        code=PROTECTED_ENTRY,
+        frames={"Crypto:BTC/USDT": frame},
+        initial_capital=10_000,
+    )
+    restored.restore_protection_snapshot(first.protection_snapshot())
+    restored.synchronize_positions(position)
+    assert restored.evaluate_protections(
+        {"Crypto:BTC/USDT@spot": 97.0},
+        timestamp="2026-01-01 00:00:31",
+    ) == []
+
+    restored.synchronize_positions({})
+    assert restored.pending_protection_exit_symbols() == set()
+    assert restored.protection_snapshot()["states"] == {}
+
+
+def test_new_protected_order_does_not_unlock_an_inflight_protection_exit():
+    frame = _frame([(100, 101, 99, 100, 1000)])
+    session = StrategyV2LiveSession(
+        code=PROTECTED_ENTRY,
+        frames={"Crypto:BTC/USDT": frame},
+        initial_capital=10_000,
+    )
+    session.process({"Crypto:BTC/USDT": frame})
+    session.synchronize_positions({
+        "BTC/USDT": {"side": "long", "amount": 1, "avg_cost": 100, "last_price": 100}
+    })
+    assert len(session.evaluate_protections(
+        {"Crypto:BTC/USDT@spot": 97.5},
+        timestamp="2026-01-01 00:00:30",
+    )) == 1
+
+    session._capture_protection_intents([OrderIntent(
+        "Crypto:BTC/USDT@spot",
+        "target_value",
+        100,
+        protection=ProtectionSpec(stop_loss_pct=0.02),
+    )])
+
+    assert session.pending_protection_exit_symbols() == {"Crypto:BTC/USDT@spot"}
 
 
 def test_live_protection_snapshot_restores_after_restart():

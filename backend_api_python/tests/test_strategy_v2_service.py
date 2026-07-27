@@ -68,6 +68,7 @@ def handle_data(context, data):
     assert result["diagnostics"]["sourceControlled"] is True
     assert result["benchmarkStatus"] == "available"
     assert len(result["benchmarkCurve"]) == len(result["equityCurve"])
+    assert all(point["time"].endswith("Z") for point in result["benchmarkCurve"])
     assert result["dataProvenance"]["kind"] == "market"
     assert result["audit"]["passed"] is True
     assert result["dataProvenance"]["symbols"][0]["snapshotId"]

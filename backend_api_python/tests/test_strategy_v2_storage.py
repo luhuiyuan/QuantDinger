@@ -31,7 +31,14 @@ class StrategyV2StorageCompatibilityTests(unittest.TestCase):
             ],
         }
 
-        restored = _normalize_backtest_result(legacy, {"initial_capital": 10000})
+        restored = _normalize_backtest_result(legacy, {
+            "initial_capital": 10000,
+            "start_date": "2025-01-01",
+            "end_date": "2025-01-02",
+            "leverage": 5,
+            "commission": 0.001,
+            "slippage": 0.002,
+        })
 
         first, last = restored["equityCurve"]
         self.assertAlmostEqual(first["cash"], 4995)
@@ -47,11 +54,29 @@ class StrategyV2StorageCompatibilityTests(unittest.TestCase):
             "rejected": 0,
         })
         self.assertEqual(len(restored["orderLedger"]), 2)
+        self.assertEqual(restored["executionAssumptions"], {
+            "initialCapital": 10000,
+            "startDate": "2025-01-01",
+            "endDate": "2025-01-02",
+            "leverageEnabled": True,
+            "leverage": 5,
+            "commission": 0.001,
+            "slippage": 0.002,
+        })
         self.assertTrue(restored["compatibility"]["legacyBackfill"])
 
     def test_current_backtest_result_keeps_saved_detail_values(self):
         current = {
             "initialCapital": 10000,
+            "executionAssumptions": {
+                "initialCapital": 10000,
+                "startDate": "2025-01-01",
+                "endDate": "2025-01-02",
+                "leverageEnabled": False,
+                "leverage": 1,
+                "commission": 0.0005,
+                "slippage": 0.0005,
+            },
             "equityCurve": [{
                 "time": "2025-01-01T00:00:00Z",
                 "value": 10100,
@@ -67,10 +92,35 @@ class StrategyV2StorageCompatibilityTests(unittest.TestCase):
         }
         expected = copy.deepcopy(current)
 
-        restored = _normalize_backtest_result(current, {"initial_capital": 5000})
+        restored = _normalize_backtest_result(current, {
+            "initial_capital": 5000,
+            "start_date": "ignored",
+            "end_date": "ignored",
+            "leverage": 2,
+            "commission": 0.1,
+            "slippage": 0.1,
+        })
 
         self.assertEqual(restored, expected)
         self.assertNotIn("compatibility", restored)
+
+    def test_legacy_negative_equity_continuation_is_flagged_for_rerun(self):
+        restored = _normalize_backtest_result({
+            "equityCurve": [
+                {"time": "2025-01-01", "value": 10000},
+                {"time": "2025-01-02", "value": -100},
+                {"time": "2025-01-03", "value": -500},
+            ],
+        }, {
+            "initial_capital": 10000,
+            "leverage": 5,
+        })
+
+        self.assertTrue(restored["legacyInsolventContinuation"])
+        self.assertIn(
+            "legacyInsolventContinuation",
+            restored["compatibility"]["backfilledFields"],
+        )
 
 
 if __name__ == "__main__":

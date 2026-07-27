@@ -269,8 +269,8 @@ CONFIG_SCHEMA = {
                 'key': 'SECRET_KEY',
                 'label': 'Secret Key',
                 'type': 'password',
-                'default': 'quantdinger-secret-key-change-me',
-                'description': 'JWT signing secret key. MUST change in production for security'
+                'default': '',
+                'description': 'Required JWT signing key (minimum 10 bytes for legacy compatibility; 32+ random bytes recommended)'
             },
             {
                 'key': 'ADMIN_USER',
@@ -1604,6 +1604,20 @@ CONFIG_SCHEMA = {
                 'type': 'number',
                 'default': '30',
                 'description': 'How often the background worker re-scans pending/paid orders against on-chain data.'
+            },
+            {
+                'key': 'BILLING_COST_BACKTEST',
+                'label': 'Backtest Cost',
+                'type': 'number',
+                'default': '30',
+                'description': 'Credits charged for each strategy backtest run'
+            },
+            {
+                'key': 'BILLING_COST_AI_REVIEW',
+                'label': 'AI Strategy Review Cost',
+                'type': 'number',
+                'default': '10',
+                'description': 'Credits charged for each successful AI-assisted strategy review'
             },
             {
                 'key': 'BILLING_COST_AI_ANALYSIS',

@@ -5,6 +5,7 @@ from app.services.pending_orders import live_order_phases
 from app.services.pending_orders.live_order_support import (
     FillAccumulator,
     LiveOrderRejected,
+    apply_execution_result,
     build_live_order_context,
     make_client_order_id,
     signal_to_side_pos_reduce,
@@ -52,6 +53,25 @@ def test_fill_accumulator_tracks_weighted_average_and_fees_by_currency():
     assert fills.total_fee == 0
     assert fills.fee_ccy == "MIXED"
     assert fills.fees_by_ccy == {"USDT": 0.003, "BTC": 0.002}
+
+
+def test_apply_execution_result_does_not_drop_exchange_fee():
+    result = type(
+        "ExecutionResult",
+        (),
+        {
+            "filled_qty": 0.25,
+            "avg_price": 64000.0,
+            "fees_by_ccy": {"USDT": 8.0, "BNB": 0.001},
+        },
+    )()
+    fills = FillAccumulator()
+
+    apply_execution_result(fills, result)
+
+    assert fills.total_base == 0.25
+    assert fills.avg_price() == 64000.0
+    assert fills.fees_by_ccy == {"USDT": 8.0, "BNB": 0.001}
 
 
 def test_maker_limit_price_offsets_buy_and_sell():
@@ -207,4 +227,3 @@ def test_build_live_order_context_rejects_policy_violation():
         assert exc.strategy_id == 12
     else:
         raise AssertionError("expected LiveOrderRejected")
-

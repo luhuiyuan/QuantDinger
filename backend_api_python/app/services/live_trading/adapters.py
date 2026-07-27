@@ -101,11 +101,30 @@ class LiveOrderPhaseAdapter:
             max_wait_sec=float(max_wait_sec or 0.0),
             phase="market" if float(intent.price or 0.0) <= 0 else "limit",
         )
+        fees_by_ccy: Dict[str, float] = {}
+        raw_breakdown = (raw or {}).get("fees_by_ccy")
+        if isinstance(raw_breakdown, dict):
+            for currency, amount in raw_breakdown.items():
+                try:
+                    fee = abs(float(amount or 0.0))
+                except (TypeError, ValueError):
+                    fee = 0.0
+                if fee > 0:
+                    fees_by_ccy[str(currency or "").strip().upper() or "UNKNOWN"] = fee
+        if not fees_by_ccy:
+            try:
+                fee = abs(float((raw or {}).get("fee") or 0.0))
+            except (TypeError, ValueError):
+                fee = 0.0
+            if fee > 0:
+                currency = str((raw or {}).get("fee_ccy") or "").strip().upper() or "UNKNOWN"
+                fees_by_ccy[currency] = fee
         return FillSnapshot(
             filled_qty=float((raw or {}).get("filled") or 0.0),
             avg_price=float((raw or {}).get("avg_price") or 0.0),
             status=str((raw or {}).get("status") or ""),
             raw=dict(raw or {}),
+            fees_by_ccy=fees_by_ccy,
         )
 
     def query_position(self, intent: OrderIntent) -> PositionSnapshot:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.services.live_trading.base import LiveOrderResult
 from app.services.live_trading.contracts import FillSnapshot, OrderIntent
 from app.services.live_trading.executors import (
@@ -32,8 +34,20 @@ class FakeAdapter:
     def wait_for_fill(self, intent, *, order_id: str = "", max_wait_sec: float = 15.0):
         self.calls.append(("wait", order_id, max_wait_sec))
         if order_id == "m1":
-            return FillSnapshot(filled_qty=float(intent.quantity or 0.0), avg_price=101, status="filled", raw={})
-        return FillSnapshot(filled_qty=self.fill_qty, avg_price=100, status=self.fill_status, raw={})
+            return FillSnapshot(
+                filled_qty=float(intent.quantity or 0.0),
+                avg_price=101,
+                status="filled",
+                raw={},
+                fees_by_ccy={"USDT": 0.2},
+            )
+        return FillSnapshot(
+            filled_qty=self.fill_qty,
+            avg_price=100,
+            status=self.fill_status,
+            raw={},
+            fees_by_ccy={"USDT": 0.1} if self.fill_qty > 0 else {},
+        )
 
     def query_position(self, intent):
         raise NotImplementedError
@@ -48,6 +62,7 @@ def test_market_order_executor_submits_normalized_intent():
     assert result.success is True
     assert result.status == "filled"
     assert result.exchange_order_id == "m1"
+    assert result.fees_by_ccy == {"USDT": 0.2}
     assert adapter.calls == [("market", "BTC/USDT"), ("wait", "m1", 12.0)]
 
 
@@ -60,6 +75,7 @@ def test_resting_limit_executor_submits_without_waiting_or_cancelling():
     assert result.success is True
     assert result.status == "submitted"
     assert result.exchange_order_id == "l1"
+    assert result.fees_by_ccy == {}
     assert adapter.calls == [("limit", "BTC/USDT")]
 
 
@@ -83,6 +99,7 @@ def test_limit_then_market_cancels_and_falls_back_when_unfilled():
 
     assert result.success is True
     assert result.exchange_order_id == "m1"
+    assert result.fees_by_ccy == {"USDT": 0.2}
     assert adapter.calls == [
         ("limit", "SOL/USDT"),
         ("wait", "l1", 1.0),
@@ -101,6 +118,7 @@ def test_limit_then_market_preserves_partial_limit_fill_and_markets_remaining():
     assert result.success is True
     assert result.filled_qty == 3
     assert result.avg_price == 100.66666666666667
+    assert result.fees_by_ccy == pytest.approx({"USDT": 0.3})
     assert adapter.calls == [
         ("limit", "SOL/USDT"),
         ("wait", "l1", 1.0),

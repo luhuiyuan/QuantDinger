@@ -19,6 +19,7 @@ class OrderExecutionResult:
     status: str = ""
     error: str = ""
     raw: Dict[str, Any] = field(default_factory=dict)
+    fees_by_ccy: Dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_live_order(cls, result: LiveOrderResult, *, status: str = "submitted") -> "OrderExecutionResult":
@@ -63,6 +64,7 @@ class MarketOrderExecutor:
                     avg_price=float(fill.avg_price or result.avg_price or 0.0),
                     status=fill.status or "submitted",
                     raw={"place": dict(result.raw or {}), "fill": dict(fill.raw or {})},
+                    fees_by_ccy=dict(fill.fees_by_ccy or {}),
                 )
             status = "filled" if float(result.filled or 0.0) > 0 else "submitted"
             return OrderExecutionResult.from_live_order(result, status=status)
@@ -125,6 +127,7 @@ class LimitThenMarketExecutor:
                     avg_price=float(fill.avg_price or 0.0),
                     status=fill.status or "filled",
                     raw=dict(fill.raw or result.raw or {}),
+                    fees_by_ccy=dict(fill.fees_by_ccy or {}),
                 )
             if not self.fallback_to_market:
                 return OrderExecutionResult(
@@ -135,6 +138,7 @@ class LimitThenMarketExecutor:
                     avg_price=float(fill.avg_price or 0.0) if fill else 0.0,
                     status=(fill.status if fill else "") or "submitted",
                     raw={"limit_place": dict(result.raw or {}), "limit_fill": dict((fill.raw if fill else {}) or {})},
+                    fees_by_ccy=dict((fill.fees_by_ccy if fill else {}) or {}),
                 )
             self.adapter.cancel_order(intent, order_id=result.exchange_order_id)
             remaining_qty = max(0.0, float(intent.quantity or 0.0) - limit_filled)
@@ -147,6 +151,7 @@ class LimitThenMarketExecutor:
                     avg_price=float(fill.avg_price or 0.0) if fill else 0.0,
                     status=(fill.status if fill else "") or "submitted",
                     raw={"limit_place": dict(result.raw or {}), "limit_fill": dict((fill.raw if fill else {}) or {})},
+                    fees_by_ccy=dict((fill.fees_by_ccy if fill else {}) or {}),
                 )
             market_intent = replace(
                 intent,
@@ -170,6 +175,10 @@ class LimitThenMarketExecutor:
                 avg_price=avg_price,
                 status=market.status or "submitted",
                 error=market.error,
+                fees_by_ccy=_merge_fee_breakdowns(
+                    dict((fill.fees_by_ccy if fill else {}) or {}),
+                    dict(market.fees_by_ccy or {}),
+                ),
                 raw={
                     "limit_place": dict(result.raw or {}),
                     "limit_fill": dict((fill.raw if fill else {}) or {}),
@@ -210,3 +219,18 @@ def _weighted_avg(*fills: tuple[float, float]) -> float:
         p = max(0.0, float(price or 0.0))
         notional += q * p
     return notional / total_qty if notional > 0 else 0.0
+
+
+def _merge_fee_breakdowns(*items: Dict[str, float]) -> Dict[str, float]:
+    merged: Dict[str, float] = {}
+    for item in items:
+        for currency, amount in (item or {}).items():
+            try:
+                fee = abs(float(amount or 0.0))
+            except (TypeError, ValueError):
+                fee = 0.0
+            if fee <= 0:
+                continue
+            key = str(currency or "").strip().upper() or "UNKNOWN"
+            merged[key] = merged.get(key, 0.0) + fee
+    return merged

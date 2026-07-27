@@ -34,6 +34,7 @@ from app.utils.db_postgres import (
 _CRITICAL_TABLES = (
     'qd_users',
     'pending_orders',
+    'qd_strategy_equity_snapshots',
     'qd_strategy_positions',
     'qd_strategies_trading',
     'qd_analysis_memory',

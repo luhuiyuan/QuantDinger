@@ -322,7 +322,7 @@ collect_settings() {
     fi
 
     existing_secret=$(env_get "$BACKEND_ENV" "SECRET_KEY")
-    if [ -n "$existing_secret" ] && [ "$existing_secret" != "quantdinger-secret-key-change-me" ]; then
+    if [ -n "$existing_secret" ] && [ "$existing_secret" != "quantdinger-secret-key-change-me" ] && [ "${#existing_secret}" -ge 10 ]; then
         SECRET_KEY_VALUE="$existing_secret"
     else
         SECRET_KEY_VALUE=$(random_hex 32)

@@ -428,7 +428,7 @@ def summary():
             total_trades_all = int((cur.fetchone() or {}).get("cnt") or 0)
             cur.execute(
                 """
-                SELECT COALESCE(SUM(COALESCE(t.profit, 0) - COALESCE(t.commission_quote, 0)), 0) AS total
+                SELECT COALESCE(SUM(COALESCE(t.profit, 0) - COALESCE(t.commission_quote, t.commission, 0)), 0) AS total
                 FROM qd_strategy_trades t
                 INNER JOIN qd_strategies_trading s ON s.id = t.strategy_id
                 WHERE t.user_id = ?
@@ -438,6 +438,26 @@ def summary():
                 (user_id, user_id)
             )
             total_realized_pnl_all = float((cur.fetchone() or {}).get("total") or 0.0)
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(COALESCE(f.amount, 0)), 0) AS total
+                FROM qd_strategy_funding_fees f
+                INNER JOIN qd_strategies_trading s ON s.id = f.strategy_id
+                WHERE f.user_id = ? AND s.user_id = ?
+                """,
+                (user_id, user_id),
+            )
+            total_realized_pnl_all += float((cur.fetchone() or {}).get("total") or 0.0)
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(COALESCE(a.amount, 0)), 0) AS total
+                FROM qd_strategy_broker_activities a
+                INNER JOIN qd_strategies_trading s ON s.id = a.strategy_id
+                WHERE a.user_id = ? AND s.user_id = ?
+                """,
+                (user_id, user_id),
+            )
+            total_realized_pnl_all += float((cur.fetchone() or {}).get("total") or 0.0)
             cur.close()
 
         with get_db_connection() as db:

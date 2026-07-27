@@ -5,6 +5,7 @@ import os
 import threading
 import traceback
 import builtins as _builtins_mod
+import types
 from typing import Dict, Any, Optional, Tuple, Set
 from contextlib import contextmanager
 
@@ -66,6 +67,8 @@ _FORBIDDEN_DUNDER_SUFFIXES: Set[str] = {
     'call__', 'getitem__', 'setitem__', 'delitem__', 'iter__', 'next__',
     # Frame / traceback / closure chains used to reach the un-sandboxed scope.
     'traceback__', 'closure__', 'defaults__', 'kwdefaults__',
+    # Importer and module-spec escape hatches.
+    'loader__', 'spec__', 'path__', 'file__', 'cached__', 'package__',
 }
 
 _OPERATOR_ACCESSOR_NAMES: Set[str] = {'attrgetter', 'itemgetter', 'methodcaller'}
@@ -87,7 +90,7 @@ _DANGEROUS_METHOD_NAMES: Set[str] = {
     'tofile',
     # numpy IO: arbitrary read / write / pickle deser.
     'save', 'savez', 'savez_compressed', 'savetxt',
-    'load', 'loadtxt', 'genfromtxt', 'fromfile', 'memmap',
+    'load', 'loadtxt', 'genfromtxt', 'fromfile', 'memmap', 'DataSource',
     # String-expression evaluators that execute attacker-controlled code.
     'eval', 'query',
     # Frame / introspection accessors should never be invoked.
@@ -95,7 +98,44 @@ _DANGEROUS_METHOD_NAMES: Set[str] = {
     # pandas.io.common: file/URL IO bypassing blocked read_* entry points.
     'urlopen', '_urlopen', 'get_filepath_or_buffer', '_get_filepath_or_buffer',
     'file_exists', 'file_open', 'open_url',
+    # Import machinery can bypass the restricted __import__ implementation.
+    'load_module', 'exec_module', 'create_module', 'find_module',
+    'find_spec', 'path_hook', 'path_hooks', 'get_data', 'get_code',
+    'get_source', 'get_resource_reader',
 }
+
+_BLOCKED_MODULE_ATTRS: Set[str] = {
+    # Keep the proxy's own module metadata from becoming an introspection
+    # primitive.  In particular, ``proxy.__dict__`` would otherwise expose
+    # the copied module namespace and make it possible to recover importer
+    # internals through indirect lookups.
+    '__loader__', '__spec__', '__builtins__', '__path__', '__file__',
+    '__cached__', '__package__', '__dict__', '__class__', '__module__',
+}
+_SAFE_MODULE_DUNDER_ATTRS: Set[str] = {'__name__', '__doc__', '__all__'}
+
+
+class _SafeModuleProxy(types.ModuleType):
+    """Read-only view of an allowed module without importer internals."""
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in _BLOCKED_MODULE_ATTRS or (
+            name.startswith('__')
+            and name.endswith('__')
+            and name not in _SAFE_MODULE_DUNDER_ATTRS
+        ):
+            raise AttributeError(f"module attribute is not available: {name}")
+        value = super().__getattribute__(name)
+        # ``from package import submodule`` reads the submodule attribute from
+        # the returned package. Never hand that raw module back to user code,
+        # and do not expose transitive modules outside the import allow-list
+        # (for example collections._sys -> sys.modules -> os).
+        if isinstance(value, types.ModuleType) and not isinstance(value, _SafeModuleProxy):
+            ok, _ = _is_safe_import_name(getattr(value, '__name__', ''))
+            if not ok:
+                raise AttributeError(f"module attribute is not available: {name}")
+            return _wrap_imported_module(value)
+        return value
 
 # Attribute names whose access leaks frames / closures / code objects, even
 # without dunder syntax.
@@ -149,14 +189,44 @@ def _is_safe_import_name(name: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def _wrap_imported_module(module: Any) -> Any:
+    """Copy a module into a proxy that hides loader/spec escape attributes."""
+    if isinstance(module, _SafeModuleProxy):
+        return module
+    if not isinstance(module, types.ModuleType):
+        return module
+
+    proxy = _SafeModuleProxy(getattr(module, '__name__', 'safe_module'))
+    for name, value in module.__dict__.items():
+        if name in _BLOCKED_MODULE_ATTRS:
+            continue
+        if name.startswith('__') and name.endswith('__') and name not in _SAFE_MODULE_DUNDER_ATTRS:
+            continue
+        setattr(proxy, name, value)
+    return proxy
+
+
 def _make_safe_import():
     """Create a restricted __import__ that only allows whitelisted modules."""
     def safe_import(name, *args, **kwargs):
         ok, err = _is_safe_import_name(name)
         if ok:
-            return _builtins_mod.__import__(name, *args, **kwargs)
+            return _wrap_imported_module(
+                _builtins_mod.__import__(name, *args, **kwargs)
+            )
         raise ImportError(err or f"Import not allowed: {name}")
     return safe_import
+
+
+def _sanitize_exec_namespace(namespace: Optional[Dict[str, Any]]) -> None:
+    """Replace ambient raw modules with importer-safe proxies in-place."""
+    if namespace is None:
+        return
+    for name, value in list(namespace.items()):
+        if name == '__builtins__':
+            continue
+        if isinstance(value, types.ModuleType) and not isinstance(value, _SafeModuleProxy):
+            namespace[name] = _wrap_imported_module(value)
 
 
 def build_safe_builtins(extra_allowed: Optional[Set[str]] = None) -> Dict[str, Any]:
@@ -248,7 +318,7 @@ def safe_exec_code(
     timeout: int = 30,
     max_memory_mb: Optional[int] = None
 ) -> Dict[str, Any]:
-    """Execute Python code in the current process with sandbox timeout guards.
+    """Validate and execute Python code with sandbox namespace/timeout guards.
 
     Args:
         code: Python code to execute.
@@ -257,8 +327,22 @@ def safe_exec_code(
         timeout: timeout in seconds.
         max_memory_mb: memory limit in MB when RLIMIT is enabled.
     """
+    is_safe, validation_error = validate_code_safety(code)
+    if not is_safe:
+        return {
+            'success': False,
+            'error': f"Unsafe code rejected: {validation_error}",
+            'result': None,
+        }
+
+    exec_globals['__builtins__'] = build_safe_builtins()
     if exec_locals is None:
         exec_locals = exec_globals
+    elif exec_locals is not exec_globals:
+        exec_locals['__builtins__'] = exec_globals['__builtins__']
+    _sanitize_exec_namespace(exec_globals)
+    if exec_locals is not exec_globals:
+        _sanitize_exec_namespace(exec_locals)
 
     if max_memory_mb is None:
         max_memory_mb = 500
@@ -302,8 +386,9 @@ def safe_exec_with_validation(
     Validate + execute user code in one call.
 
     1. Runs validate_code_safety(); rejects unsafe code.
-    2. Injects build_safe_builtins() if __builtins__ is not already set.
-    3. Executes pre_import, then user code via safe_exec_code().
+    2. Replaces any caller-provided builtins with build_safe_builtins().
+    3. Wraps pre-injected module objects to hide importer metadata.
+    4. Executes pre_import, then user code via safe_exec_code().
 
     Returns same dict as safe_exec_code().
     """
@@ -311,10 +396,23 @@ def safe_exec_with_validation(
     if not is_safe:
         return {'success': False, 'error': f"Unsafe code rejected: {err}", 'result': None}
 
-    if '__builtins__' not in exec_globals:
-        exec_globals['__builtins__'] = build_safe_builtins()
+    # This helper is a security boundary: callers must not be able to weaken
+    # it accidentally by supplying process-global builtins or raw modules.
+    exec_globals['__builtins__'] = build_safe_builtins()
+    if exec_locals is not None and exec_locals is not exec_globals:
+        exec_locals['__builtins__'] = exec_globals['__builtins__']
+    _sanitize_exec_namespace(exec_globals)
+    if exec_locals is not exec_globals:
+        _sanitize_exec_namespace(exec_locals)
 
     if pre_import:
+        pre_import_safe, pre_import_err = validate_code_safety(pre_import)
+        if not pre_import_safe:
+            return {
+                'success': False,
+                'error': f"Unsafe pre-import rejected: {pre_import_err}",
+                'result': None,
+            }
         try:
             exec(pre_import, exec_globals)
         except Exception as e:
@@ -379,6 +477,11 @@ def safe_exec_isolated(
             }
             if input_data:
                 exec_env.update(input_data)
+
+            # Input data is caller-controlled and must not replace the
+            # sandbox builtins or smuggle raw module objects into the child.
+            exec_env['__builtins__'] = build_safe_builtins()
+            _sanitize_exec_namespace(exec_env)
 
             pre_import = "import numpy as np\nimport pandas as pd\n"
             exec(pre_import, exec_env)
@@ -596,7 +699,8 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
         logger.exception("AST parse failed, rejecting code")
         return False, "Code parse failed"
 
-    # NOTE: these names are checked on attribute calls like `mod.func(...)`.
+    # NOTE: these names are checked on attribute calls and attribute aliases
+    # like `mod.func(...)` or `fn = mod.func`.
     # Names that doubly serve as common user variables (signal/code/io/pickle/
     # ssl/http) are intentionally excluded here; the `import xxx` regex above
     # already blocks them from ever being a real module reference, so any
@@ -622,7 +726,8 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
     dangerous_dunder_attrs = {
         '__builtins__', '__import__', '__class__', '__bases__',
         '__subclasses__', '__mro__', '__globals__', '__code__',
-        '__func__', '__dict__', '__module__',
+        '__func__', '__dict__', '__module__', '__loader__', '__spec__',
+        '__path__', '__file__', '__cached__', '__package__',
     }
 
     for node in ast.walk(tree):
@@ -645,6 +750,16 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
                 for alias in node.names:
                     if alias.name == '*':
                         return False, "Wildcard imports are not allowed"
+                    if alias.name.startswith('_'):
+                        return False, f"Private import attributes are not allowed: {alias.name}"
+                    if alias.name.lstrip('_') in dangerous_modules:
+                        return False, f"Unsafe imported module detected: {alias.name}"
+                    if alias.name in dangerous_dunder_attrs or (
+                        alias.name.startswith('__') and alias.name.endswith('__')
+                    ):
+                        return False, f"Unsafe import attribute detected: {alias.name}"
+                    if alias.name in _DANGEROUS_METHOD_NAMES:
+                        return False, f"Unsafe imported capability detected: {alias.name}"
                     ok, err = _is_safe_import_name(f"{node.module}.{alias.name}")
                     if not ok:
                         return False, err or f"Import not allowed: {node.module}.{alias.name}"
@@ -673,8 +788,20 @@ def validate_code_safety(code: str) -> Tuple[bool, Optional[str]]:
                     return False, "Unsafe dunder string argument detected"
 
         elif isinstance(node, ast.Attribute):
-            if isinstance(node.attr, str) and node.attr in dangerous_dunder_attrs:
+            if isinstance(node.attr, str) and (
+                node.attr in dangerous_dunder_attrs
+                or (
+                    node.attr.startswith('__')
+                    and node.attr.endswith('__')
+                    and node.attr not in _SAFE_MODULE_DUNDER_ATTRS
+                )
+            ):
                 return False, f"Unsafe attribute access detected: .{node.attr}"
+            # Reject dangerous capability attributes even when user code first
+            # stores the bound method and calls it indirectly later
+            # (``loader.load_module`` -> ``fn = ...; fn('os')``).
+            if isinstance(node.attr, str) and node.attr in _DANGEROUS_METHOD_NAMES:
+                return False, f"Unsafe method access detected: .{node.attr}"
             if isinstance(node.attr, str) and node.attr in _DANGEROUS_FRAME_ATTRS:
                 return False, f"Unsafe frame/closure attribute access detected: .{node.attr}"
             if isinstance(node.attr, str) and node.attr in _DANGEROUS_SUBMODULE_ATTRS:

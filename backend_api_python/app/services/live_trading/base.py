@@ -13,7 +13,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 
@@ -193,4 +193,14 @@ class BaseRestClient:
         """Query account fee rate from exchange. Returns {"maker": 0.0002, "taker": 0.0005} or None."""
         return None
 
+    def get_funding_payments(
+        self,
+        *,
+        symbol: str,
+        start_time_ms: int,
+        end_time_ms: int,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return settled perpetual funding cash flows (positive=received, negative=paid)."""
+        return []
 

@@ -32,6 +32,7 @@ def _normalize_trade_row_for_api(trade: dict, *, leverage: float = 1.0, market_t
         "amount",
         "value",
         "commission",
+        "commission_quote",
         "profit",
         "profit_gross",
         "net_pnl",
@@ -116,6 +117,17 @@ def get_trades():
 
         from app.services.live_trading.records import ensure_strategy_trades_close_reason_column
         ensure_strategy_trades_close_reason_column()
+        from app.services.live_trading.funding_reconciliation import (
+            load_strategy_funding_summary,
+            sync_strategy_funding,
+        )
+        from app.services.live_trading.alpaca_activity_reconciliation import (
+            is_alpaca_strategy,
+            load_strategy_broker_activity_summary,
+            sync_strategy_alpaca_activities,
+        )
+        sync_strategy_funding(strategy_id, user_id=user_id)
+        sync_strategy_alpaca_activities(strategy_id, user_id=user_id)
 
         bot_type = str(trading_config.get("bot_type") or "").strip().lower()
         lang = str(request.args.get("lang") or request.headers.get("Accept-Language") or "zh")[:2].lower()
@@ -170,7 +182,43 @@ def get_trades():
             for trade in processed_rows
         ]
 
-        return jsonify({'code': 1, 'msg': 'success', 'data': {'trades': processed_rows, 'items': processed_rows}})
+        from app.utils.trade_close_reason import is_exit_trade_type
+        opening_commission = 0.0
+        closing_commission = 0.0
+        gross_realized = 0.0
+        for trade in processed_rows:
+            fee = float(trade.get("commission_quote") if trade.get("commission_quote") is not None else trade.get("commission") or 0.0)
+            if is_exit_trade_type(str(trade.get("type") or "")):
+                closing_commission += fee
+                if trade.get("profit_gross") is not None:
+                    gross_realized += float(trade.get("profit_gross") or 0.0)
+            else:
+                opening_commission += fee
+        funding = load_strategy_funding_summary(strategy_id)
+        funding_payment = float(funding.get("funding_payment") or 0.0)
+        broker = load_strategy_broker_activity_summary(strategy_id)
+        broker_payment = float(broker.get("broker_activity_payment") or 0.0)
+        trading_fees = opening_commission + closing_commission
+        net_realized = gross_realized - trading_fees + funding_payment + broker_payment
+        cost_summary = {
+            "gross_realized_pnl": round(gross_realized, 8),
+            "opening_commission": round(opening_commission, 8),
+            "closing_commission": round(closing_commission, 8),
+            "trading_commission": round(trading_fees, 8),
+            "funding_payment": round(funding_payment, 8),
+            "funding_cost": round(-funding_payment, 8),
+            "broker_activity_payment": round(broker_payment, 8),
+            "regulatory_payment": round(float(broker.get("regulatory_payment") or 0.0), 8),
+            "adr_payment": round(float(broker.get("adr_payment") or 0.0), 8),
+            "margin_interest_payment": round(float(broker.get("margin_interest_payment") or 0.0), 8),
+            "other_broker_payment": round(float(broker.get("other_broker_payment") or 0.0), 8),
+            "broker_activity_applicable": is_alpaca_strategy(strategy_id, user_id=user_id),
+            "net_realized_pnl": round(net_realized, 8),
+        }
+
+        return jsonify({'code': 1, 'msg': 'success', 'data': {
+            'trades': processed_rows, 'items': processed_rows, 'cost_summary': cost_summary,
+        }})
     except Exception as e:
         logger.error(f"get_trades failed: {str(e)}")
         logger.error(traceback.format_exc())
@@ -239,12 +287,22 @@ def _build_strategy_equity_curve(user_id: int, strategy_id: int):
         cur = db.cursor()
         cur.execute(
             """
-            SELECT created_at, profit, commission, commission_quote
+            SELECT created_at, profit, commission, commission_quote, 'trade' AS event_type
             FROM qd_strategy_trades
+            WHERE strategy_id = ?
+            UNION ALL
+            SELECT occurred_at AS created_at, amount AS profit, 0 AS commission,
+                   0 AS commission_quote, 'funding' AS event_type
+            FROM qd_strategy_funding_fees
+            WHERE strategy_id = ?
+            UNION ALL
+            SELECT occurred_at AS created_at, amount AS profit, 0 AS commission,
+                   0 AS commission_quote, 'broker_activity' AS event_type
+            FROM qd_strategy_broker_activities
             WHERE strategy_id = ?
             ORDER BY created_at ASC
             """,
-            (strategy_id,)
+            (strategy_id, strategy_id, strategy_id)
         )
         rows = cur.fetchall() or []
         cur.execute(
@@ -266,14 +324,27 @@ def _build_strategy_equity_curve(user_id: int, strategy_id: int):
 
     from app.utils.trade_net_pnl import enrich_trades_net_pnl, net_pnl_for_equity_step
 
-    trade_rows = [dict(r) for r in rows]
+    trade_rows = [dict(r) for r in rows if str(r.get("event_type") or "trade") == "trade"]
     enrich_trades_net_pnl(trade_rows)
+    events = []
     for r in trade_rows:
         try:
-            equity += float(net_pnl_for_equity_step(r))
+            delta = float(net_pnl_for_equity_step(r))
         except Exception:
-            pass
-        curve.append({'time': _trade_row_timestamp(r), 'equity': round(equity, 2)})
+            delta = 0.0
+        events.append((_trade_row_timestamp(r), delta))
+
+    funding_rows = [dict(r) for r in rows if str(r.get("event_type") or "") == "funding"]
+    broker_rows = [dict(r) for r in rows if str(r.get("event_type") or "") == "broker_activity"]
+    for r in funding_rows + broker_rows:
+        try:
+            delta = float(r.get("profit") or 0.0)
+        except Exception:
+            delta = 0.0
+        events.append((_trade_row_timestamp(r), delta))
+    for event_time, delta in sorted(events, key=lambda item: item[0]):
+        equity += delta
+        curve.append({'time': event_time, 'equity': round(equity, 2)})
 
     try:
         unreal = float(prow.get('u') or prow.get('U') or 0)

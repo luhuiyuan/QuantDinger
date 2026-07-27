@@ -48,7 +48,7 @@ def _sort_key(row: Dict[str, Any]) -> Tuple[int, int]:
 
 
 def _quote_commission(row: Dict[str, Any], fallback_key: str = "commission") -> float:
-    if "commission_quote" in row:
+    if row.get("commission_quote") not in (None, ""):
         try:
             return float(row.get("commission_quote") or 0.0)
         except Exception:
@@ -182,19 +182,23 @@ def enrich_trades_net_pnl(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def net_pnl_for_equity_step(trade: Dict[str, Any]) -> float:
     """
-    Single-row equity delta (opens: -commission; closes: net realised P&L).
+    Single-row equity delta for a chronological equity curve.
+
+    Entry rows debit their commission immediately.  Exit rows therefore add
+    gross P&L minus the exit commission; the allocated entry commission must
+    not be deducted a second time.
 
     Prefer enriched rows; falls back to gross profit minus close commission only.
     """
     if trade.get("profit") is not None:
         if trade.get("net_pnl") is not None:
             try:
-                return float(trade.get("net_pnl"))
+                return float(trade.get("net_pnl")) + float(trade.get("open_commission_allocated") or 0.0)
             except Exception:
                 pass
         open_comm = float(trade.get("open_commission_allocated") or 0.0)
         val = net_realized_pnl(trade, open_commission=open_comm)
-        return float(val or 0.0)
+        return float(val or 0.0) + open_comm
     try:
         return -_quote_commission(trade)
     except Exception:

@@ -201,7 +201,7 @@ def wait_live_order_fill(
     wait_sec = float(max_wait_sec or 0.0)
     if phase == "market":
         wait_sec = 5.0 if isinstance(client, (BinanceFuturesClient, BinanceSpotClient)) else 12.0
-    elif isinstance(client, (BitgetMixClient, BitgetSpotClient, GateSpotClient, GateUsdtFuturesClient)):
+    elif phase == "limit" and isinstance(client, (BitgetMixClient, BitgetSpotClient, GateSpotClient, GateUsdtFuturesClient)):
         wait_sec = max(wait_sec, 8.0)
 
     if isinstance(client, (BinanceFuturesClient, BinanceSpotClient)):

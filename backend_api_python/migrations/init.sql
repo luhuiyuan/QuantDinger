@@ -454,6 +454,73 @@ CREATE INDEX IF NOT EXISTS idx_trades_created_at ON qd_strategy_trades(created_a
 CREATE INDEX IF NOT EXISTS idx_trades_strategy_symbol_canon ON qd_strategy_trades (strategy_id, market_type, symbol_canonical);
 CREATE INDEX IF NOT EXISTS idx_positions_strategy_leg ON qd_strategy_positions (strategy_id, market_type, symbol_canonical, side);
 
+-- Exchange-settled funding cash flow. Positive amount means the strategy
+-- received funding; negative means it paid funding.
+CREATE TABLE IF NOT EXISTS qd_strategy_funding_fees (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES qd_users(id) ON DELETE CASCADE,
+    strategy_id INTEGER NOT NULL REFERENCES qd_strategies_trading(id) ON DELETE CASCADE,
+    credential_id INTEGER NOT NULL DEFAULT 0,
+    exchange_id VARCHAR(40) NOT NULL DEFAULT '',
+    symbol VARCHAR(50) NOT NULL DEFAULT '',
+    asset VARCHAR(20) NOT NULL DEFAULT 'USDT',
+    amount DECIMAL(24, 8) NOT NULL DEFAULT 0,
+    allocation_ratio DECIMAL(20, 12) NOT NULL DEFAULT 1,
+    external_id VARCHAR(160) NOT NULL,
+    occurred_at TIMESTAMP NOT NULL,
+    raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (credential_id, exchange_id, external_id, strategy_id)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_funding_strategy_time
+ON qd_strategy_funding_fees(strategy_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_strategy_funding_credential
+ON qd_strategy_funding_fees(credential_id, exchange_id, external_id);
+
+-- Broker-posted account activities attributed to strategy-generated orders.
+-- Amount is the signed cash impact: negative is a fee/interest debit, positive is a credit.
+CREATE TABLE IF NOT EXISTS qd_strategy_broker_activities (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES qd_users(id) ON DELETE CASCADE,
+    strategy_id INTEGER NOT NULL REFERENCES qd_strategies_trading(id) ON DELETE CASCADE,
+    credential_id INTEGER NOT NULL DEFAULT 0,
+    broker_id VARCHAR(40) NOT NULL DEFAULT '',
+    activity_type VARCHAR(24) NOT NULL DEFAULT '',
+    activity_subtype VARCHAR(24) NOT NULL DEFAULT '',
+    symbol VARCHAR(50) NOT NULL DEFAULT '',
+    currency VARCHAR(16) NOT NULL DEFAULT 'USD',
+    amount DECIMAL(24, 8) NOT NULL DEFAULT 0,
+    account_amount DECIMAL(24, 8) NOT NULL DEFAULT 0,
+    allocation_ratio DECIMAL(20, 12) NOT NULL DEFAULT 1,
+    allocation_reason VARCHAR(40) NOT NULL DEFAULT '',
+    external_id VARCHAR(180) NOT NULL,
+    occurred_at TIMESTAMP NOT NULL,
+    raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (credential_id, broker_id, external_id, strategy_id)
+);
+CREATE INDEX IF NOT EXISTS idx_broker_activity_strategy_time
+ON qd_strategy_broker_activities(strategy_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_broker_activity_credential
+ON qd_strategy_broker_activities(credential_id, broker_id, external_id);
+
+-- Five-minute mark-to-market history used to calculate a strategy's true
+-- local-day equity change, including the change in unrealized P&L on positions
+-- carried across midnight.
+CREATE TABLE IF NOT EXISTS qd_strategy_equity_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES qd_users(id) ON DELETE CASCADE,
+    strategy_id INTEGER NOT NULL REFERENCES qd_strategies_trading(id) ON DELETE CASCADE,
+    equity DECIMAL(24,8) NOT NULL DEFAULT 0,
+    realized_pnl DECIMAL(24,8) NOT NULL DEFAULT 0,
+    unrealized_pnl DECIMAL(24,8) NOT NULL DEFAULT 0,
+    captured_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_equity_snapshots_boundary
+ON qd_strategy_equity_snapshots(strategy_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_equity_snapshots_user
+ON qd_strategy_equity_snapshots(user_id, captured_at DESC);
+
 -- Strategy AI review report history.
 CREATE TABLE IF NOT EXISTS qd_strategy_review_reports (
     id SERIAL PRIMARY KEY,

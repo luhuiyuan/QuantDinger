@@ -1,9 +1,4 @@
-"""
-Resolve close/reduce order quantity from local DB and live exchange positions.
-
-When the DB snapshot lags (e.g. open fill not written yet), fall back to the
-exchange as source of truth instead of rejecting with amount=0.
-"""
+"""Resolve close/reduce quantities without crossing strategy ownership."""
 
 from __future__ import annotations
 
@@ -267,14 +262,18 @@ def resolve_reduce_only_quantity(
     client: Any,
     market_type: str,
     exchange_config: Optional[Dict[str, Any]] = None,
+    allow_exchange_fallback: bool = False,
 ) -> Tuple[float, Dict[str, Any]]:
     """
     Choose a safe close/reduce base quantity.
 
-    Priority:
-    1. Local DB size (cap requested amount).
-    2. Exchange size when DB missing or requested amount is zero.
-    3. Min(requested, exchange) when both exist.
+    Strategy orders are capped by the strategy-owned L3 position ledger.  The
+    exchange account position/balance is only a second safety cap and must not
+    become the source quantity, because it can include a user's manual holdings
+    or positions allocated to another strategy.
+
+    ``allow_exchange_fallback`` is an explicit recovery-only escape hatch for
+    callers that intentionally operate on the whole exchange position.
     """
     meta: Dict[str, Any] = {}
     amount = max(0.0, float(requested_amount or 0.0))
@@ -291,6 +290,9 @@ def resolve_reduce_only_quantity(
             amount = db_size
     else:
         meta["db_missing"] = True
+        if not allow_exchange_fallback:
+            amount = 0.0
+            meta["blocked_by"] = "strategy_position_missing"
 
     exch_size = query_exchange_position_size(
         client=client,
@@ -302,7 +304,7 @@ def resolve_reduce_only_quantity(
     meta["exchange_size"] = exch_size
 
     if exch_size > 0:
-        if amount <= 0:
+        if amount <= 0 and allow_exchange_fallback:
             amount = exch_size
             meta["filled_from"] = "exchange"
             logger.info(

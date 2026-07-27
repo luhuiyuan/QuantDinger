@@ -94,10 +94,15 @@ def summarise_backtest_runs(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     best = max(scored, key=lambda item: (item[0], item[1]))
     best_score, best_run_id, best_result = best
+    annual_return = best_result.get("annualizedReturn")
+    if annual_return is None:
+        annual_return = best_result.get("annualReturn")
+    if annual_return is None:
+        annual_return = best_result.get("annual_return")
     return {
         "score": round(float(best_score or 0), 2),
         "total_return": round(float(best_result.get("totalReturn") or 0), 2),
-        "annual_return": round(float(best_result.get("annualReturn") or 0), 2),
+        "annual_return": round(float(annual_return or 0), 2),
         "sharpe": round(float(best_result.get("sharpeRatio") or 0), 2),
         "max_drawdown": round(float(best_result.get("maxDrawdown") or 0), 2),
         "win_rate": round(float(best_result.get("winRate") or 0), 2),

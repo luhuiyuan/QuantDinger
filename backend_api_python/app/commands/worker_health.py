@@ -18,7 +18,10 @@ def main() -> None:
     credential_key = str(os.getenv("CREDENTIAL_ENCRYPTION_KEY") or "").strip()
     session_key = str(os.getenv("SECRET_KEY") or "").strip()
     if args.role in {"trading", "scheduler"} and not credential_key:
-        if not session_key or session_key == "quantdinger-secret-key-change-me":
+        if (
+            len(session_key.encode("utf-8")) < 10
+            or session_key == "quantdinger-secret-key-change-me"
+        ):
             sys.exit(1)
 
     with get_db_connection() as db:

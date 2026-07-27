@@ -1,3 +1,5 @@
+import math
+
 import pandas as pd
 import pytest
 
@@ -209,6 +211,84 @@ def test_explicit_backtest_quantity_is_not_scaled_by_leverage():
     assert target == 2.5
 
 
+def test_leveraged_backtest_force_closes_and_stops_after_insolvency():
+    code = """
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@swap"])
+    context.subscribe(frequency="1d")
+    context.allow_leverage(max_leverage=5)
+
+def handle_data(context, data):
+    if get_position("Crypto:BTC/USDT@swap").amount == 0:
+        order_target_percent("Crypto:BTC/USDT@swap", 0.95, reason="open_long")
+"""
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@swap": _frame([100, 100, 70, 60, 50, 40])},
+        initial_capital=10_000,
+        leverage_enabled=True,
+        leverage=5,
+        commission=0,
+        slippage=0,
+    ).run()
+
+    assert result["liquidated"] is True
+    assert result["finalEquity"] == pytest.approx(0.0)
+    assert result["totalReturn"] == pytest.approx(-100.0)
+    assert result["annualizedReturn"] == pytest.approx(-100.0)
+    assert result["totalExecutions"] == 2
+    assert result["totalTrades"] == 1
+    assert result["closedTrades"][0]["close_reason"] == "margin_liquidation"
+    assert result["orderLedger"][-1]["statusReason"] == "margin_liquidation"
+    assert result["audit"]["passed"] is True
+    assert all(float(point["value"]) >= 0 for point in result["equityCurve"])
+
+
+def test_leverage_does_not_change_regime_signal_count_while_account_is_solvent():
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@swap"
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1d")
+    context.allow_leverage(max_leverage=20)
+
+def handle_data(context, data):
+    bars = get_history(6, "1d", "close", g.symbol)
+    if len(bars) < 5:
+        return
+    close = bars["close"]
+    fast = float(close.tail(2).mean())
+    slow = float(close.tail(5).mean())
+    amount = float(get_position(g.symbol).amount or 0.0)
+    target = 0.95 if fast > slow else -0.95
+    if (target > 0 and amount <= 0) or (target < 0 and amount >= 0):
+        order_target_percent(g.symbol, target, reason="regime_change")
+"""
+    prices = [100 + 2 * math.sin(index / 4) for index in range(120)]
+
+    unleveraged = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@swap": _frame(prices)},
+        initial_capital=10_000,
+        commission=0,
+        slippage=0,
+    ).run()
+    leveraged = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@swap": _frame(prices)},
+        initial_capital=10_000,
+        leverage_enabled=True,
+        leverage=5,
+        commission=0,
+        slippage=0,
+    ).run()
+
+    assert unleveraged["liquidated"] is False
+    assert leveraged["liquidated"] is False
+    assert leveraged["totalExecutions"] == unleveraged["totalExecutions"]
+    assert leveraged["totalTrades"] == unleveraged["totalTrades"]
+
+
 def test_runtime_rejects_leverage_not_declared_by_strategy():
     code = """
 def initialize(context):
@@ -299,6 +379,11 @@ def handle_data(context, data):
     assert result["totalTrades"] == 1
     assert result["rawTrades"][0]["type"] == "open_long"
     assert result["rawTrades"][1]["type"] == "close_long"
+    assert result["rawTrades"][0]["time"].endswith("Z")
+    assert result["rawTrades"][0]["signal_time"].endswith("Z")
+    assert result["closedTrades"][0]["entry_time"].endswith("Z")
+    assert result["closedTrades"][0]["exit_time"].endswith("Z")
+    assert all(point["time"].endswith("Z") for point in result["equityCurve"])
     assert result["closedTrades"][0]["entry_price"] == 110
     assert result["closedTrades"][0]["exit_price"] == 120
     assert result["closedTrades"][0]["profit"] > 0
@@ -573,3 +658,33 @@ def handle_data(context, data):
     assert {item["status"] for item in result["rawTrades"]} == {"filled"}
     assert result["attribution"]["orderStatus"]["partial"] == 0
     assert result["attribution"]["orderStatus"]["rejected"] == 0
+
+
+def test_closed_trade_breaks_out_open_and_close_commission():
+    frame = _frame([100, 100, 110, 110, 110])
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@swap"
+    g.step = 0
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1m")
+
+def handle_data(context, data):
+    if g.step == 0:
+        order_target_value(g.symbol, 1000, reason="entry")
+    elif g.step == 1:
+        order_target_value(g.symbol, 0, reason="exit")
+    g.step += 1
+"""
+    result = StrategyV2BacktestRunner(
+        code=code, frames={"Crypto:BTC/USDT@swap": frame}, initial_capital=10_000,
+        commission=0.001, slippage=0,
+    ).run()
+
+    trade = result["closedTrades"][0]
+    assert trade["entry_commission"] > 0
+    assert trade["exit_commission"] > 0
+    assert trade["commission"] == pytest.approx(
+        trade["entry_commission"] + trade["exit_commission"]
+    )
+    assert trade["profit"] == pytest.approx(trade["gross_profit"] - trade["commission"])

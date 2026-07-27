@@ -198,6 +198,28 @@ class CommunityService:
                     where_clauses.append("COALESCE(i.price, 0) <= ?")
                     params.append(float(max_price))
 
+                # Count both marketplace categories before applying the active
+                # category filter.  The UI can therefore show the number next
+                # to both tabs without making a second listing request.  All
+                # other active filters (keyword, price, visibility, etc.) are
+                # intentionally reflected in these counts.
+                category_where_sql = " AND ".join(where_clauses)
+                cur.execute(
+                    f"""
+                    SELECT
+                        SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'indicator' THEN 1 ELSE 0 END) AS indicator_count,
+                        SUM(CASE WHEN COALESCE(i.asset_type, 'indicator') = 'script_template' THEN 1 ELSE 0 END) AS script_template_count
+                    FROM qd_indicator_codes i
+                    WHERE {category_where_sql}
+                    """,
+                    tuple(params),
+                )
+                category_count_row = cur.fetchone() or {}
+                asset_type_counts = {
+                    'indicator': int(category_count_row.get('indicator_count') or 0),
+                    'script_template': int(category_count_row.get('script_template_count') or 0),
+                }
+
                 _allowed_asset_types = ('indicator', 'script_template')
                 if asset_type and str(asset_type).strip() in _allowed_asset_types:
                     where_clauses.append("(COALESCE(i.asset_type, 'indicator') = ?)")
@@ -249,7 +271,8 @@ class CommunityService:
                         cur.close()
                         return {
                             'items': [], 'total': total, 'page': page,
-                            'page_size': page_size, 'total_pages': 0
+                            'page_size': page_size, 'total_pages': 0,
+                            'asset_type_counts': asset_type_counts,
                         }
                     id_placeholders = ','.join(['?'] * len(page_ids))
                     cur.execute(f"""
@@ -379,12 +402,17 @@ class CommunityService:
                     'total': total,
                     'page': page,
                     'page_size': page_size,
-                    'total_pages': (total + page_size - 1) // page_size if total > 0 else 0
+                    'total_pages': (total + page_size - 1) // page_size if total > 0 else 0,
+                    'asset_type_counts': asset_type_counts,
                 }
 
         except Exception as e:
             logger.error(f"get_market_indicators failed: {e}")
-            return {'items': [], 'total': 0, 'page': 1, 'page_size': page_size, 'total_pages': 0}
+            return {
+                'items': [], 'total': 0, 'page': 1, 'page_size': page_size,
+                'total_pages': 0,
+                'asset_type_counts': {'indicator': 0, 'script_template': 0},
+            }
 
     def publish_script_template_from_strategy(
         self,

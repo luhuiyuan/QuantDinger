@@ -564,6 +564,7 @@ class BitgetSpotClient(BaseRestClient):
                 total_quote = 0.0
                 total_fee = 0.0
                 fee_ccy = ""
+                fees_by_ccy: Dict[str, float] = {}
                 if isinstance(fills, list):
                     for f in fills:
                         try:
@@ -596,9 +597,12 @@ class BitgetSpotClient(BaseRestClient):
                                 except Exception:
                                     fee = 0.0
                             if fee != 0.0:
-                                total_fee += abs(float(fee))
+                                abs_fee = abs(float(fee))
+                                total_fee += abs_fee
                                 if (not fee_ccy) and ccy:
                                     fee_ccy = ccy
+                                fee_key = ccy.upper() if ccy else "UNKNOWN"
+                                fees_by_ccy[fee_key] = fees_by_ccy.get(fee_key, 0.0) + abs_fee
                         except Exception:
                             continue
                 if total_base > 0 and total_quote > 0:
@@ -614,6 +618,7 @@ class BitgetSpotClient(BaseRestClient):
                         "avg_price": total_quote / total_base,
                         "fee": float(total_fee),
                         "fee_ccy": str(fee_ccy or ""),
+                        "fees_by_ccy": fees_by_ccy,
                         "state": state,
                         "order": last_order,
                         "fills": last_fills,
@@ -664,6 +669,7 @@ class BitgetSpotClient(BaseRestClient):
                     "avg_price": avg_price,
                     "fee": fee,
                     "fee_ccy": fee_ccy,
+                    "fees_by_ccy": ({str(fee_ccy).upper(): fee} if fee > 0 else {}),
                     "state": state,
                     "order": last_order,
                     "fills": last_fills,
@@ -687,5 +693,4 @@ class BitgetSpotClient(BaseRestClient):
         if isinstance(data, dict):
             return data
         return {}
-
 

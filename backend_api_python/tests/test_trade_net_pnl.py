@@ -31,6 +31,7 @@ def test_enrich_trades_net_pnl_full_round_trip():
     assert close["profit"] == 92.0
     assert close["net_pnl"] == 92.0
     assert close["total_commission"] == 8.0
+    assert sum(net_pnl_for_equity_step(trade) for trade in trades) == 92.0
 
 
 def test_partial_close_fifo_across_two_opens():
@@ -58,8 +59,20 @@ def test_net_pnl_for_equity_step_open_and_close():
         "commission": 3.0,
         "open_commission_allocated": 7.0,
     }
-    assert net_pnl_for_equity_step(close_row) == 90.0
+    # The opening fee was already debited on its entry row, so the exit step
+    # adds gross P&L minus the close fee only (100 - 3).
+    assert net_pnl_for_equity_step(close_row) == 97.0
     assert net_realized_pnl(close_row, open_commission=7.0) == 90.0
+
+
+def test_commission_quote_none_falls_back_to_raw_commission():
+    open_row = {
+        "type": "open_long",
+        "profit": None,
+        "commission": 4.0,
+        "commission_quote": None,
+    }
+    assert net_pnl_for_equity_step(open_row) == -4.0
 
 
 def test_short_leg_does_not_cross_with_long():

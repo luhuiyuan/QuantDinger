@@ -6,6 +6,8 @@ def test_settings_values_masks_password_fields(client, monkeypatch):
         "sub": "admin",
         "user_id": 1,
         "role": "admin",
+        "_verified_username": "admin",
+        "_verified_user_role": "admin",
     })
     monkeypatch.setattr(settings_route, "read_env_file", lambda: {
         "CUSTOM_API_KEY": "real-secret",
@@ -36,6 +38,8 @@ def test_settings_values_does_not_treat_password_default_as_configured(client, m
         "sub": "admin",
         "user_id": 1,
         "role": "admin",
+        "_verified_username": "admin",
+        "_verified_user_role": "admin",
     })
     monkeypatch.setattr(settings_route, "read_env_file", lambda: {})
     monkeypatch.setattr(settings_route, "CONFIG_SCHEMA", {

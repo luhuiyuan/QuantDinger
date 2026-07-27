@@ -353,6 +353,29 @@ class GateUsdtFuturesClient(_GateBase):
         except Exception:
             return False
 
+    def get_funding_payments(self, *, symbol: str, start_time_ms: int, end_time_ms: int, limit: int = 100):
+        contract = to_gate_currency_pair(symbol)
+        raw = self._signed_request(
+            "GET",
+            "/api/v4/futures/usdt/account_book",
+            params={"contract": contract, "type": "fund", "from": int(start_time_ms // 1000),
+                    "to": int(end_time_ms // 1000), "limit": min(1000, max(1, int(limit or 100)))},
+        )
+        rows = raw if isinstance(raw, list) else (raw.get("data") or []) if isinstance(raw, dict) else []
+        out = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            amount = float(item.get("change") or 0.0)
+            seconds = int(float(item.get("time") or item.get("create_time") or 0))
+            out.append({
+                "id": str(item.get("id") or item.get("trade_id") or f"{seconds}:{amount}"),
+                "symbol": str(item.get("contract") or contract), "amount": amount,
+                "asset": "USDT", "time": seconds * 1000 if seconds < 10_000_000_000 else seconds,
+                "raw": item,
+            })
+        return out
+
     def get_ticker(self, *, symbol: str) -> Dict[str, Any]:
         contract = to_gate_currency_pair(symbol)
         raw = self._public_request("GET", "/api/v4/futures/usdt/tickers", params={"contract": contract})
@@ -717,5 +740,4 @@ class GateUsdtFuturesClient(_GateBase):
             if timed_out:
                 return {"filled": filled, "avg_price": avg_price, "fee": fee, "fee_ccy": fee_ccy, "status": status, "order": last}
             time.sleep(float(poll_interval_sec or 0.5))
-
 

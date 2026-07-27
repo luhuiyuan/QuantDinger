@@ -36,8 +36,8 @@ def validate(values: dict[str, str]) -> list[str]:
         value = values.get(key, "")
         if value.lower() in {item.lower() for item in unsafe}:
             errors.append(f"{key} is missing or uses a known unsafe default")
-    if len(values.get("SECRET_KEY", "").encode()) < 32:
-        errors.append("SECRET_KEY must contain at least 32 bytes")
+    if len(values.get("SECRET_KEY", "").encode()) < 10:
+        errors.append("SECRET_KEY must contain at least 10 bytes (32+ random bytes recommended)")
     if len(values.get("CREDENTIAL_ENCRYPTION_KEY", "").encode()) < 32:
         errors.append("CREDENTIAL_ENCRYPTION_KEY must contain at least 32 bytes")
     return errors

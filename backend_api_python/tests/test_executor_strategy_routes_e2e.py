@@ -65,6 +65,16 @@ def _auth_headers(monkeypatch):
     from app.utils import auth as auth_module
 
     monkeypatch.setattr(auth_module, "_verify_token_version", lambda user_id, token_version: True)
+    monkeypatch.setattr(
+        auth_module,
+        "_get_user_auth_state",
+        lambda user_id: {
+            "username": "executor-test",
+            "role": "user",
+            "status": "active",
+            "token_version": 1,
+        },
+    )
     token = generate_token(7, "executor-test", "user", token_version=1)
     return {"Authorization": f"Bearer {token}"}
 

@@ -1,6 +1,14 @@
 ﻿"""Sandbox static validation and known escape regression tests."""
 
-from app.utils.safe_exec import build_safe_builtins, safe_exec_with_validation, validate_code_safety
+import builtins
+import math
+
+from app.utils.safe_exec import (
+    build_safe_builtins,
+    safe_exec_code,
+    safe_exec_with_validation,
+    validate_code_safety,
+)
 
 # Classic subclass-chain escape (CVE-class pattern for restricted exec).
 _SUBCLASS_ESCAPE = """
@@ -54,6 +62,144 @@ def test_legit_indicator_passes_validator():
 def test_operator_import_rejected():
     ok, _ = validate_code_safety("import operator\noutput = {}")
     assert ok is False
+
+
+_MODULE_LOADER_ESCAPE = """
+import math
+module_loader = math.__loader__
+os_module = module_loader.load_module('os')
+output = os_module.system('id')
+"""
+
+_MODULE_LOADER_ALIAS_ESCAPE = """
+import math
+module_loader = math.__loader__
+load = module_loader.load_module
+os_module = load('os')
+output = os_module.system('id')
+"""
+
+_STRATEGY_MODULE_LOADER_ESCAPE = """
+import math
+def initialize(context):
+    context['ready'] = True
+def handle_data(context, data):
+    module = math.__loader__.load_module('os')
+    output['marker'] = module.system('id')
+"""
+
+
+def test_module_loader_escape_rejected_by_validator():
+    ok, err = validate_code_safety(_MODULE_LOADER_ESCAPE)
+    assert ok is False
+    assert err
+
+    ok, err = validate_code_safety(_MODULE_LOADER_ALIAS_ESCAPE)
+    assert ok is False
+    assert err
+
+
+def test_strategy_shaped_module_loader_escape_rejected():
+    ok, err = validate_code_safety(_STRATEGY_MODULE_LOADER_ESCAPE)
+    assert ok is False
+    assert err
+
+
+def test_allowed_module_proxy_hides_importer_metadata():
+    math_module = build_safe_builtins()['__import__']('math')
+    assert math_module.sqrt(9) == 3
+    for attr in ('__loader__', '__spec__', '__dict__'):
+        try:
+            getattr(math_module, attr)
+        except AttributeError:
+            pass
+        else:
+            raise AssertionError(f"module metadata should be hidden: {attr}")
+
+
+def test_exec_boundary_replaces_ambient_builtins_and_raw_modules():
+    env = {
+        '__builtins__': builtins.__dict__,
+        'math': math,
+        'output': None,
+    }
+    result = safe_exec_with_validation(
+        "output = math.sqrt(25)",
+        env,
+        env,
+        pre_import='',
+    )
+    assert result['success'] is True
+    assert env['output'] == 5
+    assert 'open' not in env['__builtins__']
+    for attr in ('__loader__', '__spec__', '__dict__'):
+        try:
+            getattr(env['math'], attr)
+        except AttributeError:
+            pass
+        else:
+            raise AssertionError(f"ambient module metadata should be hidden: {attr}")
+
+    second = safe_exec_with_validation(
+        "output = math.sqrt(36)",
+        env,
+        env,
+        pre_import='',
+    )
+    assert second['success'] is True
+    assert env['output'] == 6
+
+
+def test_from_import_returns_wrapped_submodule():
+    env = {'output': None}
+    result = safe_exec_with_validation(
+        "from json import decoder\noutput = decoder",
+        env,
+        env,
+        pre_import='',
+    )
+    assert result['success'] is True
+    for attr in ('__loader__', '__spec__', '__dict__'):
+        try:
+            getattr(env['output'], attr)
+        except AttributeError:
+            pass
+        else:
+            raise AssertionError(f"imported submodule metadata should be hidden: {attr}")
+
+
+def test_allowed_module_cannot_expose_transitive_sys_module():
+    payload = """
+import collections
+loaded = collections._sys.modules
+module = loaded['os']
+output = module.system('id')
+"""
+    env = {'output': None}
+    result = safe_exec_with_validation(payload, env, env, pre_import='')
+    assert result['success'] is False
+    assert env['output'] is None
+
+
+def test_pre_import_is_validated_before_execution():
+    env = {'output': None}
+    result = safe_exec_with_validation(
+        "output = 1",
+        env,
+        env,
+        pre_import="import os",
+    )
+    assert result['success'] is False
+    assert result['error'].startswith('Unsafe pre-import rejected:')
+    assert env['output'] is None
+
+
+def test_direct_safe_exec_code_is_fail_closed():
+    env = {'output': None, '__builtins__': builtins.__dict__}
+    result = safe_exec_code("import os\noutput = os.getcwd()", env, env)
+    assert result['success'] is False
+    assert result['error'].startswith('Unsafe code rejected:')
+    assert env['output'] is None
 
 
 # pandas.io.common.urlopen can bypass read_csv bans for local file reads or SSRF.
@@ -144,6 +290,28 @@ def test_np_ctypeslib_submodule_import_rejected():
 
 def test_from_pd_io_import_rejected():
     ok, err = validate_code_safety(_FROM_PD_IO_IMPORT_ESCAPE)
+    assert ok is False
+    assert err
+
+
+def test_from_import_cannot_alias_dangerous_io_function():
+    ok, err = validate_code_safety(
+        "from pandas import read_csv\noutput = read_csv('/etc/passwd')"
+    )
+    assert ok is False
+    assert err
+
+
+def test_private_transitive_module_import_rejected():
+    ok, err = validate_code_safety(
+        "from collections import _sys\noutput = _sys.modules"
+    )
+    assert ok is False
+    assert err
+
+    ok, err = validate_code_safety(
+        "from datetime import sys\noutput = sys.modules"
+    )
     assert ok is False
     assert err
 

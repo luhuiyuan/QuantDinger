@@ -39,7 +39,13 @@ def admin_authed(monkeypatch):
     monkeypatch.setattr(
         core_auth,
         "verify_token",
-        lambda _raw: {"sub": "tester", "user_id": 42, "role": "admin"},
+        lambda _raw: {
+            "sub": "tester",
+            "user_id": 42,
+            "role": "admin",
+            "_verified_username": "tester",
+            "_verified_user_role": "admin",
+        },
     )
     yield {"user_id": 42}
 
@@ -49,7 +55,13 @@ def user_authed(monkeypatch):
     monkeypatch.setattr(
         core_auth,
         "verify_token",
-        lambda _raw: {"sub": "alice", "user_id": 7, "role": "user"},
+        lambda _raw: {
+            "sub": "alice",
+            "user_id": 7,
+            "role": "user",
+            "_verified_username": "alice",
+            "_verified_user_role": "user",
+        },
     )
     yield {"user_id": 7}
 

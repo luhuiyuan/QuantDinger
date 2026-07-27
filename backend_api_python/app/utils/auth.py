@@ -16,32 +16,40 @@ from app.config.settings import Config
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-_MIN_JWT_SECRET_BYTES = 32
-_jwt_warnings_configured = False
+_RECOMMENDED_JWT_SECRET_BYTES = 32
+_jwt_secret_warning_configured = False
 
 
 def _configure_jwt_secret_warnings() -> None:
-    """Log once if SECRET_KEY is short; suppress per-request PyJWT spam."""
-    global _jwt_warnings_configured
-    if _jwt_warnings_configured:
+    """Validate the signing key and configure the legacy-length warning.
+
+    The historical name is retained for compatibility with the application
+    factory and any third-party integrations that import it.
+    """
+    global _jwt_secret_warning_configured
+
+    secret = Config.SECRET_KEY
+    if _jwt_secret_warning_configured:
         return
-    key_len = len((Config.SECRET_KEY or "").encode("utf-8"))
-    if key_len < _MIN_JWT_SECRET_BYTES:
+    key_len = len(secret.encode('utf-8'))
+    if key_len < _RECOMMENDED_JWT_SECRET_BYTES:
         logger.warning(
-            "SECRET_KEY is %d bytes (< %d recommended for HS256). "
-            "Set a longer random value in .env, e.g. "
-            "`python -c \"import secrets; print(secrets.token_hex(32))\"`. "
-            "Existing sessions will invalidate after you change it.",
+            "SECRET_KEY is %d bytes; accepted for legacy compatibility, "
+            "but 32+ random bytes are recommended",
             key_len,
-            _MIN_JWT_SECRET_BYTES,
         )
-    warnings.filterwarnings(
-        "ignore",
-        message=r".*HMAC key is .* bytes long.*",
-        category=Warning,
-    )
-    _jwt_warnings_configured = True
+    try:
+        from jwt.warnings import InsecureKeyLengthWarning
+
+        warnings.filterwarnings("ignore", category=InsecureKeyLengthWarning)
+    except (ImportError, AttributeError):
+        # Older PyJWT releases do not expose this warning category.
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*HMAC key is .*bytes long.*",
+            category=Warning,
+        )
+    _jwt_secret_warning_configured = True
 
 
 def generate_token(user_id: int, username: str, role: str = 'user', token_version: int = 1) -> str:
@@ -59,7 +67,7 @@ def generate_token(user_id: int, username: str, role: str = 'user', token_versio
     """
     try:
         _configure_jwt_secret_warnings()
-        now = datetime.datetime.now(datetime.UTC)
+        now = datetime.datetime.now(datetime.timezone.utc)
         payload = {
             'exp': now + datetime.timedelta(days=7),
             'iat': now,
@@ -90,22 +98,100 @@ def verify_token(token: str) -> dict:
     """
     try:
         _configure_jwt_secret_warnings()
-        payload = jwt.decode(token, Config.SECRET_KEY, algorithms=['HS256'])
-        
+        payload = jwt.decode(
+            token,
+            Config.SECRET_KEY,
+            algorithms=['HS256'],
+            options={
+                'require': ['exp', 'iat', 'sub', 'user_id', 'token_version'],
+            },
+        )
+
         user_id = payload.get('user_id')
         token_version = payload.get('token_version')
-        
-        if user_id and token_version is not None:
-            if not _verify_token_version(user_id, token_version):
-                logger.debug(f"Token version mismatch for user {user_id}: expected current, got {token_version}")
+
+        if (
+            not isinstance(user_id, int)
+            or isinstance(user_id, bool)
+            or user_id <= 0
+            or not isinstance(token_version, int)
+            or isinstance(token_version, bool)
+            or token_version < 1
+        ):
+            logger.debug("Token contains invalid user_id or token_version")
+            return None
+
+        # Keep the session-version check in one independently testable
+        # helper.  The authoritative user row is still loaded below for the
+        # role/existence check, so a JWT claim can never supply authorization.
+        if not _verify_token_version(user_id, token_version):
+            logger.debug(
+                "Token version mismatch for user %s: expected current, got %s",
+                user_id,
+                token_version,
+            )
+            return None
+
+        auth_user = _get_user_auth_state(user_id)
+        if not auth_user or auth_user.get('status') != 'active':
+            logger.debug("Token subject does not exist or is not active: %s", user_id)
+            return None
+
+        # Re-check the version from the same authoritative row used for role
+        # authorization. This closes the small race where a logout/version
+        # bump happens between the helper check and the role lookup.
+        db_token_version = auth_user.get('token_version')
+        if db_token_version is None:
+            db_token_version = 1
+        try:
+            if token_version != int(db_token_version):
+                logger.debug(
+                    "Token version changed during verification for user %s",
+                    user_id,
+                )
                 return None
-        
+        except (TypeError, ValueError):
+            logger.warning("Rejecting user %s with invalid database token_version", user_id)
+            return None
+
+        role = auth_user.get('role')
+        if role not in ('admin', 'manager', 'user', 'viewer'):
+            logger.warning("Rejecting user %s with invalid database role", user_id)
+            return None
+
+        # These values are deliberately separate from attacker-controlled JWT
+        # claims. Authorization middleware consumes only the database-backed
+        # fields populated after token/session validation succeeds.
+        payload['_verified_username'] = auth_user.get('username') or payload['sub']
+        payload['_verified_user_role'] = role
         return payload
     except jwt.ExpiredSignatureError:
         logger.debug("Token expired")
         return None
     except jwt.InvalidTokenError as e:
         logger.debug(f"Invalid token: {e}")
+        return None
+
+
+def _get_user_auth_state(user_id: int) -> dict:
+    """Load the authoritative session and authorization state for a user."""
+    try:
+        from app.utils.db import get_db_connection
+
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                SELECT username, role, status, token_version
+                FROM qd_users WHERE id = ?
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+            cur.close()
+            return row
+    except Exception as e:
+        logger.error(f"_get_user_auth_state failed: {e}")
         return None
 
 
@@ -121,24 +207,15 @@ def _verify_token_version(user_id: int, token_version: int) -> bool:
     Returns:
         True if version matches, False otherwise
     """
+    row = _get_user_auth_state(user_id)
+    if not row:
+        return False
+    db_token_version = row.get('token_version')
+    if db_token_version is None:
+        db_token_version = 1
     try:
-        from app.utils.db import get_db_connection
-        with get_db_connection() as db:
-            cur = db.cursor()
-            cur.execute(
-                "SELECT token_version FROM qd_users WHERE id = ?",
-                (user_id,)
-            )
-            row = cur.fetchone()
-            cur.close()
-            
-            if not row:
-                return False
-            
-            db_token_version = row.get('token_version') or 1
-            return int(token_version) == int(db_token_version)
-    except Exception as e:
-        logger.error(f"_verify_token_version failed: {e}")
+        return int(token_version) == int(db_token_version)
+    except (TypeError, ValueError):
         return False
 
 
@@ -176,10 +253,15 @@ def login_required(f):
         if not payload:
             return jsonify({'code': 401, 'msg': 'Token invalid or expired', 'data': None}), 401
         
-        # Store user info in flask.g
-        g.user = payload.get('sub')
+        verified_role = payload.get('_verified_user_role')
+        if verified_role not in ('admin', 'manager', 'user', 'viewer'):
+            logger.warning("Verified token missing authoritative database role")
+            return jsonify({'code': 401, 'msg': 'Token invalid or expired', 'data': None}), 401
+
+        # Store only database-backed identity and authorization state in g.
+        g.user = payload.get('_verified_username')
         g.user_id = payload.get('user_id')
-        g.user_role = payload.get('role', 'user')
+        g.user_role = verified_role
         
         return f(*args, **kwargs)
         

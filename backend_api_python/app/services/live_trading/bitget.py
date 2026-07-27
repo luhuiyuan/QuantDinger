@@ -292,6 +292,33 @@ class BitgetMixClient(BaseRestClient):
                 raise LiveTradingError(f"Bitget error: {data}")
         return data if isinstance(data, dict) else {"raw": data}
 
+    def get_funding_payments(self, *, symbol: str, start_time_ms: int, end_time_ms: int, limit: int = 100):
+        raw = self._signed_request(
+            "GET",
+            "/api/v2/mix/account/bill",
+            params={
+                "productType": "USDT-FUTURES",
+                "businessType": "contract_settle_fee",
+                "startTime": int(start_time_ms),
+                "endTime": int(end_time_ms),
+                "limit": min(100, max(1, int(limit or 100))),
+            },
+        )
+        data = raw.get("data") or {}
+        rows = data.get("bills") if isinstance(data, dict) else []
+        out = []
+        for item in rows or []:
+            if not isinstance(item, dict):
+                continue
+            amount = float(item.get("amount") or 0.0)
+            out.append({
+                "id": str(item.get("billId") or f"{item.get('cTime')}:{amount}"),
+                "symbol": str(item.get("symbol") or symbol), "amount": amount,
+                "asset": str(item.get("coin") or "USDT").upper(), "time": int(item.get("cTime") or 0),
+                "raw": item,
+            })
+        return out
+
     def _post_mix_place_order(
         self,
         body: Dict[str, Any],
@@ -999,6 +1026,7 @@ class BitgetMixClient(BaseRestClient):
                 total_quote = Decimal("0")
                 total_fee = Decimal("0")
                 fee_ccy = ""
+                fees_by_ccy: Dict[str, float] = {}
                 if isinstance(fill_list, list):
                     for f in fill_list:
                         try:
@@ -1034,9 +1062,12 @@ class BitgetMixClient(BaseRestClient):
                                 total_quote += sz_base * px
                             if fee != 0:
                                 # Fees may be negative; store absolute cost.
-                                total_fee += abs(fee)
+                                abs_fee = abs(fee)
+                                total_fee += abs_fee
                                 if (not fee_ccy) and ccy:
                                     fee_ccy = ccy
+                                fee_key = ccy.upper() if ccy else "UNKNOWN"
+                                fees_by_ccy[fee_key] = fees_by_ccy.get(fee_key, 0.0) + float(abs_fee)
                         except Exception:
                             continue
                 if total_base > 0 and total_quote > 0:
@@ -1052,6 +1083,7 @@ class BitgetMixClient(BaseRestClient):
                         "avg_price": float(total_quote / total_base),
                         "fee": float(total_fee),
                         "fee_ccy": str(fee_ccy or ""),
+                        "fees_by_ccy": fees_by_ccy,
                         "state": state,
                         "detail": last_detail,
                         "fills": last_fills,
@@ -1089,6 +1121,7 @@ class BitgetMixClient(BaseRestClient):
                             "avg_price": avg,
                             "fee": float(abs_fee),
                             "fee_ccy": str(dccy or ""),
+                            "fees_by_ccy": ({str(dccy).upper(): float(abs_fee)} if abs_fee > 0 else {}),
                             "state": state,
                             "detail": last_detail,
                             "fills": last_fills,
@@ -1106,6 +1139,7 @@ class BitgetMixClient(BaseRestClient):
                             "avg_price": avg,
                             "fee": float(abs_fee),
                             "fee_ccy": str(dccy or ""),
+                            "fees_by_ccy": ({str(dccy).upper(): float(abs_fee)} if abs_fee > 0 else {}),
                             "state": state,
                             "detail": last_detail,
                             "fills": last_fills,
@@ -1131,5 +1165,3 @@ class BitgetMixClient(BaseRestClient):
                     }
                 return {"filled": 0.0, "avg_price": 0.0, "fee": 0.0, "fee_ccy": "", "state": state, "detail": last_detail, "fills": last_fills}
             time.sleep(float(poll_interval_sec or 0.5))
-
-

@@ -12,6 +12,8 @@ def _auth_headers(monkeypatch):
             "user_id": 1,
             "role": "user",
             "token_version": 1,
+            "_verified_username": "tester",
+            "_verified_user_role": "user",
         },
     )
     return {"Authorization": "Bearer test-token"}

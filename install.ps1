@@ -202,7 +202,7 @@ function Collect-Settings {
     }
 
     $existingSecret = Get-EnvValue $BackendEnv "SECRET_KEY"
-    if ($existingSecret -and $existingSecret -ne "quantdinger-secret-key-change-me") {
+    if ($existingSecret -and $existingSecret -ne "quantdinger-secret-key-change-me" -and $existingSecret.Length -ge 10) {
         $script:SecretKey = $existingSecret
     } else {
         $script:SecretKey = New-HexSecret 32

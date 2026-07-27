@@ -475,9 +475,8 @@ class TradingExecutor:
                         last_prices,
                         timestamp=pd.Timestamp.now(tz="UTC"),
                     )
-                    protected = {str(intent.symbol) for intent in protection_intents}
                     for intent in protection_intents:
-                        self._execute_strategy_v2_intent(
+                        submitted = self._execute_strategy_v2_intent(
                             strategy_id=strategy_id,
                             strategy_name=strategy_name,
                             intent=intent,
@@ -493,6 +492,13 @@ class TradingExecutor:
                             strategy_run_id=run_id,
                             current_price_override=last_prices.get(str(intent.symbol)),
                         )
+                        if not submitted:
+                            session.release_protection_exit(intent.symbol)
+
+                    # Suppress normal strategy orders for a symbol until its
+                    # asynchronous protection close has completed and the
+                    # strategy position snapshot becomes flat.
+                    protected = session.pending_protection_exit_symbols()
 
                     pending_count = len(protection_intents)
                     if cycle_started >= next_signal_poll:
@@ -659,9 +665,18 @@ class TradingExecutor:
         strategy_id = int(values["strategy_id"])
         strategy = self._load_strategy(strategy_id) or {}
         if str(values.get("execution_mode") or "signal").strip().lower() == "live":
-            from app.services.strategy_live_guard import validate_strategy_signal_direction
+            from app.services.strategy_live_guard import (
+                StrategyDirectionModeViolation,
+                validate_strategy_signal_direction,
+            )
 
-            validate_strategy_signal_direction(strategy, values.get("signal_type"))
+            try:
+                validate_strategy_signal_direction(strategy, values.get("signal_type"))
+            except StrategyDirectionModeViolation as exc:
+                message = f"Signal blocked by strategy direction guard: {exc}"
+                logger.warning("Strategy %s %s", strategy_id, message)
+                append_strategy_log(strategy_id, "warning", message)
+                return False
         quantity = float(values.get("script_base_qty") or 0)
         reference_price = float(values.get("current_price") or 0)
         initial_capital = float(values.get("initial_capital") or 0)

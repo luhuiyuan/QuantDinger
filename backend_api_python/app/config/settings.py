@@ -1,6 +1,15 @@
 """Application settings."""
 import os
 
+
+_INSECURE_SECRET_KEYS = {
+    "quantdinger-secret-key-change-me",
+}
+# Compatibility floor for installations upgraded from releases that used
+# shorter session keys. New deployments should still generate 32 random bytes.
+_MIN_SECRET_KEY_BYTES = 10
+
+
 class MetaConfig(type):
     
     @property
@@ -25,7 +34,17 @@ class MetaConfig(type):
 
     @property
     def SECRET_KEY(cls):
-        return os.getenv('SECRET_KEY', 'quantdinger-secret-key-change-me')
+        secret = (os.getenv('SECRET_KEY') or '').strip()
+        if not secret or secret in _INSECURE_SECRET_KEYS:
+            raise RuntimeError(
+                'SECRET_KEY must be set to a unique random value. Generate one with: '
+                'python -c "import secrets; print(secrets.token_hex(32))"'
+            )
+        if len(secret.encode('utf-8')) < _MIN_SECRET_KEY_BYTES:
+            raise RuntimeError(
+                f'SECRET_KEY must contain at least {_MIN_SECRET_KEY_BYTES} bytes'
+            )
+        return secret
 
     @property
     def ADMIN_USER(cls):

@@ -8,6 +8,7 @@ import itertools
 import math
 import random
 from typing import Any
+from uuid import uuid4
 
 from flask import g, jsonify, request
 
@@ -19,6 +20,7 @@ from app.services.backtest_execution import (
     parse_rate,
 )
 from app.services.backtest_limits import BacktestRangeLimitError
+from app.services.billing_service import get_billing_service
 from app.services.script_source import get_script_source_service
 from app.services.strategy_v2 import (
     CNHistoryCoverageError,
@@ -81,7 +83,7 @@ def _source(payload: dict[str, Any], user_id: int) -> tuple[str, int | None, int
     return code, source_id, strategy_id, strategy_name
 
 
-def _run(payload: dict[str, Any], user_id: int, *, persist: bool) -> tuple[int | None, dict[str, Any]]:
+def _prepare_run(payload: dict[str, Any], user_id: int) -> dict[str, Any]:
     code, source_id, strategy_id, strategy_name = _source(payload, user_id)
     start_raw = str(payload.get("startDate") or "").strip()
     end_raw = str(payload.get("endDate") or "").strip()
@@ -90,38 +92,133 @@ def _run(payload: dict[str, Any], user_id: int, *, persist: bool) -> tuple[int |
     start_date = datetime.strptime(start_raw, "%Y-%m-%d")
     end_date = datetime.strptime(end_raw, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
     leverage_enabled = bool(payload.get("leverageEnabled", False))
-    return get_strategy_backtest_service().run(
+    return {
+        "user_id": user_id,
+        "code": code,
+        "start_date": start_date,
+        "end_date": end_date,
+        "initial_capital": float(payload.get("initialCapital") or 10_000),
+        "leverage_enabled": leverage_enabled,
+        "leverage": float(payload.get("leverage") or 1),
+        "commission": parse_rate(payload.get("commission"), default=default_commission_if_missing(None)),
+        "slippage": parse_rate(payload.get("slippage"), default=default_slippage_if_missing(None)),
+        "params": dict(payload.get("params") or {}),
+        "strategy_id": strategy_id,
+        "source_id": source_id,
+        "strategy_name": strategy_name,
+    }
+
+
+def _run_prepared(prepared: dict[str, Any], *, persist: bool) -> tuple[int | None, dict[str, Any]]:
+    return get_strategy_backtest_service().run(**prepared, persist=persist)
+
+
+def _run(payload: dict[str, Any], user_id: int, *, persist: bool) -> tuple[int | None, dict[str, Any]]:
+    return _run_prepared(_prepare_run(payload, user_id), persist=persist)
+
+
+def _consume_backtest_credits(user_id: int) -> tuple[Any, dict[str, Any]]:
+    """Charge one backtest run and return a response-safe billing snapshot."""
+    billing = get_billing_service()
+    enabled = bool(billing.is_billing_enabled())
+    cost = max(0, int(billing.get_feature_cost("backtest") or 0))
+    reference_id = f"backtest:{uuid4().hex}"
+    charge = {
+        "enabled": enabled,
+        "cost": cost,
+        "charged": 0,
+        "remaining": float(billing.get_user_credits(user_id)),
+        "referenceId": reference_id,
+    }
+    if not enabled or cost <= 0:
+        return billing, charge
+
+    success, message = billing.check_and_consume(
         user_id=user_id,
-        code=code,
-        start_date=start_date,
-        end_date=end_date,
-        initial_capital=float(payload.get("initialCapital") or 10_000),
-        leverage_enabled=leverage_enabled,
-        leverage=float(payload.get("leverage") or 1),
-        commission=parse_rate(payload.get("commission"), default=default_commission_if_missing(None)),
-        slippage=parse_rate(payload.get("slippage"), default=default_slippage_if_missing(None)),
-        params=dict(payload.get("params") or {}),
-        persist=persist,
-        strategy_id=strategy_id,
-        source_id=source_id,
-        strategy_name=strategy_name,
+        feature="backtest",
+        reference_id=reference_id,
     )
+    if not success:
+        current = float(billing.get_user_credits(user_id))
+        if str(message).startswith("insufficient_credits:"):
+            return billing, {
+                **charge,
+                "error": "insufficient_credits",
+                "current": current,
+                "required": cost,
+                "shortage": max(0, cost - current),
+            }
+        return billing, {**charge, "error": "billing_error", "message": str(message)}
+
+    charge["charged"] = cost
+    charge["remaining"] = float(billing.get_user_credits(user_id))
+    return billing, charge
+
+
+def _refund_backtest_credits(billing: Any, user_id: int, charge: dict[str, Any]) -> None:
+    cost = int(charge.get("charged") or 0)
+    if not billing or cost <= 0:
+        return
+    refunded, message = billing.add_credits(
+        user_id=user_id,
+        amount=cost,
+        action="refund",
+        remark="Automatic refund: backtest execution failed",
+        reference_id=str(charge.get("referenceId") or ""),
+    )
+    if not refunded:
+        logger.error("Backtest credit refund failed for user %s: %s", user_id, message)
 
 
 @backtest_center_blp.route("/run", methods=["POST"])
 @login_required
 def run_strategy_backtest():
+    billing = None
+    charge: dict[str, Any] = {}
+    user_id = int(g.user_id)
     try:
         payload = request.get_json(silent=True) or {}
-        run_id, result = _run(payload, int(g.user_id), persist=bool(payload.get("persist", True)))
-        return jsonify({"code": 1, "msg": "success", "data": {**result, "runId": run_id}})
+        prepared = _prepare_run(payload, user_id)
+        billing, charge = _consume_backtest_credits(user_id)
+        if charge.get("error") == "insufficient_credits":
+            return jsonify({
+                "code": 0,
+                "msg": "insufficient_credits",
+                "data": {
+                    "error_type": "INSUFFICIENT_CREDITS",
+                    "feature": "backtest",
+                    "current": charge["current"],
+                    "required": charge["required"],
+                    "shortage": charge["shortage"],
+                },
+            }), 402
+        if charge.get("error"):
+            return jsonify({
+                "code": 0,
+                "msg": charge.get("message") or "Failed to deduct credits",
+                "data": {"error_type": "BILLING_ERROR", "feature": "backtest"},
+            }), 500
+
+        run_id, result = _run_prepared(prepared, persist=bool(payload.get("persist", True)))
+        billing_data = {
+            key: charge.get(key)
+            for key in ("enabled", "cost", "charged", "remaining")
+        }
+        return jsonify({
+            "code": 1,
+            "msg": "success",
+            "data": {**result, "runId": run_id, "billing": billing_data},
+        })
     except BacktestRangeLimitError as exc:
+        _refund_backtest_credits(billing, user_id, charge)
         return jsonify({"code": 0, "msg": str(exc), "data": exc.details}), 400
     except CNHistoryCoverageError as exc:
         return jsonify({"code": 0, "msg": exc.code, "data": exc.details}), 409
     except ValueError as exc:
+        _refund_backtest_credits(billing, user_id, charge)
         return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
     except Exception as exc:
+        _refund_backtest_credits(billing, user_id, charge)
         logger.exception("Strategy backtest failed")
         return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
 
@@ -346,9 +443,14 @@ def _candidates(space: dict[str, list[Any]], *, method: str, limit: int) -> list
 
 def _metrics(result: dict[str, Any]) -> dict[str, float]:
     raw = result.get("metrics") if isinstance(result.get("metrics"), dict) else result
+    annual_return = raw.get("annualReturn")
+    if annual_return is None:
+        annual_return = raw.get("annualizedReturn")
+    if annual_return is None:
+        annual_return = raw.get("annual_return")
     return {
         "totalReturn": _number(raw.get("totalReturn", raw.get("total_return"))),
-        "annualReturn": _number(raw.get("annualReturn", raw.get("annual_return"))),
+        "annualReturn": _number(annual_return),
         "maxDrawdown": _number(raw.get("maxDrawdown", raw.get("max_drawdown"))),
         "sharpeRatio": _number(raw.get("sharpeRatio", raw.get("sharpe_ratio"))),
         "winRate": _number(raw.get("winRate", raw.get("win_rate"))),

@@ -1090,7 +1090,9 @@ def get_system_strategies():
         sort_expr_map = {
             'total_pnl': (
                 "(COALESCE((SELECT SUM(unrealized_pnl) FROM qd_strategy_positions p WHERE p.strategy_id = s.id), 0)"
-                " + COALESCE((SELECT SUM(COALESCE(t.profit, 0) - COALESCE(t.commission_quote, 0)) FROM qd_strategy_trades t WHERE t.strategy_id = s.id), 0))"
+                " + COALESCE((SELECT SUM(COALESCE(t.profit, 0) - COALESCE(t.commission_quote, t.commission, 0)) FROM qd_strategy_trades t WHERE t.strategy_id = s.id), 0)"
+                " + COALESCE((SELECT SUM(COALESCE(f.amount, 0)) FROM qd_strategy_funding_fees f WHERE f.strategy_id = s.id), 0)"
+                " + COALESCE((SELECT SUM(COALESCE(a.amount, 0)) FROM qd_strategy_broker_activities a WHERE a.strategy_id = s.id), 0))"
             ),
             'trade_count': '(SELECT COUNT(*) FROM qd_strategy_trades t WHERE t.strategy_id = s.id)',
             'position_count': '(SELECT COUNT(*) FROM qd_strategy_positions p WHERE p.strategy_id = s.id)',
@@ -1250,12 +1252,18 @@ def get_system_strategies():
                 placeholders = ','.join(['?'] * len(strategy_ids))
                 cur.execute(
                     f"""
-                    SELECT strategy_id, 
-                           COUNT(*) as trade_count, 
-                           COALESCE(SUM(COALESCE(profit, 0) - COALESCE(commission_quote, 0)), 0) as total_realized_pnl
-                    FROM qd_strategy_trades
-                    WHERE strategy_id IN ({placeholders})
-                    GROUP BY strategy_id
+                    SELECT t.strategy_id,
+                           COUNT(*) as trade_count,
+                           COALESCE(SUM(COALESCE(t.profit, 0) - COALESCE(t.commission_quote, t.commission, 0)), 0)
+                           + COALESCE((SELECT SUM(COALESCE(f.amount, 0))
+                                       FROM qd_strategy_funding_fees f
+                                       WHERE f.strategy_id = t.strategy_id), 0)
+                           + COALESCE((SELECT SUM(COALESCE(a.amount, 0))
+                                       FROM qd_strategy_broker_activities a
+                                       WHERE a.strategy_id = t.strategy_id), 0) AS total_realized_pnl
+                    FROM qd_strategy_trades t
+                    WHERE t.strategy_id IN ({placeholders})
+                    GROUP BY t.strategy_id
                     """,
                     tuple(strategy_ids)
                 )
@@ -1410,9 +1418,9 @@ def get_system_strategies():
 
             # Aggregate realized pnl from trade history.
             realized_sql = f"""
-                SELECT COALESCE(SUM(COALESCE(t.profit, 0) - COALESCE(t.commission_quote, 0)), 0) AS total_realized,
-                       COALESCE(SUM(CASE WHEN s.execution_mode = 'live' THEN COALESCE(t.profit, 0) - COALESCE(t.commission_quote, 0) ELSE 0 END), 0) AS live_realized,
-                       COALESCE(SUM(CASE WHEN s.execution_mode = 'signal' THEN COALESCE(t.profit, 0) - COALESCE(t.commission_quote, 0) ELSE 0 END), 0) AS signal_realized
+                SELECT COALESCE(SUM(COALESCE(t.profit, 0) - COALESCE(t.commission_quote, t.commission, 0)), 0) AS total_realized,
+                       COALESCE(SUM(CASE WHEN s.execution_mode = 'live' THEN COALESCE(t.profit, 0) - COALESCE(t.commission_quote, t.commission, 0) ELSE 0 END), 0) AS live_realized,
+                       COALESCE(SUM(CASE WHEN s.execution_mode = 'signal' THEN COALESCE(t.profit, 0) - COALESCE(t.commission_quote, t.commission, 0) ELSE 0 END), 0) AS signal_realized
                 FROM qd_strategy_trades t
                 JOIN qd_strategies_trading s ON s.id = t.strategy_id
                 LEFT JOIN qd_users u ON u.id = s.user_id
@@ -1421,13 +1429,37 @@ def get_system_strategies():
             """
             cur.execute(realized_sql, tuple(params))
             realized_row = cur.fetchone() or {}
+            funding_sql = f"""
+                SELECT COALESCE(SUM(COALESCE(f.amount, 0)), 0) AS total_realized,
+                       COALESCE(SUM(CASE WHEN s.execution_mode = 'live' THEN COALESCE(f.amount, 0) ELSE 0 END), 0) AS live_realized,
+                       COALESCE(SUM(CASE WHEN s.execution_mode = 'signal' THEN COALESCE(f.amount, 0) ELSE 0 END), 0) AS signal_realized
+                FROM qd_strategy_funding_fees f
+                JOIN qd_strategies_trading s ON s.id = f.strategy_id
+                LEFT JOIN qd_users u ON u.id = s.user_id
+                {source_join_sql}
+                {where_clause}
+            """
+            cur.execute(funding_sql, tuple(params))
+            funding_row = cur.fetchone() or {}
+            broker_activity_sql = f"""
+                SELECT COALESCE(SUM(COALESCE(a.amount, 0)), 0) AS total_realized,
+                       COALESCE(SUM(CASE WHEN s.execution_mode = 'live' THEN COALESCE(a.amount, 0) ELSE 0 END), 0) AS live_realized,
+                       COALESCE(SUM(CASE WHEN s.execution_mode = 'signal' THEN COALESCE(a.amount, 0) ELSE 0 END), 0) AS signal_realized
+                FROM qd_strategy_broker_activities a
+                JOIN qd_strategies_trading s ON s.id = a.strategy_id
+                LEFT JOIN qd_users u ON u.id = s.user_id
+                {source_join_sql}
+                {where_clause}
+            """
+            cur.execute(broker_activity_sql, tuple(params))
+            broker_activity_row = cur.fetchone() or {}
             cur.close()
 
         total_capital = float(agg_row.get('total_capital') or 0)
         total_running = int(agg_row.get('running_strategies') or 0)
-        total_system_pnl = float(unreal_row.get('total_unrealized') or 0) + float(realized_row.get('total_realized') or 0)
-        live_pnl = float(unreal_row.get('live_unrealized') or 0) + float(realized_row.get('live_realized') or 0)
-        signal_pnl = float(unreal_row.get('signal_unrealized') or 0) + float(realized_row.get('signal_realized') or 0)
+        total_system_pnl = float(unreal_row.get('total_unrealized') or 0) + float(realized_row.get('total_realized') or 0) + float(funding_row.get('total_realized') or 0) + float(broker_activity_row.get('total_realized') or 0)
+        live_pnl = float(unreal_row.get('live_unrealized') or 0) + float(realized_row.get('live_realized') or 0) + float(funding_row.get('live_realized') or 0) + float(broker_activity_row.get('live_realized') or 0)
+        signal_pnl = float(unreal_row.get('signal_unrealized') or 0) + float(realized_row.get('signal_realized') or 0) + float(funding_row.get('signal_realized') or 0) + float(broker_activity_row.get('signal_realized') or 0)
         live_capital = float(agg_row.get('live_capital') or 0)
 
         return jsonify({
@@ -2348,5 +2380,3 @@ def get_admin_user_stats():
         return jsonify({'code': 0, 'msg': str(e), 'data': None}), 500
 # openapi-compat: legacy import name
 user_bp = user_blp
-
-

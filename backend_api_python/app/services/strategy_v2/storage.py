@@ -219,6 +219,25 @@ def _normalize_backtest_result(
         ),
     )
     result.setdefault("initialCapital", initial_capital)
+    assumptions = result.get("executionAssumptions")
+    if not isinstance(assumptions, dict):
+        assumptions = {}
+        result["executionAssumptions"] = assumptions
+    leverage = _number(run.get("leverage"), 1.0)
+    assumption_defaults = {
+        "initialCapital": initial_capital,
+        "startDate": str(run.get("start_date") or ""),
+        "endDate": str(run.get("end_date") or ""),
+        "leverageEnabled": leverage > 1.0,
+        "leverage": leverage,
+        "commission": _number(run.get("commission")),
+        "slippage": _number(run.get("slippage")),
+    }
+    backfilled_fields: list[str] = []
+    for field, value in assumption_defaults.items():
+        if assumptions.get(field) is None:
+            assumptions[field] = value
+            backfilled_fields.append(f"executionAssumptions.{field}")
 
     executions = [
         item
@@ -226,8 +245,18 @@ def _normalize_backtest_result(
         if isinstance(item, dict)
     ]
     curve = result.get("equityCurve")
-    backfilled_fields: list[str] = []
-
+    if result.get("liquidated") is None and isinstance(curve, list):
+        values = [
+            _number(point.get("value"))
+            for point in curve
+            if isinstance(point, dict) and point.get("value") is not None
+        ]
+        first_insolvent = next((index for index, value in enumerate(values) if value <= 0), None)
+        if first_insolvent is not None and (
+            values[first_insolvent] < 0 or first_insolvent < len(values) - 1
+        ):
+            result["legacyInsolventContinuation"] = True
+            backfilled_fields.append("legacyInsolventContinuation")
     if isinstance(curve, list) and curve and any(
         not isinstance(point, dict)
         or any(name not in point for name in ("cash", "grossExposure", "netExposure"))

@@ -258,6 +258,39 @@ class HtxClient(BaseRestClient):
         self._raise_v5_error(path, raw)
         return raw  # unreachable
 
+    def get_funding_payments(self, *, symbol: str, start_time_ms: int, end_time_ms: int, limit: int = 100):
+        if self.market_type != "swap":
+            return []
+        contract = to_htx_contract_code(symbol)
+        raw = self._swap_private_request_raw(
+            "POST",
+            "/linear-swap-api/v3/swap_financial_record",
+            json_body={"contract": contract, "mar_acct": contract, "type": "30,31",
+                       "start_time": int(start_time_ms), "end_time": int(end_time_ms),
+                       "direct": "prev"},
+        )
+        if str(raw.get("status") or "").lower() not in ("ok", ""):
+            raise LiveTradingError(f"HTX swap error: {raw}")
+        data = raw.get("data") or {}
+        rows = data.get("financial_record") or data.get("records") or data.get("data") or []
+        if isinstance(rows, dict):
+            rows = rows.get("financial_record") or rows.get("records") or []
+        out = []
+        for item in (rows or [])[:max(1, int(limit or 100))]:
+            if not isinstance(item, dict):
+                continue
+            record_type = str(item.get("type") or "")
+            value = abs(float(item.get("amount") or item.get("change") or 0.0))
+            amount = value if record_type == "30" else -value
+            ts = int(item.get("created_at") or item.get("ts") or item.get("time") or 0)
+            out.append({
+                "id": str(item.get("id") or f"{ts}:{record_type}:{value}"),
+                "symbol": str(item.get("contract") or item.get("contract_code") or contract),
+                "amount": amount, "asset": str(item.get("asset") or item.get("fee_asset") or "USDT").upper(),
+                "time": ts, "raw": item,
+            })
+        return out
+
     def ping(self) -> bool:
         try:
             if self.market_type == "spot":
@@ -885,6 +918,115 @@ class HtxClient(BaseRestClient):
             raw = self._swap_v5_request("GET", "/v5/trade/order/details", params=params)
         return htx_v5.normalize_order_detail(raw)
 
+    def get_order_match_results(
+        self,
+        *,
+        symbol: str,
+        order_id: str = "",
+        client_order_id: str = "",
+    ) -> Dict[str, Any]:
+        """Fetch the exchange's per-match records used for authoritative fees."""
+        if self.market_type == "spot":
+            if not order_id:
+                raise LiveTradingError("HTX spot match results require order_id")
+            return self._spot_private_request(
+                "GET",
+                f"/v1/order/orders/{str(order_id)}/matchresults",
+            )
+        params = htx_v5.build_order_query_params(
+            contract_code=to_htx_contract_code(symbol),
+            order_id=order_id,
+            client_order_id=client_order_id,
+        )
+        try:
+            return self._swap_v5_request(
+                "GET",
+                "/v5/trade/order/details",
+                params=params,
+            )
+        except LiveTradingError as exc:
+            if not order_id:
+                raise
+            endpoint = (
+                "/linear-swap-api/v1/swap_order_detail"
+                if self.margin_mode == "isolated"
+                else "/linear-swap-api/v1/swap_cross_order_detail"
+            )
+            logger.info(
+                "HTX V5 order details unavailable; using %s for order=%s: %s",
+                endpoint,
+                order_id,
+                exc,
+            )
+            return self._swap_private_request_raw(
+                "POST",
+                endpoint,
+                json_body={
+                    "contract_code": to_htx_contract_code(symbol),
+                    "order_id": str(order_id),
+                },
+            )
+
+    @staticmethod
+    def _match_fee_breakdown(raw: Dict[str, Any], *, default_ccy: str = "") -> Dict[str, float]:
+        data: Any = raw.get("data") if isinstance(raw, dict) else None
+        if data is None:
+            data = htx_v5.v5_data(raw) if isinstance(raw, dict) else None
+
+        def _fee_rows(value: Any) -> List[Dict[str, Any]]:
+            if isinstance(value, list):
+                rows: List[Dict[str, Any]] = []
+                for item in value:
+                    rows.extend(_fee_rows(item))
+                return rows
+            if not isinstance(value, dict):
+                return []
+            nested_rows: List[Dict[str, Any]] = []
+            for key in ("trades", "trade", "fills", "fill_list", "match_results", "details"):
+                nested = value.get(key)
+                if isinstance(nested, (list, dict)):
+                    nested_rows.extend(_fee_rows(nested))
+            # Prefer per-match rows over an order-level aggregate to avoid double-counting.
+            return nested_rows or [value]
+
+        rows = _fee_rows(data)
+
+        fees: Dict[str, float] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            fee_value = (
+                row.get("filled-fees")
+                or row.get("trade_fee")
+                or row.get("tradeFee")
+                or row.get("fee")
+                or 0.0
+            )
+            fee_currency = (
+                row.get("fee-currency")
+                or row.get("fee_asset")
+                or row.get("feeAsset")
+                or row.get("fee_currency")
+                or default_ccy
+            )
+            try:
+                fee = abs(float(fee_value or 0.0))
+            except (TypeError, ValueError):
+                fee = 0.0
+            if fee <= 0:
+                # HTX spot may deduct points or HT instead of the received asset.
+                try:
+                    fee = abs(float(row.get("filled-points") or 0.0))
+                except (TypeError, ValueError):
+                    fee = 0.0
+                if fee > 0:
+                    fee_currency = row.get("fee-deduct-currency") or "POINT"
+            if fee <= 0:
+                continue
+            key = str(fee_currency or "").strip().upper() or "UNKNOWN"
+            fees[key] = fees.get(key, 0.0) + fee
+        return fees
+
     def wait_for_fill(
         self,
         *,
@@ -919,6 +1061,7 @@ class HtxClient(BaseRestClient):
             avg_price = 0.0
             fee = 0.0
             fee_ccy = "USDT"
+            fees_by_ccy: Dict[str, float] = {}
             status = str(last.get("status") or last.get("state") or "")
             try:
                 if self.market_type == "spot":
@@ -972,6 +1115,25 @@ class HtxClient(BaseRestClient):
             except Exception:
                 fee = 0.0
             fee_ccy = str(last.get("fee_asset") or last.get("fee_currency") or fee_ccy or "").strip() or "USDT"
+            if fee > 0:
+                fees_by_ccy = {fee_ccy.upper(): fee}
+            if filled > 0:
+                try:
+                    match_raw = self.get_order_match_results(
+                        symbol=symbol,
+                        order_id=str(order_id or ""),
+                        client_order_id=str(client_order_id or ""),
+                    )
+                    match_fees = self._match_fee_breakdown(
+                        match_raw,
+                        default_ccy="USDT" if self.market_type != "spot" else "",
+                    )
+                    if match_fees:
+                        fees_by_ccy = match_fees
+                        fee = sum(match_fees.values())
+                        fee_ccy = next(iter(match_fees)) if len(match_fees) == 1 else "MIXED"
+                except Exception as exc:
+                    logger.debug("HTX match fee query failed for order %s: %s", order_id, exc)
 
             if filled > 0 and avg_price > 0:
                 if fee <= 0 and not timed_out:
@@ -982,6 +1144,7 @@ class HtxClient(BaseRestClient):
                     "avg_price": avg_price,
                     "fee": fee,
                     "fee_ccy": fee_ccy,
+                    "fees_by_ccy": fees_by_ccy,
                     "status": status,
                     "order": last,
                 }
@@ -996,6 +1159,7 @@ class HtxClient(BaseRestClient):
                     "avg_price": avg_price,
                     "fee": fee,
                     "fee_ccy": fee_ccy,
+                    "fees_by_ccy": fees_by_ccy,
                     "status": status,
                     "order": last,
                 }
@@ -1005,6 +1169,7 @@ class HtxClient(BaseRestClient):
                     "avg_price": avg_price,
                     "fee": fee,
                     "fee_ccy": fee_ccy,
+                    "fees_by_ccy": fees_by_ccy,
                     "status": status,
                     "order": last,
                 }

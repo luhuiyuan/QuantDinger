@@ -17,6 +17,7 @@ from app.services.ai_generation_contracts import (
     SCRIPT_STRATEGY_SYSTEM_PROMPT,
 )
 from app.services.strategy import redact_strategy_row
+from app.services.strategy_daily_pnl import load_strategy_daily_metrics
 from app.services.strategy_runtime.health import load_runtime_health
 from app.services.strategy_v2 import compile_strategy_v2
 from app.utils.auth import login_required
@@ -51,7 +52,7 @@ def _strategy(strategy_id: int):
     return get_strategy_service().get_strategy(int(strategy_id), user_id=int(g.user_id))
 
 
-def _attach_runtime_health(rows):
+def _attach_runtime_health(rows, *, user_id: int | None = None, client_timezone: str = ""):
     items = [dict(row) for row in (rows or [])]
     statuses = {
         int(row.get("id") or 0): str(row.get("status") or "")
@@ -61,14 +62,28 @@ def _attach_runtime_health(rows):
     health = load_runtime_health(statuses, strategy_statuses=statuses)
     for row in items:
         row["runtime_health"] = health.get(int(row.get("id") or 0), {})
+    if user_id is not None:
+        metrics = load_strategy_daily_metrics(
+            items,
+            user_id=int(user_id),
+            client_timezone=str(client_timezone or ""),
+        )
+        for row in items:
+            row.update(metrics.get(int(row.get("id") or 0), {}))
     return items
 
 
 @strategy_blp.route("/strategies", methods=["GET"])
 @login_required
 def list_strategies():
-    rows = get_strategy_service().list_strategies(user_id=int(g.user_id))
-    return _ok([redact_strategy_row(row) for row in _attach_runtime_health(rows)])
+    user_id = int(g.user_id)
+    rows = get_strategy_service().list_strategies(user_id=user_id)
+    enriched = _attach_runtime_health(
+        rows,
+        user_id=user_id,
+        client_timezone=request.headers.get("X-App-Timezone", ""),
+    )
+    return _ok([redact_strategy_row(row) for row in enriched])
 
 
 @strategy_blp.route("/strategies/<int:strategy_id>", methods=["GET"])
@@ -77,7 +92,11 @@ def get_strategy(strategy_id: int):
     row = _strategy(strategy_id)
     if not row:
         return _error("strategyV2.strategyNotFound", 404)
-    return _ok(redact_strategy_row(_attach_runtime_health([row])[0]))
+    return _ok(redact_strategy_row(_attach_runtime_health(
+        [row],
+        user_id=int(g.user_id),
+        client_timezone=request.headers.get("X-App-Timezone", ""),
+    )[0]))
 
 
 @strategy_blp.route("/strategies", methods=["POST"])

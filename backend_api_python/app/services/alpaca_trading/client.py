@@ -12,6 +12,8 @@ from typing import Optional, Dict, Any, List, Union
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
+import requests
+
 from app.utils.logger import get_logger
 from app.services.alpaca_trading.symbols import normalize_symbol, format_display_symbol, parse_symbol
 
@@ -467,6 +469,61 @@ class AlpacaClient:
             err = _format_alpaca_error(e)
             logger.error("Alpaca get_order_status failed: %s", err)
             return OrderResult(success=False, message=err)
+
+    def get_account_activities(
+        self,
+        *,
+        activity_types: List[str],
+        after: str = "",
+        until: str = "",
+        date: str = "",
+        page_size: int = 100,
+        max_pages: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Return paginated Trading API account activities as plain dictionaries."""
+        self._ensure_connected()
+        types = ",".join(
+            sorted({str(value or "").strip().upper() for value in activity_types if str(value or "").strip()})
+        )
+        if not types:
+            return []
+        host = self.config.base_url or (
+            "https://paper-api.alpaca.markets" if self.config.paper else "https://api.alpaca.markets"
+        )
+        url = f"{host.rstrip('/')}/v2/account/activities"
+        params: Dict[str, Any] = {
+            "activity_types": types,
+            "direction": "asc",
+            "page_size": max(1, min(int(page_size or 100), 100)),
+        }
+        if date:
+            params["date"] = str(date)
+        else:
+            if after:
+                params["after"] = str(after)
+            if until:
+                params["until"] = str(until)
+        headers = {
+            "APCA-API-KEY-ID": self.config.api_key,
+            "APCA-API-SECRET-KEY": self.config.secret_key,
+            "Accept": "application/json",
+        }
+        output: List[Dict[str, Any]] = []
+        for _ in range(max(1, int(max_pages or 1))):
+            response = requests.get(url, params=params, headers=headers, timeout=self.config.timeout)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise RuntimeError(f"Unexpected Alpaca activities response: {payload}")
+            rows = [dict(row) for row in payload if isinstance(row, dict)]
+            output.extend(rows)
+            if len(rows) < params["page_size"]:
+                break
+            token = str(rows[-1].get("id") or rows[-1].get("ref_id") or "").strip()
+            if not token or token == params.get("page_token"):
+                break
+            params["page_token"] = token
+        return output
 
     # ==================== Query Methods ====================
 

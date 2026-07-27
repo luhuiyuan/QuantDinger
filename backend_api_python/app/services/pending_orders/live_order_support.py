@@ -88,6 +88,19 @@ class FillAccumulator:
         return float(self.total_quote / self.total_base) if self.total_base > 0 else 0.0
 
 
+def apply_execution_result(fills: FillAccumulator, result: Any) -> None:
+    """Apply one normalized executor result, including its exchange fees."""
+    fills.apply_fill(
+        float(getattr(result, "filled_qty", 0.0) or 0.0),
+        float(getattr(result, "avg_price", 0.0) or 0.0),
+    )
+    breakdown = getattr(result, "fees_by_ccy", {}) or {}
+    if not isinstance(breakdown, dict):
+        return
+    for fee_currency, fee_amount in breakdown.items():
+        fills.apply_fee(float(fee_amount or 0.0), str(fee_currency or ""))
+
+
 @dataclass
 class LiveOrderNotifier:
     """Best-effort notification facade for live order execution."""

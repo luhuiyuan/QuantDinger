@@ -300,10 +300,13 @@ class StrategyV2BacktestService:
             "intrabarMode": "conservative",
             "barClosePolicy": "closed_bars_only",
             "initialCapital": initial_capital,
+            "startDate": start_date.date().isoformat(),
+            "endDate": end_date.date().isoformat(),
             "leverageEnabled": bool(leverage_enabled),
             "leverage": float(leverage if leverage_enabled else 1.0),
             "commission": float(commission),
             "slippage": float(slippage),
+            "fundingMode": "not_modeled",
         }
         cn_provenance = [
             item
@@ -555,7 +558,13 @@ def _build_benchmark_result(
             "benchmarkCurve": [],
             "benchmarkTotalReturn": 0.0,
         }
-    timestamps = pd.DatetimeIndex(pd.Timestamp(item["time"]) for item in equity_curve)
+    # Equity payloads are UTC ISO instants. Keep the internal alignment index
+    # UTC-naive because market frames are normalized to UTC-naive indexes.
+    timestamps = pd.DatetimeIndex(pd.to_datetime(
+        [item["time"] for item in equity_curve],
+        errors="coerce",
+        utc=True,
+    )).tz_convert(None)
     aligned = close.reindex(close.index.union(timestamps)).sort_index().ffill().reindex(timestamps)
     aligned = aligned.dropna()
     if aligned.empty or float(aligned.iloc[0]) <= 0:
@@ -568,7 +577,10 @@ def _build_benchmark_result(
         }
     base = float(aligned.iloc[0])
     curve = [
-        {"time": str(timestamp), "value": round(float(initial_capital) * float(value) / base, 8)}
+        {
+            "time": pd.Timestamp(timestamp).tz_localize("UTC").isoformat().replace("+00:00", "Z"),
+            "value": round(float(initial_capital) * float(value) / base, 8),
+        }
         for timestamp, value in aligned.items()
     ]
     total_return = (float(curve[-1]["value"]) / float(initial_capital) - 1.0) * 100.0
