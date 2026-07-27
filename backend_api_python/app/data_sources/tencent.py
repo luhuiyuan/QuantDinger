@@ -18,6 +18,7 @@ import requests
 import re
 
 from app.data_sources.rate_limiter import get_request_headers, retry_with_backoff, get_tencent_limiter
+from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 from app.utils.logger import get_logger
 from app.utils.resource_guard import assert_fd_available
 
@@ -74,7 +75,7 @@ def _lower_code(code: str) -> str:
 
 
 @retry_with_backoff(max_attempts=3, base_delay=1.2, max_delay=8.0, exceptions=(Exception,))
-def fetch_quote(code: str, timeout: int = 8) -> Optional[List[str]]:
+def _fetch_quote_raw(code: str, timeout: int = 8) -> Optional[List[str]]:
     """
     Returns the raw '~' split array from qt.gtimg.cn, or None.
     """
@@ -109,8 +110,16 @@ def fetch_quote(code: str, timeout: int = 8) -> Optional[List[str]]:
     return parts if len(parts) > 5 else None
 
 
+def fetch_quote(code: str, timeout: int = 8) -> Optional[List[str]]:
+    with ProviderAttempt(provider="tencent", data_domain="quote", operation="single_quote", call_source="tencent", subject_summary={"symbol": str(code or "")[:16]}) as attempt:
+        result = _fetch_quote_raw(code, timeout=timeout)
+        if not result:
+            attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no quote")
+        return result
+
+
 @retry_with_backoff(max_attempts=3, base_delay=1.0, max_delay=6.0, exceptions=(Exception,))
-def fetch_quote_map(codes: List[str], timeout: int = 8) -> Dict[str, List[str]]:
+def _fetch_quote_map_raw(codes: List[str], timeout: int = 8) -> Dict[str, List[str]]:
     """Fetch a bounded batch of Tencent quotes in one request."""
     normalized = [_lower_code(code) for code in codes if str(code or '').strip()]
     if not normalized:
@@ -132,6 +141,14 @@ def fetch_quote_map(codes: List[str], timeout: int = 8) -> Dict[str, List[str]]:
         if len(values) > 5:
             result[match.group(1).lower()] = values
     return result
+
+
+def fetch_quote_map(codes: List[str], timeout: int = 8) -> Dict[str, List[str]]:
+    with ProviderAttempt(provider="tencent", data_domain="quote", operation="batch_quote", call_source="tencent", subject_summary={"instrument_count": len(codes or [])}) as attempt:
+        result = _fetch_quote_map_raw(codes, timeout=timeout)
+        if not result:
+            attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no quotes")
+        return result
 
 
 def parse_quote_to_ticker(parts: List[str]) -> Dict[str, Any]:
@@ -256,7 +273,7 @@ def tencent_kline_rows_to_dicts(rows: List[Any]) -> List[Dict[str, Any]]:
 
 
 @retry_with_backoff(max_attempts=3, base_delay=1.2, max_delay=8.0, exceptions=(Exception,))
-def fetch_kline(code: str, period: str, count: int = 300, adj: str = "qfq", timeout: int = 10) -> List[List[str]]:
+def _fetch_kline_raw(code: str, period: str, count: int = 300, adj: str = "qfq", timeout: int = 10) -> List[List[str]]:
     """
     Fetch kline arrays from Tencent.
 
@@ -302,3 +319,11 @@ def fetch_kline(code: str, period: str, count: int = 300, adj: str = "qfq", time
         if isinstance(v, list) and v and str(k).lower().endswith(str(period).lower()):
             return v
     return []
+
+
+def fetch_kline(code: str, period: str, count: int = 300, adj: str = "qfq", timeout: int = 10) -> List[List[str]]:
+    with ProviderAttempt(provider="tencent", data_domain="kline", operation="history", call_source="tencent", subject_summary={"symbol": str(code or "")[:16], "timeframe": str(period or "")[:8]}, fallback_index=1) as attempt:
+        result = _fetch_kline_raw(code, period, count=count, adj=adj, timeout=timeout)
+        if not result:
+            attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no kline bars")
+        return result

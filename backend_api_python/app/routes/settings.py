@@ -260,6 +260,55 @@ CONFIG_SCHEMA = {
         ]
     },
 
+    'external_data_request_logs': {
+        'title': 'External Data Request Logs',
+        'icon': 'file-search',
+        'order': 8,
+        'items': [
+            {
+                'key': 'EXTERNAL_DATA_REQUEST_LOG_ENABLED',
+                'label': 'External Data Request Logging',
+                'type': 'boolean',
+                'default': True,
+                'description': 'Record sanitized logical attempts to external data providers. Restart is not required for this setting.'
+            },
+            {
+                'key': 'EXTERNAL_DATA_REQUEST_LOG_CLEANUP_ENABLED',
+                'label': 'Automatic Log Cleanup',
+                'type': 'boolean',
+                'default': True,
+                'description': 'Run daily retention cleanup for external data request logs.'
+            },
+            {
+                'key': 'EXTERNAL_DATA_REQUEST_LOG_SUCCESS_RETENTION_DAYS',
+                'label': 'Success Log Retention Days',
+                'type': 'number',
+                'default': 30,
+                'min': 7,
+                'max': 365,
+                'description': 'Retention for success, disabled, and skipped results (7-365 days).'
+            },
+            {
+                'key': 'EXTERNAL_DATA_REQUEST_LOG_ERROR_RETENTION_DAYS',
+                'label': 'Error Log Retention Days',
+                'type': 'number',
+                'default': 90,
+                'min': 14,
+                'max': 730,
+                'description': 'Retention for timeout and other error results (14-730 days).'
+            },
+            {
+                'key': 'EXTERNAL_DATA_REQUEST_LOG_CLEANUP_BATCH_SIZE',
+                'label': 'Cleanup Batch Size',
+                'type': 'number',
+                'default': 500,
+                'min': 10,
+                'max': 5000,
+                'description': 'Maximum rows deleted per short cleanup transaction.'
+            },
+        ]
+    },
+
     'auth': {
         'title': 'Security & Authentication',
         'icon': 'lock',

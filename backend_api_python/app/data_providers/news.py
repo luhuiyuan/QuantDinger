@@ -8,6 +8,7 @@ from app.data_providers.economic_calendar import (
     get_economic_calendar_payload,
 )
 from app.utils.logger import get_logger
+from app.services.external_data_request_logs import ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -31,9 +32,10 @@ def fetch_financial_news(lang: str = "all") -> Dict[str, List[Dict[str, Any]]]:
         ]
 
         if lang in ("all", "cn"):
-            for query in cn_queries:
+            for fallback_index, query in enumerate(cn_queries):
                 try:
-                    results = search.search(query, num_results=5, date_restrict="d1")
+                    with ProviderAttempt(provider="search_service", data_domain="news", operation="financial_news_search", call_source="global_market", subject_summary={"language": "cn", "query_length": len(query)}, fallback_index=fallback_index):
+                        results = search.search(query, num_results=5, date_restrict="d1")
                     for r in results:
                         result["cn"].append({
                             "title": r.get("title", ""), "link": r.get("link", ""),
@@ -44,9 +46,10 @@ def fetch_financial_news(lang: str = "all") -> Dict[str, List[Dict[str, Any]]]:
                     pass
 
         if lang in ("all", "en"):
-            for query in en_queries:
+            for fallback_index, query in enumerate(en_queries):
                 try:
-                    results = search.search(query, num_results=5, date_restrict="d1")
+                    with ProviderAttempt(provider="search_service", data_domain="news", operation="financial_news_search", call_source="global_market", subject_summary={"language": "en", "query_length": len(query)}, fallback_index=fallback_index):
+                        results = search.search(query, num_results=5, date_restrict="d1")
                     for r in results:
                         result["en"].append({
                             "title": r.get("title", ""), "link": r.get("link", ""),

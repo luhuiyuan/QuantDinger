@@ -13,6 +13,7 @@ import requests
 from app.config.api_keys import APIKeys
 from app.config.data_sources import FinnhubConfig, TradingEconomicsConfig
 from app.utils.logger import get_logger
+from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -382,19 +383,18 @@ def _fetch_tradingeconomics_calendar() -> List[Dict[str, Any]]:
     date_from = (today - timedelta(days=_TRADING_ECONOMICS_LOOKBACK_DAYS)).isoformat()
     date_to = (today + timedelta(days=_TRADING_ECONOMICS_LOOKAHEAD_DAYS)).isoformat()
 
-    resp = requests.get(
-        f"{TradingEconomicsConfig.BASE_URL}/calendar/country/All/{date_from}/{date_to}",
-        params={
-            "c": TradingEconomicsConfig.CREDENTIALS,
-            "f": "json",
-        },
-        timeout=TradingEconomicsConfig.TIMEOUT,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-    rows: Any = payload.get("Calendar") if isinstance(payload, dict) else payload
-    if not isinstance(rows, list):
-        return []
+    with ProviderAttempt(provider="tradingeconomics", data_domain="calendar", operation="economic_calendar", subject_summary={"from": date_from, "to": date_to}) as attempt:
+        resp = requests.get(
+            f"{TradingEconomicsConfig.BASE_URL}/calendar/country/All/{date_from}/{date_to}",
+            params={"c": TradingEconomicsConfig.CREDENTIALS, "f": "json"}, timeout=TradingEconomicsConfig.TIMEOUT,
+        )
+        attempt.set_http_status(resp.status_code)
+        resp.raise_for_status()
+        payload = resp.json()
+        rows: Any = payload.get("Calendar") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "calendar payload is not a list")
+            return []
 
     events: List[Dict[str, Any]] = []
     seen_keys: set = set()
@@ -442,21 +442,18 @@ def _fetch_finnhub_calendar(api_key: Optional[str] = None) -> List[Dict[str, Any
     date_to = (today + timedelta(days=_CALENDAR_LOOKAHEAD_DAYS)).isoformat()
     token = str(api_key or APIKeys.FINNHUB_API_KEY or "").strip()
 
-    resp = requests.get(
-        f"{FinnhubConfig.BASE_URL}/calendar/economic",
-        params={
-            "from": date_from,
-            "to": date_to,
-            "token": token,
-        },
-        timeout=FinnhubConfig.TIMEOUT,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-
-    rows: Any = payload.get("economicCalendar") if isinstance(payload, dict) else payload
-    if not isinstance(rows, list):
-        return []
+    with ProviderAttempt(provider="finnhub", data_domain="calendar", operation="economic_calendar", subject_summary={"from": date_from, "to": date_to}) as attempt:
+        resp = requests.get(
+            f"{FinnhubConfig.BASE_URL}/calendar/economic",
+            params={"from": date_from, "to": date_to, "token": token}, timeout=FinnhubConfig.TIMEOUT,
+        )
+        attempt.set_http_status(resp.status_code)
+        resp.raise_for_status()
+        payload = resp.json()
+        rows: Any = payload.get("economicCalendar") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "calendar payload is not a list")
+            return []
 
     events: List[Dict[str, Any]] = []
     seen_keys: set = set()
@@ -497,30 +494,31 @@ def _fetch_akshare_calendar() -> List[Dict[str, Any]]:
     seen_keys: set = set()
     idx_seq = 0
 
-    for day_offset in range(-_AKSHARE_LOOKBACK_DAYS, _AKSHARE_LOOKAHEAD_DAYS + 1):
-        day = today + timedelta(days=day_offset)
-        try:
-            df = ak.macro_info_ws(day.strftime("%Y%m%d"))
-        except Exception as exc:
-            logger.debug("AkShare macro_info_ws skipped %s: %s", day, exc)
-            continue
-        if df is None or getattr(df, "empty", False):
-            continue
-        for _, series in df.iterrows():
-            row = series.to_dict()
-            normalized = _normalize_akshare_event(row, idx_seq)
-            idx_seq += 1
-            if not normalized:
+    with ProviderAttempt(provider="akshare_wallstreetcn", data_domain="calendar", operation="economic_calendar", subject_summary={"days": _AKSHARE_LOOKBACK_DAYS + _AKSHARE_LOOKAHEAD_DAYS + 1}) as attempt:
+        for day_offset in range(-_AKSHARE_LOOKBACK_DAYS, _AKSHARE_LOOKAHEAD_DAYS + 1):
+            day = today + timedelta(days=day_offset)
+            try:
+                df = ak.macro_info_ws(day.strftime("%Y%m%d"))
+            except Exception as exc:
+                logger.debug("AkShare macro_info_ws skipped %s: %s", day, exc)
                 continue
-            dedupe_key = (
-                f"{normalized['date']}|{normalized['time']}|"
-                f"{(normalized.get('name_en') or '').strip().lower()}|"
-                f"{normalized.get('country') or ''}"
-            )
-            if dedupe_key in seen_keys:
+            if df is None or getattr(df, "empty", False):
                 continue
-            seen_keys.add(dedupe_key)
-            events.append(normalized)
+            for _, series in df.iterrows():
+                row = series.to_dict()
+                normalized = _normalize_akshare_event(row, idx_seq)
+                idx_seq += 1
+                if not normalized:
+                    continue
+                dedupe_key = (
+                    f"{normalized['date']}|{normalized['time']}|"
+                    f"{(normalized.get('name_en') or '').strip().lower()}|"
+                    f"{normalized.get('country') or ''}"
+                )
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
+                events.append(normalized)
 
     events.sort(
         key=lambda item: (

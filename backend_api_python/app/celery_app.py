@@ -58,6 +58,7 @@ celery_app.conf.update(
         "quantdinger.tasks.cn_stock_quote_refresh": {"queue": "maintenance"},
         "quantdinger.tasks.worker_heartbeat": {"queue": "maintenance"},
         "quantdinger.tasks.cleanup_runtime_metadata": {"queue": "maintenance"},
+        "quantdinger.tasks.cleanup_external_data_request_logs": {"queue": "maintenance"},
     },
     beat_schedule={
         "reflection-cycle": {
@@ -86,6 +87,10 @@ celery_app.conf.update(
         },
         "runtime-metadata-cleanup": {
             "task": "quantdinger.tasks.cleanup_runtime_metadata",
+            "schedule": 86400.0,
+        },
+        "external-data-request-log-cleanup": {
+            "task": "quantdinger.tasks.cleanup_external_data_request_logs",
             "schedule": 86400.0,
         },
     },

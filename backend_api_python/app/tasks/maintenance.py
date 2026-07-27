@@ -34,6 +34,36 @@ def cleanup_runtime_metadata() -> dict:
     )
 
 
+@celery_app.task(name="quantdinger.tasks.cleanup_external_data_request_logs")
+def cleanup_external_data_request_logs() -> dict:
+    """Run bounded retention cleanup without affecting data-provider workers."""
+    from app.services.external_data_request_logs import ExternalDataRequestLogService, sanitize_summary
+    from app.services.external_data_request_settings import load_external_data_request_log_settings
+
+    settings = load_external_data_request_log_settings()
+    if not settings.cleanup_enabled:
+        return {"skipped": True, "reason": "disabled"}
+    service = ExternalDataRequestLogService()
+    run_id = service.start_cleanup_run()
+    deleted = 0
+    try:
+        # Bound an invocation even when a very old deployment has accumulated logs.
+        for _ in range(20):
+            count = service.cleanup_expired(
+                successful_retention_days=settings.successful_retention_days,
+                error_retention_days=settings.error_retention_days,
+                batch_size=settings.cleanup_batch_size,
+            )
+            deleted += count
+            if count < settings.cleanup_batch_size:
+                break
+        service.finish_cleanup_run(run_id, deleted_count=deleted)
+        return {"deleted_count": deleted, "run_id": run_id}
+    except Exception as exc:
+        service.finish_cleanup_run(run_id, deleted_count=deleted, error=exc)
+        return {"deleted_count": deleted, "run_id": run_id, "error": sanitize_summary(exc, max_length=300)}
+
+
 @celery_app.task(
     bind=True,
     name="quantdinger.tasks.reflection",

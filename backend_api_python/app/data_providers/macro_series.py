@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import requests
 
 from app.config.data_sources import BEAConfig, BLSConfig, FredConfig
+from app.services.external_data_request_logs import ProviderAttempt
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -46,6 +47,8 @@ class MacroSeriesProvider:
         limit: int = 120,
     ) -> Dict[str, Any]:
         if not FredConfig.API_KEY:
+            with ProviderAttempt(provider="fred", data_domain="macro", operation="series_observations", subject_summary={"series_id": series_id}) as attempt:
+                attempt.skip(disabled=True, reason="FRED_API_KEY is not configured")
             raise ValueError("FRED_API_KEY is not configured")
 
         params: Dict[str, Any] = {
@@ -60,13 +63,15 @@ class MacroSeriesProvider:
         if end:
             params["observation_end"] = str(end)
 
-        response = requests.get(
-            f"{FredConfig.BASE_URL}/series/observations",
-            params=params,
-            timeout=FredConfig.TIMEOUT,
-        )
-        response.raise_for_status()
-        data = response.json()
+        with ProviderAttempt(provider="fred", data_domain="macro", operation="series_observations", subject_summary={"series_id": series_id}) as attempt:
+            response = requests.get(
+                f"{FredConfig.BASE_URL}/series/observations",
+                params=params,
+                timeout=FredConfig.TIMEOUT,
+            )
+            attempt.set_http_status(response.status_code)
+            response.raise_for_status()
+            data = response.json()
         return {
             "provider": "FRED",
             "series_id": series_id,
@@ -87,13 +92,15 @@ class MacroSeriesProvider:
         if BLSConfig.API_KEY:
             payload["registrationkey"] = BLSConfig.API_KEY
 
-        response = requests.post(
-            f"{BLSConfig.BASE_URL}/timeseries/data/",
-            json=payload,
-            timeout=BLSConfig.TIMEOUT,
-        )
-        response.raise_for_status()
-        data = response.json()
+        with ProviderAttempt(provider="bls", data_domain="macro", operation="series", subject_summary={"series_count": len(payload["seriesid"])}) as attempt:
+            response = requests.post(
+                f"{BLSConfig.BASE_URL}/timeseries/data/",
+                json=payload,
+                timeout=BLSConfig.TIMEOUT,
+            )
+            attempt.set_http_status(response.status_code)
+            response.raise_for_status()
+            data = response.json()
         return {
             "provider": "BLS",
             "series": data.get("Results", {}).get("series", []),
@@ -103,6 +110,8 @@ class MacroSeriesProvider:
 
     def fetch_bea_data(self, dataset: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if not BEAConfig.API_KEY:
+            with ProviderAttempt(provider="bea", data_domain="macro", operation="dataset", subject_summary={"dataset": dataset}) as attempt:
+                attempt.skip(disabled=True, reason="BEA_API_KEY is not configured")
             raise ValueError("BEA_API_KEY is not configured")
 
         request_params: Dict[str, Any] = {
@@ -114,13 +123,12 @@ class MacroSeriesProvider:
         if params:
             request_params.update(params)
 
-        response = requests.get(BEAConfig.BASE_URL, params=request_params, timeout=BEAConfig.TIMEOUT)
-        response.raise_for_status()
-        return {
-            "provider": "BEA",
-            "dataset": dataset,
-            "data": response.json(),
-        }
+        with ProviderAttempt(provider="bea", data_domain="macro", operation="dataset", subject_summary={"dataset": dataset}) as attempt:
+            response = requests.get(BEAConfig.BASE_URL, params=request_params, timeout=BEAConfig.TIMEOUT)
+            attempt.set_http_status(response.status_code)
+            response.raise_for_status()
+            data = response.json()
+        return {"provider": "BEA", "dataset": dataset, "data": data}
 
 
 _macro_series_provider: Optional[MacroSeriesProvider] = None

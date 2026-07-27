@@ -212,18 +212,22 @@ def cached_or_compute(
     """
     effective_ttl = ttl or CACHE_TTL.get(key, _DEFAULT_TTL)
 
+    data_domain, operation = _cache_metric_scope(key)
     if force:
+        _record_cache_metric(data_domain, operation, hit=False)
         return _compute_and_store(key, compute, effective_ttl)
 
     raw = _cm().get(f"dp:{key}")
     value, is_fresh = _unwrap_envelope(raw)
 
     if value is not None and is_fresh:
+        _record_cache_metric(data_domain, operation, hit=True)
         return value
 
     # Stale-while-revalidate: surface the old payload immediately and
     # refresh in the background. The user perceives "instant" load.
     if value is not None and allow_stale:
+        _record_cache_metric(data_domain, operation, hit=True)
         _schedule_background_refresh(key, compute, effective_ttl)
         return value
 
@@ -235,8 +239,30 @@ def cached_or_compute(
         raw = _cm().get(f"dp:{key}")
         value, is_fresh = _unwrap_envelope(raw)
         if value is not None and is_fresh:
+            _record_cache_metric(data_domain, operation, hit=True)
             return value
+        _record_cache_metric(data_domain, operation, hit=False)
         return _compute_and_store(key, compute, effective_ttl)
+
+
+def _cache_metric_scope(key: str) -> tuple[str, str]:
+    normalized = str(key or "unknown").strip().lower()
+    if normalized.startswith("economic_calendar"):
+        return "calendar", normalized
+    if "news" in normalized:
+        return "news", normalized
+    if any(part in normalized for part in ("crypto", "forex", "commod", "stock", "market", "heatmap")):
+        return "market", normalized
+    return "data_provider", normalized[:96]
+
+
+def _record_cache_metric(data_domain: str, operation: str, *, hit: bool) -> None:
+    try:
+        from app.services.external_data_request_logs import record_cache_observation
+        record_cache_observation(data_domain=data_domain, operation=operation, hit=hit)
+    except Exception:
+        # Cache returns must remain independent of observability availability.
+        return
 
 
 def _compute_and_store(key: str, compute: Callable[[], Any], ttl: int) -> Any:

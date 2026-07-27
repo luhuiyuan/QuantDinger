@@ -2397,6 +2397,113 @@ paths:
       - Market
       operationId: getApiMarketPrice
       x-visibility: public
+  /api/market/cn/overview:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Return core indices and breadth derived from one Shanghai/Shenzhen
+        snapshot.
+      tags:
+      - Market
+      operationId: getApiMarketCnOverview
+      x-visibility: public
+  /api/market/cn/stocks:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Search, filter and paginate the Shanghai/Shenzhen A-share catalog.
+      tags:
+      - Market
+      operationId: getApiMarketCnStocks
+      x-visibility: public
+  /api/market/cn/stocks/{symbol}:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketCnStocksSymbol
+      summary: Get Api Market Cn Stocks Symbol
+      parameters:
+      - name: symbol
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: public
+    parameters:
+    - in: path
+      name: symbol
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/market/cn/stocks/{symbol}/history:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketCnStocksSymbolHistory
+      summary: Get Api Market Cn Stocks Symbol History
+      parameters:
+      - name: symbol
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: public
+    parameters:
+    - in: path
+      name: symbol
+      required: true
+      schema:
+        type: string
+        minLength: 1
   /api/universes:
     get:
       responses:
@@ -2765,6 +2872,236 @@ paths:
       tags:
       - Market
       operationId: getApiMarketModules
+      x-visibility: public
+  /api/market-history/capabilities:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistoryCapabilities
+      summary: Get Api Market History Capabilities
+      x-visibility: public
+  /api/market-history/sync-runs:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: postApiMarketHistorySyncRuns
+      summary: Post Api Market History Sync Runs
+      x-visibility: public
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistorySyncRuns
+      summary: Get Api Market History Sync Runs
+      x-visibility: public
+  /api/market-history/sync-runs/{run_id}:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistorySyncRunsRunId
+      summary: Get Api Market History Sync Runs Run Id
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: public
+    parameters:
+    - in: path
+      name: run_id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/market-history/sync-runs/{run_id}/retry:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: postApiMarketHistorySyncRunsRunIdRetry
+      summary: Post Api Market History Sync Runs Run Id Retry
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: public
+    parameters:
+    - in: path
+      name: run_id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/market-history/sync-runs/{run_id}/cancel:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: postApiMarketHistorySyncRunsRunIdCancel
+      summary: Post Api Market History Sync Runs Run Id Cancel
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: public
+    parameters:
+    - in: path
+      name: run_id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/market-history/provider-health:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistoryProviderHealth
+      summary: Get Api Market History Provider Health
+      x-visibility: public
+  /api/market-history/instruments/{instrument}/coverage:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistoryInstrumentsInstrumentCoverage
+      summary: Get Api Market History Instruments Instrument Coverage
+      parameters:
+      - name: instrument
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: public
+    parameters:
+    - in: path
+      name: instrument
+      required: true
+      schema:
+        type: string
+  /api/market-history/disk-status:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistoryDiskStatus
+      summary: Get Api Market History Disk Status
       x-visibility: public
   /api/ai/skills:
     get:
@@ -5004,6 +5341,99 @@ paths:
       - Settings
       operationId: postApiSettingsTestConnection
       x-visibility: internal
+  /api/external-data-request-logs/overview:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Settings
+      operationId: getApiExternalDataRequestLogsOverview
+      summary: Get Api External Data Request Logs Overview
+      x-visibility: private
+  /api/external-data-request-logs/logs:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Settings
+      operationId: getApiExternalDataRequestLogsLogs
+      summary: Get Api External Data Request Logs Logs
+      x-visibility: private
+  /api/external-data-request-logs/logs/{log_id}:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Settings
+      operationId: getApiExternalDataRequestLogsLogsLogId
+      summary: Get Api External Data Request Logs Logs Log Id
+      parameters:
+      - name: log_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: private
+    parameters:
+    - in: path
+      name: log_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+  /api/external-data-request-logs/settings:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Settings
+      operationId: getApiExternalDataRequestLogsSettings
+      summary: Get Api External Data Request Logs Settings
+      x-visibility: private
   /api/portfolio/positions:
     get:
       responses:

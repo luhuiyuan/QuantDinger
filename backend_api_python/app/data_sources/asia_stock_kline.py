@@ -27,6 +27,7 @@ import requests
 
 from app.utils.logger import get_logger
 from app.utils.resource_guard import ResourceExhaustedError, assert_fd_available, record_exception
+from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -450,37 +451,42 @@ def fetch_yfinance_klines(
     start = end - timedelta(days=days)
 
     df: Any = None
-    for attempt in range(_MAX_ATTEMPTS):
-        try:
-            ticker = yf.Ticker(yf_sym)
-            df = ticker.history(
-                start=start.strftime("%Y-%m-%d"),
-                end=(end + timedelta(days=1)).strftime("%Y-%m-%d"),
-                interval=interval,
-            )
-            break
-        except Exception as e:
+    with ProviderAttempt(provider="yfinance", data_domain="kline", operation="history", call_source="asia_stock_kline", subject_summary={"symbol": yf_sym, "timeframe": timeframe}, fallback_index=2, retry_count=max(0, _MAX_ATTEMPTS - 1)) as provider_attempt:
+        for attempt in range(_MAX_ATTEMPTS):
             try:
-                record_exception(e, scope="yfinance K-line")
-            except ResourceExhaustedError as guarded:
-                logger.warning(str(guarded))
-                return []
-            if attempt + 1 < _MAX_ATTEMPTS and _is_transient(e):
-                delay = min(_BACKOFF_CAP_SEC, _BACKOFF_BASE_SEC * (2 ** attempt))
-                logger.debug(
-                    "yfinance transient error %s tf=%s (attempt %s/%s), retry in %.1fs: %s",
-                    yf_sym, timeframe, attempt + 1, _MAX_ATTEMPTS, delay, e,
+                ticker = yf.Ticker(yf_sym)
+                df = ticker.history(
+                    start=start.strftime("%Y-%m-%d"),
+                    end=(end + timedelta(days=1)).strftime("%Y-%m-%d"),
+                    interval=interval,
                 )
-                time.sleep(delay)
-                continue
-            logger.warning("yfinance K-line failed %s tf=%s: %s", yf_sym, timeframe, e)
-            return []
+                break
+            except Exception as e:
+                try:
+                    record_exception(e, scope="yfinance K-line")
+                except ResourceExhaustedError as guarded:
+                    logger.warning(str(guarded))
+                    provider_attempt.fail(ExternalDataRequestResult.SKIPPED, guarded)
+                    return []
+                if attempt + 1 < _MAX_ATTEMPTS and _is_transient(e):
+                    delay = min(_BACKOFF_CAP_SEC, _BACKOFF_BASE_SEC * (2 ** attempt))
+                    logger.debug(
+                        "yfinance transient error %s tf=%s (attempt %s/%s), retry in %.1fs: %s",
+                        yf_sym, timeframe, attempt + 1, _MAX_ATTEMPTS, delay, e,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.warning("yfinance K-line failed %s tf=%s: %s", yf_sym, timeframe, e)
+                provider_attempt.fail(ExternalDataRequestResult.PROVIDER_ERROR, e)
+                return []
 
-    bars = _bars_from_yfinance_df(df)
-    if merge_factor > 1 and bars:
-        bars = _merge_every_n_sorted_bars(bars, merge_factor)
-    logger.debug("yfinance returned %d bars for %s tf=%s", len(bars), yf_sym, timeframe)
-    return bars
+        bars = _bars_from_yfinance_df(df)
+        if merge_factor > 1 and bars:
+            bars = _merge_every_n_sorted_bars(bars, merge_factor)
+        if not bars:
+            provider_attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no usable kline bars")
+        logger.debug("yfinance returned %d bars for %s tf=%s", len(bars), yf_sym, timeframe)
+        return bars
 
 
 # ---------------------------------------------------------------------------

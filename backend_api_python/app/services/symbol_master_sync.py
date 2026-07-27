@@ -21,6 +21,7 @@ from app.data_sources.tencent import normalize_hk_code
 from app.services.symbol_name import normalize_crypto_symbol
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
+from app.services.external_data_request_logs import ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -275,37 +276,26 @@ def fetch_crypto_symbols_with_diagnostics():
 
     rows: List[SymbolMasterRow] = []
     contexts = []
+    fallback_index = 0
     for exchange_id in PUBLIC_KLINE_EXCHANGE_IDS:
         for market_type in ("spot", "swap"):
             context_rows: List[SymbolMasterRow] = []
             try:
-                ccxt_id, options = resolve_ccxt_for_live_trading(exchange_id, market_type)
-                config = {
-                    "enableRateLimit": True,
-                    "timeout": max(int(CCXTConfig.TIMEOUT or 0), 30000),
-                }
-                if options:
-                    config["options"] = options
-                config = apply_public_ccxt_endpoint_config(config, exchange_id)
-                exchange = getattr(ccxt, ccxt_id)(config)
-                _load_ccxt_markets_with_retry(exchange)
-                for symbol, info in exchange.markets.items():
-                    is_target = bool(info.get("spot")) if market_type == "spot" else bool(info.get("swap"))
-                    quote = _clean_symbol(info.get("quote"))
-                    base = _clean_symbol(info.get("base"))
-                    if not info.get("active") or not is_target or quote != "USDT" or not base:
-                        continue
-                    context_rows.append(SymbolMasterRow(
-                        "Crypto",
-                        normalize_crypto_symbol(symbol),
-                        _clean_text(info.get("displayName") or info.get("name") or base),
-                        exchange_id,
-                        "USDT",
-                        market_type,
-                        _clean_text(info.get("id") or symbol),
-                        _clean_symbol(info.get("settle") or quote),
-                        _classify_asset(info),
-                    ))
+                with ProviderAttempt(provider=exchange_id, data_domain="market_catalog", operation="load_markets", call_source="symbol_master_sync", subject_summary={"market_type": market_type}, fallback_index=fallback_index, retry_count=1) as attempt:
+                    ccxt_id, options = resolve_ccxt_for_live_trading(exchange_id, market_type)
+                    config = {"enableRateLimit": True, "timeout": max(int(CCXTConfig.TIMEOUT or 0), 30000)}
+                    if options:
+                        config["options"] = options
+                    config = apply_public_ccxt_endpoint_config(config, exchange_id)
+                    exchange = getattr(ccxt, ccxt_id)(config)
+                    _load_ccxt_markets_with_retry(exchange)
+                    for symbol, info in exchange.markets.items():
+                        is_target = bool(info.get("spot")) if market_type == "spot" else bool(info.get("swap"))
+                        quote = _clean_symbol(info.get("quote"))
+                        base = _clean_symbol(info.get("base"))
+                        if not info.get("active") or not is_target or quote != "USDT" or not base:
+                            continue
+                        context_rows.append(SymbolMasterRow("Crypto", normalize_crypto_symbol(symbol), _clean_text(info.get("displayName") or info.get("name") or base), exchange_id, "USDT", market_type, _clean_text(info.get("id") or symbol), _clean_symbol(info.get("settle") or quote), _classify_asset(info)))
                 rows.extend(context_rows)
                 contexts.append({
                     "exchange": exchange_id,
@@ -317,7 +307,8 @@ def fetch_crypto_symbols_with_diagnostics():
             except Exception as e:
                 if exchange_id == "okx":
                     try:
-                        context_rows = _fetch_okx_public_symbol_rows(market_type, _classify_asset)
+                        with ProviderAttempt(provider="okx_official", data_domain="market_catalog", operation="load_instruments", call_source="symbol_master_sync", subject_summary={"market_type": market_type}, fallback_index=fallback_index + 1) as attempt:
+                            context_rows = _fetch_okx_public_symbol_rows(market_type, _classify_asset)
                         rows.extend(context_rows)
                         contexts.append({
                             "exchange": exchange_id,
@@ -339,6 +330,8 @@ def fetch_crypto_symbols_with_diagnostics():
                     "rows": 0,
                     "error": str(e),
                 })
+            finally:
+                fallback_index += 1
     return _unique_rows(rows), contexts
 
 

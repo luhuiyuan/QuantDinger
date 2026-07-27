@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from app.utils.logger import get_logger
 from app.data_providers import safe_float
+from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -162,9 +163,14 @@ def fetch_commodities() -> List[Dict[str, Any]]:
     """Fetch commodity prices.  Priority: Twelve Data → yfinance → Tiingo."""
     commodities = COMMODITIES
     result: List[Dict[str, Any]] = []
-    for fetcher in (_fetch_td, _fetch_yf, _fetch_tiingo):
+    for fallback_index, (provider, fetcher) in enumerate((
+        ("twelvedata", _fetch_td), ("yfinance", _fetch_yf), ("tiingo", _fetch_tiingo),
+    )):
         try:
-            batch = fetcher(commodities)
+            with ProviderAttempt(provider=provider, data_domain="quote", operation="commodities", call_source="global_market", subject_summary={"instrument_count": len(commodities)}, fallback_index=fallback_index) as attempt:
+                batch = fetcher(commodities)
+                if not batch:
+                    attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no usable commodity quotes")
         except Exception as e:
             logger.debug("Commodities fetcher %s failed: %s", fetcher.__name__, e)
             batch = []

@@ -32,6 +32,7 @@ _PREFIX_TAGS: list[tuple[str, str]] = [
     ("/api/credentials", "Credentials"),
     ("/api/dashboard", "Dashboard"),
     ("/api/settings", "Settings"),
+    ("/api/external-data-request-logs", "Settings"),
     ("/api/portfolio", "Portfolio"),
     ("/api/ibkr", "IBKR"),
     ("/api/alpaca", "Alpaca"),
@@ -74,6 +75,7 @@ def register_human_blueprints(api: Api) -> None:
     from app.routes.credentials import credentials_blp
     from app.routes.dashboard import dashboard_blp
     from app.routes.settings import settings_blp
+    from app.routes.external_data_request_logs import external_data_request_logs_blp
     from app.routes.portfolio import portfolio_blp
     from app.routes.ibkr import ibkr_blp
     from app.routes.alpaca import alpaca_blp
@@ -102,6 +104,7 @@ def register_human_blueprints(api: Api) -> None:
         (credentials_blp, "/api/credentials"),
         (dashboard_blp, "/api/dashboard"),
         (settings_blp, "/api/settings"),
+        (external_data_request_logs_blp, "/api/external-data-request-logs"),
         (portfolio_blp, "/api/portfolio"),
         (ibkr_blp, "/api/ibkr"),
         (alpaca_blp, "/api/alpaca"),
@@ -126,6 +129,9 @@ def register_human_blueprints(api: Api) -> None:
 _SSE_PATHS = frozenset({
     "/api/indicator/aiGenerate",
 })
+_PRIVATE_PATH_PREFIXES = (
+    "/api/external-data-request-logs",
+)
 
 
 def enrich_spec(spec_dict: dict) -> dict:
@@ -255,7 +261,9 @@ def enrich_spec(spec_dict: dict) -> dict:
                             }
                         },
                     }
-            if "x-visibility" not in op:
+            if any(path.startswith(prefix) for prefix in _PRIVATE_PATH_PREFIXES):
+                op["x-visibility"] = "private"
+            elif "x-visibility" not in op:
                 if path == "/metrics":
                     op["x-visibility"] = "internal"
                 elif tag in ("Community", "Market", "Indicator", "Backtest", "Policy", "Auth", "GlobalMarket", "FastAnalysis", "Health"):

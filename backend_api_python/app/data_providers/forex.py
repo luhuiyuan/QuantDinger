@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 from app.utils.logger import get_logger
+from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -159,9 +160,14 @@ def fetch_forex_pairs() -> List[Dict[str, Any]]:
     """Fetch major forex pairs.  Priority: Twelve Data → yfinance → Tiingo."""
     pairs = FOREX_PAIRS
     result: List[Dict[str, Any]] = []
-    for fetcher in (_fetch_td, _fetch_yf, _fetch_tiingo):
+    for fallback_index, (provider, fetcher) in enumerate((
+        ("twelvedata", _fetch_td), ("yfinance", _fetch_yf), ("tiingo", _fetch_tiingo),
+    )):
         try:
-            batch = fetcher(pairs)
+            with ProviderAttempt(provider=provider, data_domain="quote", operation="forex_pairs", call_source="global_market", subject_summary={"pair_count": len(pairs)}, fallback_index=fallback_index) as attempt:
+                batch = fetcher(pairs)
+                if not batch:
+                    attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no usable forex quotes")
         except Exception as e:
             logger.debug("Forex overview fetcher %s failed: %s", fetcher.__name__, e)
             batch = []
