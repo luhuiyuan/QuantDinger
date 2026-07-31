@@ -199,13 +199,16 @@ class CNMarketHistorySyncService:
         run = self.operations_repository.get_sync_run(run_id)
         if not run:
             raise KeyError(f"Unknown CN history sync run: {run_id}")
+        retryable_statuses = {SyncStatus.FAILED.value, SyncStatus.CANCELLED.value}
+        if run.get("status") == SyncStatus.CANCELLED.value:
+            retryable_statuses.add(SyncStatus.PENDING.value)
         failed = [
             target
             for target in run.get("targets", [])
-            if target.get("status") in {SyncStatus.FAILED.value, SyncStatus.PAUSED.value}
+            if target.get("status") in retryable_statuses
         ]
         if not failed:
-            raise ValueError("The sync run has no failed or paused targets")
+            raise ValueError("The sync run has no failed or cancelled targets")
         return self.create_targeted_run(
             [target["instrument"] for target in failed],
             min(target["target_start"] for target in failed),
@@ -224,7 +227,10 @@ class CNMarketHistorySyncService:
             SyncStatus.FAILED.value,
             SyncStatus.CANCELLED.value,
         }:
-            raise ValueError("The sync run is already terminal")
+            # Cancellation is idempotent at the domain boundary.  A late
+            # cancel request must not make the generic Task Run look failed
+            # when the domain operation already reached a terminal state.
+            return
         self.operations_repository.update_run(run_id, SyncStatus.CANCELLED)
         self.operations_repository.write_audit(
             actor_user_id=requested_by,
@@ -238,7 +244,7 @@ class CNMarketHistorySyncService:
             result_status="cancelled",
         )
 
-    def run(self, run_id: str) -> dict:
+    def run(self, run_id: str, on_progress=None, on_safe_cancel=None) -> dict:
         if not self.settings.sync_enabled:
             raise CNHistorySyncDisabled("CN history synchronization is disabled")
         run = self.operations_repository.get_sync_run(run_id)
@@ -254,23 +260,22 @@ class CNMarketHistorySyncService:
             in {
                 SyncStatus.PENDING.value,
                 SyncStatus.FAILED.value,
-                SyncStatus.PAUSED.value,
+                SyncStatus.CANCELLED.value,
             }
         ]
         with self.lock_factory("cn-history:global-sync") as acquired:
             if not acquired:
                 self.operations_repository.update_run(
-                    run_id,
-                    SyncStatus.PAUSED,
+                    run_id, SyncStatus.CANCELLED,
                     last_error_code="cn_history.global_lock_busy",
                     last_error="Another CN history synchronization run is active",
                 )
-                return {"run_id": run_id, "status": SyncStatus.PAUSED.value, "lock_busy": True}
-            return self._run_serialized(run_id, targets)
+                return {"run_id": run_id, "status": SyncStatus.CANCELLED.value, "lock_busy": True}
+            return self._run_serialized(run_id, targets, on_progress=on_progress, on_safe_cancel=on_safe_cancel)
 
-    def _run_serialized(self, run_id: str, targets: list[dict]) -> dict:
+    def _run_serialized(self, run_id: str, targets: list[dict], *, on_progress=None, on_safe_cancel=None) -> dict:
         self.operations_repository.update_run(run_id, SyncStatus.RUNNING)
-        counts = {"succeeded": 0, "failed": 0, "skipped": 0, "paused": 0}
+        counts = {"succeeded": 0, "failed": 0, "temporary_failed": 0, "skipped": 0, "cancelled": 0}
 
         provider = self.provider_factory(self.settings)
         try:
@@ -286,11 +291,22 @@ class CNMarketHistorySyncService:
                     current = self.operations_repository.get_sync_run(run_id)
                     if current and current["status"] == SyncStatus.CANCELLED.value:
                         break
-                    result = self._run_target(provider, run_id, target)
+                    result = self._run_target(provider, run_id, target, on_safe_cancel=on_safe_cancel)
                     counts[result] += 1
+                    if result == "cancelled":
+                        break
+                    if on_progress is not None:
+                        on_progress({
+                            "stage": "instruments",
+                            "current": sum(counts.values()),
+                            "total": len(targets),
+                            "unit": "instrument",
+                            "message": str(target.get("instrument") or ""),
+                            "checkpoint_ref": f"{run_id}:{target.get('instrument') or ''}",
+                        })
         except TDXProviderError as exc:
             logger.warning("CN history provider unavailable for run %s: %s", run_id, exc)
-            counts["failed"] += max(0, len(targets) - sum(counts.values()))
+            counts["temporary_failed"] += max(0, len(targets) - sum(counts.values()))
             self._record_selected_provider_failure(provider, exc)
         except Exception as exc:
             logger.exception("CN history sync run %s failed", run_id)
@@ -303,19 +319,20 @@ class CNMarketHistorySyncService:
             )
             raise
 
-        final_status = self._final_status(counts)
+        current = self.operations_repository.get_sync_run(run_id)
+        final_status = SyncStatus.CANCELLED if current and current.get("status") == SyncStatus.CANCELLED.value else self._final_status(counts)
         summary = {**counts, "run_id": run_id, "status": final_status.value}
         self.operations_repository.update_run(
             run_id,
             final_status,
             succeeded_symbols=counts["succeeded"],
-            failed_symbols=counts["failed"],
+            failed_symbols=counts["failed"] + counts["temporary_failed"],
             skipped_symbols=counts["skipped"],
             result_summary=summary,
         )
         return summary
 
-    def _run_target(self, provider: TDXProvider, run_id: str, target: dict) -> str:
+    def _run_target(self, provider: TDXProvider, run_id: str, target: dict, *, on_safe_cancel=None) -> str:
         instrument = parse_cn_instrument(target["instrument"])
         lock_key = f"cn-history:{instrument.canonical}"
         with self.lock_factory(lock_key) as acquired:
@@ -358,14 +375,29 @@ class CNMarketHistorySyncService:
                         self.operations_repository.update_target(
                             run_id,
                             instrument.canonical,
-                            SyncStatus.PAUSED,
+                            SyncStatus.CANCELLED,
                             page_offset=page.offset,
                             bars_written=bars_written,
                             actions_written=actions_written,
                             last_error_code="cn_history.disk_hard_limit",
                             last_error=f"Only {disk_status.free_bytes} free bytes remain",
                         )
-                        return "paused"
+                        self.operations_repository.update_run(
+                            run_id, SyncStatus.CANCELLED,
+                            last_error_code="cn_history.disk_hard_limit",
+                            last_error=f"Only {disk_status.free_bytes} free bytes remain",
+                        )
+                        if on_safe_cancel is not None:
+                            on_safe_cancel({
+                                "error_code": "cn_history.disk_hard_limit",
+                                "message": f"Only {disk_status.free_bytes} free bytes remain",
+                                "metadata": {
+                                    "free_bytes": disk_status.free_bytes,
+                                    "hard_free_bytes": disk_status.hard_free_bytes,
+                                    "path": disk_status.path,
+                                },
+                            })
+                        return "cancelled"
                     if page.bars:
                         page_findings = self.quality_service.validate_bars(
                             instrument.canonical,
@@ -483,7 +515,7 @@ class CNMarketHistorySyncService:
                     last_error=str(exc),
                 )
                 logger.warning("CN history target %s failed: %s", instrument.canonical, exc)
-                return "failed"
+                return "temporary_failed" if isinstance(exc, (TDXProviderError, TimeoutError, ConnectionError)) else "failed"
 
     def _record_selected_provider_failure(self, provider: TDXProvider, exc: Exception) -> None:
         if not provider.selected_host:
@@ -504,10 +536,11 @@ class CNMarketHistorySyncService:
 
     @staticmethod
     def _final_status(counts: dict[str, int]) -> SyncStatus:
-        if counts["paused"]:
-            return SyncStatus.PAUSED
-        if counts["failed"] and counts["succeeded"]:
+        if counts["cancelled"]:
+            return SyncStatus.CANCELLED
+        failures = counts["failed"] + counts["temporary_failed"]
+        if failures and counts["succeeded"]:
             return SyncStatus.PARTIAL
-        if counts["failed"]:
+        if failures:
             return SyncStatus.FAILED
         return SyncStatus.SUCCEEDED

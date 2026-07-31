@@ -6,8 +6,7 @@ HTTP clients (especially LLM-driven agents) prefer "submit + poll" semantics.
 We persist every job in `qd_agent_jobs` so the API survives worker restarts
 and so audit can correlate jobs with the agent that triggered them.
 
-Production deployments dispatch supported jobs to Celery. Local development
-and tests retain a bounded thread-pool fallback when Celery is disabled.
+Production deployments dispatch supported jobs to the internal Task Scheduler.
 
 Progress streaming
 ------------------
@@ -20,13 +19,10 @@ from __future__ import annotations
 
 import inspect
 import json
-import os
 import threading
 import time
-import traceback
 import uuid
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Callable, Iterator, Optional
 
@@ -45,30 +41,6 @@ _progress_signals: dict[str, threading.Event] = {}
 _progress_global_lock = threading.Lock()
 
 
-def _max_workers() -> int:
-    try:
-        return max(1, int(os.getenv("AGENT_JOBS_MAX_WORKERS", "4")))
-    except Exception:
-        return 4
-
-
-_executor: Optional[ThreadPoolExecutor] = None
-_lock = threading.Lock()
-
-
-def _get_executor() -> ThreadPoolExecutor:
-    global _executor
-    if _executor is not None:
-        return _executor
-    with _lock:
-        if _executor is None:
-            _executor = ThreadPoolExecutor(
-                max_workers=_max_workers(),
-                thread_name_prefix="agent-job",
-            )
-        return _executor
-
-
 def _new_job_id() -> str:
     return uuid.uuid4().hex
 
@@ -82,81 +54,81 @@ def submit_job(
     runner: Callable[..., Any],
     idempotency_key: Optional[str] = None,
 ) -> dict:
-    """Persist a job row and dispatch its runner on the thread pool.
+    """Persist a backtest job and create its internal Task Run.
 
-    The runner may take either signature:
-        ``runner(payload) -> result``                       (no streaming)
-        ``runner(payload, on_progress) -> result``          (streaming)
-
-    where ``on_progress(dict)`` is called by the runner to publish partial
-    results.  Each call is delivered to live SSE subscribers AND persisted on
-    the job row so reconnecting clients can replay the latest snapshot.
+    The existing runner argument remains part of the public helper contract so
+    callers do not need a route-level migration, but execution ownership is the
+    code-registered ``agent_backtest`` Task Definition.
     """
+    if kind != "backtest":
+        raise ValueError(f"Unsupported durable agent job kind: {kind}")
+    from app.services.task_control.builtin_tasks import register_phase_two_tasks
+    from app.services.task_control.registry import default_task_registry
+    from app.services.task_control.repository import TaskControlRepository
+
+    register_phase_two_tasks(default_task_registry)
+    definition = default_task_registry.get("agent_backtest")
+    repository = TaskControlRepository()
+    if idempotency_key:
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """SELECT job_id, status, kind FROM qd_agent_jobs
+                   WHERE agent_token_id = %s AND kind = %s AND idempotency_key = %s
+                   ORDER BY id DESC LIMIT 1""",
+                (agent_token_id, kind, idempotency_key),
+            )
+            existing = cur.fetchone()
+            cur.close()
+        if existing:
+            return {
+                "job_id": existing["job_id"], "status": existing["status"],
+                "kind": existing["kind"], "created": False,
+            }
+    probe_parameters = {"job_id": "probe", "user_id": int(user_id)}
+    exclusivity_key = definition.exclusivity_key(probe_parameters, int(user_id))
+    active = repository.get_active_run_by_exclusivity(exclusivity_key)
+    if active is not None and active.domain_run_id:
+        return {
+            "job_id": active.domain_run_id,
+            "status": active.status,
+            "kind": kind,
+            "created": False,
+        }
+
     job_id = _new_job_id()
     created_at = datetime.utcnow()
-    with get_db_connection() as db:
-        cur = db.cursor()
-        cur.execute(
-            """
-            INSERT INTO qd_agent_jobs
-              (job_id, user_id, agent_token_id, kind, status, request, idempotency_key, created_at)
-            VALUES (%s, %s, %s, %s, 'queued', %s::jsonb, %s, %s)
-            """,
-            (
-                job_id, int(user_id), agent_token_id, kind,
-                json.dumps(request_payload, default=str),
-                idempotency_key, created_at,
-            ),
-        )
-        db.commit()
-        cur.close()
-
-    accepts_progress = _runner_accepts_progress(runner)
-
-    def _run() -> None:
-        _set_status(job_id, "running", started_at=datetime.utcnow())
-        # Emit a synthetic "queued -> running" event so SSE clients see *something*
-        # before the runner publishes its first real progress update.
-        _publish_progress(job_id, {"phase": "running", "ts": time.time()})
-        try:
-            if accepts_progress:
-                def _on_progress(snapshot: Any) -> None:
-                    if not isinstance(snapshot, dict):
-                        snapshot = {"value": snapshot}
-                    _publish_progress(job_id, snapshot)
-                result = runner(request_payload, _on_progress)
-            else:
-                result = runner(request_payload)
-            _set_result(job_id, result)
-            _publish_progress(job_id, {"phase": "succeeded", "ts": time.time()}, terminal=True)
-        except Exception as exc:
-            tb = traceback.format_exc()
-            logger.error(f"agent_job {job_id} kind={kind} failed: {exc}\n{tb}")
-            _set_failure(job_id, f"{exc}\n{tb[-2000:]}")
-            _publish_progress(
-                job_id,
-                {"phase": "failed", "error": str(exc)[:500], "ts": time.time()},
-                terminal=True,
+    parameters = {"job_id": job_id, "user_id": int(user_id)}
+    try:
+        if hasattr(repository, "create_agent_job_and_run"):
+            run, created, idempotent = repository.create_agent_job_and_run(
+                job_id=job_id, user_id=int(user_id), agent_token_id=agent_token_id, kind=kind,
+                request_payload=request_payload, idempotency_key=idempotency_key,
+                task_key=definition.task_key, definition_version=definition.definition_version,
+                exclusivity_key=exclusivity_key, parameters=parameters, priority=definition.priority,
             )
-
-    celery_enabled = os.getenv("CELERY_TASKS_ENABLED", "false").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-    if celery_enabled:
-        from app.tasks.agent_jobs import execute_agent_job, supports_kind
-
-        if supports_kind(kind):
-            execute_agent_job.delay(job_id)
-        else:
-            logger.warning("No Celery runner registered for agent job kind=%s; using local executor", kind)
-            _get_executor().submit(_run)
-    else:
-        _get_executor().submit(_run)
+        else:  # test doubles / downstream embedders predating the repository method
+            run, created = repository.create_run(task_key=definition.task_key, definition_version=definition.definition_version,
+                exclusivity_key=exclusivity_key, parameters=parameters, priority=definition.priority,
+                owner_user_id=int(user_id), domain_kind="agent_job", domain_run_id=job_id)
+            idempotent = False
+        if idempotent:
+            return {"job_id": run.domain_run_id if run else job_id, "status": run.status if run else "queued", "kind": kind, "created": False}
+        if not created:
+            return {
+                "job_id": run.domain_run_id,
+                "status": run.status,
+                "kind": kind,
+                "created": False,
+            }
+    except Exception:
+        raise
 
     return {
         "job_id": job_id,
         "status": "queued",
         "kind": kind,
+        "created": True,
         "created_at": created_at.isoformat() + "Z",
     }
 

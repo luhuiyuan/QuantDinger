@@ -387,7 +387,7 @@ def test_sync_resumes_from_checkpoint_and_writes_sequentially() -> None:
     assert succeeded[0][3]["bars_written"] == 3
 
 
-def test_sync_pauses_before_writing_at_hard_disk_limit() -> None:
+def test_sync_safely_cancels_before_writing_at_hard_disk_limit() -> None:
     operations = _FakeOperations()
     data = _FakeDataRepository()
     service = CNMarketHistorySyncService(
@@ -400,16 +400,18 @@ def test_sync_pauses_before_writing_at_hard_disk_limit() -> None:
         quality_service=_FakeQualityService(),
     )
 
-    result = service.run("run-1")
+    safe_cancels = []
+    result = service.run("run-1", on_safe_cancel=safe_cancels.append)
 
-    assert result["status"] == SyncStatus.PAUSED.value
+    assert result["status"] == SyncStatus.CANCELLED.value
     assert data.pages == []
-    paused = [item for item in operations.target_updates if item[2] is SyncStatus.PAUSED]
-    assert paused[0][3]["page_offset"] == 2
-    assert paused[0][3]["last_error_code"] == "cn_history.disk_hard_limit"
+    cancelled = [item for item in operations.target_updates if item[2] is SyncStatus.CANCELLED]
+    assert cancelled[0][3]["page_offset"] == 2
+    assert cancelled[0][3]["last_error_code"] == "cn_history.disk_hard_limit"
+    assert safe_cancels[0]["error_code"] == "cn_history.disk_hard_limit"
 
 
-def test_retry_excludes_parent_overlap_and_writes_sanitized_audit_scope() -> None:
+def test_retry_of_cancelled_run_includes_pending_checkpoint_targets_and_writes_audit() -> None:
     class Operations:
         def __init__(self):
             self.overlap_calls = []
@@ -419,13 +421,13 @@ def test_retry_excludes_parent_overlap_and_writes_sanitized_audit_scope() -> Non
             assert run_id == "run-parent"
             return {
                 "run_id": run_id,
-                "status": "paused",
+                "status": "cancelled",
                 "targets": [
                     {
                         "instrument": "CNStock:600519.SH",
                         "target_start": date(2024, 1, 2),
                         "target_end": date(2024, 1, 4),
-                        "status": "paused",
+                        "status": "pending",
                     }
                 ],
             }

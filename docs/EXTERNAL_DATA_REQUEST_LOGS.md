@@ -27,4 +27,4 @@ fallback semantics and would capture unrelated traffic.
 ## Retention
 
 `success`, `disabled`, and `skipped` default to 30 days. Other result classes
-default to 90 days. The Celery maintenance job deletes in bounded batches.
+default to 90 days. The registered `external_data_request_log_cleanup` Task Definition deletes in bounded batches.

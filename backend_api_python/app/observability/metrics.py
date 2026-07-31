@@ -70,7 +70,7 @@ BUILD_INFO.labels(version=APP_VERSION, role=current_process_role().value).set(1)
 
 
 def _refresh_runtime_metrics() -> None:
-    worker_roles = {"trading", "scheduler", "celery"}
+    worker_roles = {"trading", "scheduler"}
     command_statuses = {"pending", "claimed", "succeeded", "failed"}
     worker_counts: dict[str, tuple[int, int]] = {}
     command_counts: dict[str, int] = {}

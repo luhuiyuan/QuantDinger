@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import requests
+
 from app.data_sources.cn_fundamental_history import fetch_eastmoney_annual_reports
 from app.services.cn_market_history.disk_guard import DiskGuard
 from app.services.cn_market_history.config import load_cn_market_history_settings
@@ -18,6 +20,14 @@ REQUIRED_FIELDS = (
     "operating_cash_flow", "capex_cash_paid", "ebit", "interest_expense",
     "revenue", "gross_profit", "total_shares",
 )
+
+
+def _is_temporary_provider_error(exc: Exception) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionError, requests.Timeout, requests.ConnectionError)):
+        return True
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    return status_code == 429 or (isinstance(status_code, int) and status_code >= 500)
 
 
 class CNFundamentalHistoryService:
@@ -100,10 +110,13 @@ class CNFundamentalRunService:
         return run_id
 
     def set_control_status(self, run_id: str, status: str, *, actor_user_id: int | None) -> None:
-        if status not in {"paused", "pending", "cancelled"}:
+        if status != "cancelled":
             raise ValueError("cn_fundamental.invalid_control_status")
-        if not self.repository.get_run(run_id):
+        run = self.repository.get_run(run_id)
+        if not run:
             raise KeyError(run_id)
+        if run.get("status") in {"succeeded", "failed", "cancelled"}:
+            return
         self.repository.set_run_status(run_id, status)
         self.repository.write_audit(actor_user_id, status, run_id=run_id)
 
@@ -111,10 +124,10 @@ class CNFundamentalRunService:
         run = self.repository.get_run(run_id)
         if not run:
             raise KeyError(run_id)
-        failed = [item["instrument"] for item in run["targets"] if item["status"] in {"failed", "pending"}]
+        failed = [item["instrument"] for item in run["targets"] if item["status"] in {"failed", "pending", "cancelled"}]
         return self.create_run(failed, requested_by=actor_user_id, request_kind="retry")
 
-    def run(self, run_id: str) -> dict:
+    def run(self, run_id: str, on_progress=None, on_safe_cancel=None) -> dict:
         run = self.repository.get_run(run_id)
         if not run:
             raise KeyError(run_id)
@@ -122,20 +135,35 @@ class CNFundamentalRunService:
             if not acquired:
                 return {"runId": run_id, "skipped": True, "reason": "active_fundamental_run"}
             self.repository.set_run_status(run_id, "running")
-            succeeded = failed = 0
+            succeeded = failed = temporary_failed = 0
             for target in run["targets"]:
                 if target["status"] == "succeeded":
                     succeeded += 1
                     continue
                 current = self.repository.get_run(run_id)
-                if current["status"] in {"paused", "cancelled"}:
+                if current["status"] == "cancelled":
                     break
                 instrument = target["instrument"]
                 try:
                     if self.disk_guard is not None:
                         status = self.disk_guard.check()
                         if not status.allows_current_write:
-                            raise RuntimeError("cn_fundamental.disk_write_blocked")
+                            self.repository.set_target_status(
+                                run_id, instrument, "cancelled",
+                                error=f"cn_fundamental.disk_hard_limit:{status.free_bytes}",
+                            )
+                            self.repository.set_run_status(run_id, "cancelled")
+                            if on_safe_cancel is not None:
+                                on_safe_cancel({
+                                    "error_code": "cn_fundamental.disk_hard_limit",
+                                    "message": f"Only {status.free_bytes} free bytes remain",
+                                    "metadata": {
+                                        "free_bytes": status.free_bytes,
+                                        "hard_free_bytes": status.hard_free_bytes,
+                                        "path": status.path,
+                                    },
+                                })
+                            break
                     self.repository.set_target_status(run_id, instrument, "running")
                     result = self.history_service.sync_instrument(instrument)
                     checkpoint = result["coverage"].get("last_period_end")
@@ -143,10 +171,29 @@ class CNFundamentalRunService:
                     succeeded += 1
                 except Exception as exc:
                     self.repository.set_target_status(run_id, instrument, "failed", error=str(exc))
-                    failed += 1
+                    if _is_temporary_provider_error(exc):
+                        temporary_failed += 1
+                    else:
+                        failed += 1
                 self.repository.refresh_run_progress(run_id)
-            status = "partial" if failed and succeeded else "failed" if failed else "succeeded"
+                if on_progress is not None:
+                    latest_progress = self.repository.get_run(run_id)
+                    on_progress({
+                        "stage": "instruments",
+                        "current": int(latest_progress.get("succeeded_symbols") or 0) + int(latest_progress.get("failed_symbols") or 0),
+                        "total": int(latest_progress.get("total_symbols") or 0),
+                        "unit": "instrument",
+                        "message": instrument,
+                        "checkpoint_ref": f"{run_id}:{instrument}",
+                    })
+            failure_count = failed + temporary_failed
+            status = "partial" if failure_count and succeeded else "failed" if failure_count else "succeeded"
             latest = self.repository.get_run(run_id)
-            if latest["status"] not in {"paused", "cancelled"}:
+            if latest["status"] == "cancelled":
+                status = "cancelled"
+            else:
                 self.repository.set_run_status(run_id, status)
-            return {"runId": run_id, "status": status, "succeeded": succeeded, "failed": failed}
+            return {
+                "runId": run_id, "status": status, "succeeded": succeeded,
+                "failed": failed, "temporary_failed": temporary_failed,
+            }

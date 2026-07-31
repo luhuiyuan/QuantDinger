@@ -75,10 +75,9 @@ and deployment remain under the operator's control.
 The v5 backend is organized around explicit runtime and operational boundaries:
 
 - the HTTP API no longer owns long-running trading or scheduler loops;
-- trading, scheduling, Celery jobs, and migrations run as separate processes;
-- Celery handles finite, retryable work while long-lived strategy runtimes stay
-  in the trading worker;
-- cache Redis and durable job Redis use separate instances and eviction policies;
+- trading, scheduling, finite Task Runs, and migrations have explicit process ownership;
+- the scheduler-worker hosts independent Domain Scheduler, Task Scheduler, and Task executor responsibilities;
+- PostgreSQL persists task plans, leases, progress, structured events, and audit records;
 - high-risk API contracts are represented in OpenAPI and protected by tests;
 - JSON logs, request IDs, Prometheus metrics, dashboards, and alert rules are
   available through an optional observability overlay;
@@ -108,11 +107,8 @@ flowchart TB
     API["Flask + Gunicorn API"]
     PG[("PostgreSQL")]
     CACHE[("Redis cache")]
-    JOBS[("Redis jobs")]
     TW["Trading worker"]
     SW["Scheduler worker"]
-    CW["Celery worker"]
-    BEAT["Celery beat"]
     PROM["Prometheus"]
     GRAF["Grafana"]
     ALERT["Alertmanager"]
@@ -122,14 +118,11 @@ flowchart TB
     API --> CACHE
     API -->|"durable commands"| PG
     TW -->|"leases, orders, heartbeats"| PG
-    SW -->|"schedules, monitoring, heartbeats"| PG
-    API -->|"finite async jobs"| JOBS
-    BEAT --> JOBS --> CW
-    CW --> PG
+    SW -->|"domain schedules, finite Task Runs, leases, heartbeats"| PG
+    API -->|"registered finite Task Runs"| PG
     API -. metrics .-> PROM
     PG -. exporter .-> PROM
     CACHE -. exporter .-> PROM
-    JOBS -. exporter .-> PROM
     PROM --> GRAF
     PROM --> ALERT
 ```
@@ -141,9 +134,7 @@ One backend image is reused by several containers with different commands:
 | `migration` | Applies the database schema and exits before application services start. |
 | `backend` | Handles HTTP, authentication, validation, and durable command submission. |
 | `trading-worker` | Owns strategy runtimes, pending orders, broker sessions, and reconciliation. |
-| `scheduler-worker` | Runs portfolio, deployment, payment, and signal schedules. |
-| `celery-worker` | Executes finite AI, backtest, experiment, report, and maintenance jobs. |
-| `celery-beat` | Dispatches periodic Celery tasks. |
+| `scheduler-worker` | Hosts Domain Scheduler loops plus the internal Task Scheduler and isolated Task Run executor. |
 
 See [Backend process roles](docs/architecture/PROCESS_ROLES_AND_TASKS.md),
 [architecture](docs/architecture/ARCHITECTURE.md), and
@@ -231,7 +222,7 @@ Before the first start, replace the example values in both environment files:
 | File | Required production values |
 | --- | --- |
 | `backend_api_python/.env` | `SECRET_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, `ADMIN_USER`, `ADMIN_PASSWORD` |
-| `.env` | `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `CELERY_REDIS_PASSWORD`, `GRAFANA_ADMIN_PASSWORD` |
+| `.env` | `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `GRAFANA_ADMIN_PASSWORD` |
 
 Generate independent secrets with:
 
@@ -280,11 +271,10 @@ monitoring is provided externally.
 Production rules:
 
 - expose only a TLS reverse proxy on ports 80/443;
-- keep PostgreSQL, both Redis instances, Prometheus, Grafana, and Alertmanager
-  off the public internet;
+- keep PostgreSQL, cache Redis, Prometheus, Grafana, and Alertmanager off the public internet;
 - do not deploy with example passwords or empty encryption keys;
-- back up PostgreSQL and the durable `redis-jobs` volume;
-- keep cache Redis disposable and never use it as the Celery broker;
+- back up PostgreSQL, including task-control, audit, checkpoint references, and domain run tables;
+- keep cache Redis disposable and outside task execution correctness;
 - review worker health and application readiness after every deployment.
 
 The full checklist is in [Production hardening](docs/deployment/PRODUCTION_HARDENING.md).
@@ -352,7 +342,7 @@ not include credentials, account data, or exploitable details in public issues.
 | Crypto | Binance, OKX, Bitget, Bybit, Gate, HTX, Coinbase Exchange, Kraken, and adapter extensions. |
 | Traditional brokers | IBKR and Alpaca workflows. |
 | AI providers | OpenRouter, OpenAI-compatible APIs, Google, DeepSeek, Grok, MiniMax, and custom endpoints. |
-| Automation | Human API, Agent Gateway, MCP server, Celery jobs, schedules, and notifications. |
+| Automation | Human API, Agent Gateway, MCP server, internal Task Runs, schedules, and notifications. |
 
 Start with the [Indicator guide](docs/trading/INDICATOR_DEV_GUIDE.md),
 [Strategy guide](docs/trading/STRATEGY_DEV_GUIDE.md), and
@@ -413,7 +403,6 @@ QuantDinger/
 |   |-- app/
 |   |   |-- __init__.py                Flask application factory and core wiring
 |   |   |-- startup.py                 Process-aware startup hooks and service singletons
-|   |   |-- celery_app.py              Celery application and task registration
 |   |   |-- commands/                  Migration, scheduler, trading, and health entrypoints
 |   |   |-- config/                    Environment-backed database, Redis, and provider config
 |   |   |-- routes/                    Human HTTP API route facades
@@ -429,7 +418,7 @@ QuantDinger/
 |   |   |-- data_sources/              Raw market-data source adapters
 |   |   |-- data_providers/            Aggregated market, macro, news, and sentiment providers
 |   |   |-- markets/                   Market and symbol normalization
-|   |   |-- tasks/                     Finite, retryable Celery jobs
+|   |   |-- services/task_control/     Registered finite tasks, schedules, Runs, leases, and executor
 |   |   |-- workers/                   Long-lived worker process shells
 |   |   |-- runtime/                   Process-role and ownership helpers
 |   |   |-- observability/             Request context, metrics, and HTTP instrumentation
@@ -468,13 +457,12 @@ QuantDinger/
 | --- | --- |
 | Synchronous API request | `app/routes` -> `app/services` -> database, cache, market-data, or trading adapter |
 | Durable strategy command | API route -> PostgreSQL command record -> `trading-worker` -> strategy runtime and broker adapter |
-| Finite background job | API or Celery beat -> job Redis -> `app/tasks` in `celery-worker` -> PostgreSQL result |
+| Finite background job | API or Task Scheduler -> PostgreSQL Task Run -> isolated child process -> domain checkpoint/result |
 | Scheduled domain work | `app/commands/scheduler.py` -> scheduling services -> durable state and notifications |
 | Monitoring | API and workers -> `app/observability` metrics -> Prometheus -> Grafana and Alertmanager |
 | Agent or MCP call | MCP client -> `mcp_server` -> `/api/agent/v1` -> the same service layer used by human APIs |
 
-Long-lived trading loops belong to the trading worker. Finite, retryable work
-belongs to Celery. HTTP routes validate and delegate; they must not own trading
+Long-lived trading loops belong to the trading worker. Finite, retryable work belongs to the code-registered internal task system in scheduler-worker. HTTP routes validate and delegate; they must not own trading
 loops, exchange-specific behavior, or large database workflows.
 
 ### Where changes belong
@@ -486,7 +474,7 @@ loops, exchange-specific behavior, or large database workflows.
 | Add an exchange or broker integration | `app/services/live_trading/` or the broker package | credential policy, adapter tests, docs |
 | Add a market-data source | `app/data_sources/` | provider aggregation, cache keys, tests |
 | Add dashboard, news, or macro aggregation | `app/data_providers/` | route facade and cache policy |
-| Add a finite asynchronous task | `app/tasks/` | `celery_app.py`, queue routing, task tests |
+| Add a finite asynchronous task | `app/services/task_control/builtin_tasks.py` | registry schema, domain adapter, timeout/retry/cancel policy, task tests |
 | Add long-lived process behavior | `app/workers/`, `app/commands/`, or `app/runtime/` | Compose command, health checks, ownership tests |
 | Change the database schema | `backend_api_python/migrations/` | migration/release-gate tests and docs |
 | Add metrics or alerts | `app/observability/` and `ops/` | dashboard, alert rule, observability docs |
@@ -629,7 +617,6 @@ the maintainers and contributors of projects including:
 
 - [Flask](https://flask.palletsprojects.com/)
 - [Gunicorn](https://gunicorn.org/)
-- [Celery](https://docs.celeryq.dev/)
 - [PostgreSQL](https://www.postgresql.org/)
 - [Redis](https://redis.io/)
 - [Pandas](https://pandas.pydata.org/)

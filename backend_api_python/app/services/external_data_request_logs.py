@@ -196,6 +196,7 @@ class ExternalDataRequestLogService:
         provider: str = "",
         data_domain: str = "",
         result: str = "",
+        request_id: str = "",
         started_at: datetime | None = None,
         ended_at: datetime | None = None,
     ) -> dict[str, Any]:
@@ -203,7 +204,8 @@ class ExternalDataRequestLogService:
         page_size = min(100, max(1, int(page_size)))
         clauses, params = ["TRUE"], []
         for column, value, max_length in (
-            ("provider", provider, 64), ("data_domain", data_domain, 48), ("result", result, 32),
+            ("provider", provider, 64), ("data_domain", data_domain, 48),
+            ("result", result, 32), ("request_id", request_id, 128),
         ):
             value = sanitize_summary(value, max_length=max_length)
             if value:

@@ -37,19 +37,18 @@ because they require renewable ownership, reconciliation, and controlled
 shutdown. Each finite Task Run executes in an isolated subprocess while the
 parent scheduler-worker owns its database lease and lifecycle.
 
-## Redis separation during migration
+## Persistence and queue ownership
 
-During the hard-cutover migration, the cache Redis instance remains separate
-from the temporary Celery `redis-jobs` instance. After the internal Task
-Scheduler passes all deletion gates, `redis-jobs` is removed; cache Redis stays
-in service. Queue state must never share an evictable Redis memory policy.
+PostgreSQL is the source of truth for finite-task schedules, Runs, leases,
+events, and audit records. The remaining Redis service is application cache
+only and is not a durable task queue. Task execution correctness must not
+depend on cache availability or an evictable Redis policy.
 
 ## Deployment sequence
 
 Docker Compose enforces this order:
 
-1. PostgreSQL and cache Redis become healthy; the temporary `redis-jobs` is only
-   present before the hard cutover.
+1. PostgreSQL and cache Redis become healthy.
 2. The migration process exits successfully.
 3. API, trading, and scheduler-worker start; scheduler-worker initializes both
    Domain Scheduler and Task Scheduler ownership.

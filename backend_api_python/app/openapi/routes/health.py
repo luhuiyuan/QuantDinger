@@ -1,13 +1,10 @@
 """Health and status routes (OpenAPI-documented via flask-smorest)."""
-import os
 from datetime import datetime, timezone
 
-import redis
 from flask import Response
 from flask_smorest import Blueprint
 
 from app._version import APP_VERSION
-from app.config.redis_urls import celery_broker_url
 from app.openapi.schemas.common import (
     ApiInfoSchema,
     HealthStatusSchema,
@@ -72,7 +69,7 @@ def api_health_check():
 @blp.response(200, ReadinessStatusSchema)
 @blp.doc(summary="Readiness check", tags=["Health"], operationId="getReadiness")
 def readiness_check():
-    checks = {"postgres": _postgres_ready(), "celery_broker": _celery_broker_ready()}
+    checks = {"postgres": _postgres_ready(), "task_scheduler": _task_scheduler_ready()}
     payload = _health_payload()
     payload["checks"] = checks
     if not all(checks.values()):
@@ -136,19 +133,26 @@ def _postgres_ready() -> bool:
         return False
 
 
-def _celery_broker_ready() -> bool:
-    enabled = os.getenv("CELERY_TASKS_ENABLED", "false").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-    if not enabled:
-        return True
-    url = celery_broker_url()
-    client = None
+def _task_scheduler_ready() -> bool:
     try:
-        client = redis.Redis.from_url(url, socket_connect_timeout=1, socket_timeout=1)
-        return bool(client.ping())
+        with get_db_connection() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT EXISTS(SELECT 1 FROM qd_task_definitions WHERE status='active') definitions_ready,
+                           EXISTS(
+                               SELECT 1 FROM qd_worker_heartbeats
+                               WHERE role='scheduler' AND status='running'
+                                 AND heartbeat_at >= NOW() - INTERVAL '45 seconds'
+                                 AND COALESCE(metadata_json->>'task_scheduler', '') = 'running'
+                                 AND COALESCE(metadata_json->>'task_executor', '') = 'running'
+                           ) worker_ready
+                    """
+                )
+                row = cur.fetchone() or {}
+                return bool(row.get("definitions_ready")) and bool(row.get("worker_ready"))
+            finally:
+                cur.close()
     except Exception:
         return False
-    finally:
-        if client is not None:
-            client.close()

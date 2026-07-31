@@ -1,10 +1,6 @@
 from types import SimpleNamespace
 
-import pytest
-
-pytest.importorskip("celery")
-
-from app.tasks import maintenance
+from app.services.task_control import builtin_tasks
 from app.services import external_data_request_logs as log_module
 from app.services import external_data_request_settings as settings_module
 
@@ -30,19 +26,19 @@ def test_cleanup_task_batches_and_records_success(monkeypatch):
     service = _CleanupService([2, 1])
     monkeypatch.setattr(log_module, "ExternalDataRequestLogService", lambda: service)
     monkeypatch.setattr(settings_module, "load_external_data_request_log_settings", lambda: _settings())
-    result = maintenance.cleanup_external_data_request_logs.run()
+    result = builtin_tasks._cleanup_external_data_logs({}, SimpleNamespace(run_id="task-run"))
     assert result == {"deleted_count": 3, "run_id": 7}
     assert service.finished == [(7, {"deleted_count": 3})]
 
 
 def test_cleanup_task_is_disabled_or_records_failure(monkeypatch):
     monkeypatch.setattr(settings_module, "load_external_data_request_log_settings", lambda: _settings(False))
-    assert maintenance.cleanup_external_data_request_logs.run()["skipped"] is True
+    assert builtin_tasks._cleanup_external_data_logs({}, SimpleNamespace(run_id="task-run"))["skipped"] is True
 
     service = _CleanupService(raises=RuntimeError("token=secret"))
     monkeypatch.setattr(log_module, "ExternalDataRequestLogService", lambda: service)
     monkeypatch.setattr(settings_module, "load_external_data_request_log_settings", lambda: _settings())
-    result = maintenance.cleanup_external_data_request_logs.run()
+    result = builtin_tasks._cleanup_external_data_logs({}, SimpleNamespace(run_id="task-run"))
     assert result["run_id"] == 7
     assert "secret" not in result["error"]
     assert service.finished[0][1]["deleted_count"] == 0

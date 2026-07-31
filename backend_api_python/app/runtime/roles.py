@@ -11,7 +11,6 @@ class ProcessRole(str, Enum):
     API = "api"
     TRADING = "trading"
     SCHEDULER = "scheduler"
-    CELERY = "celery"
 
 
 def current_process_role() -> ProcessRole:

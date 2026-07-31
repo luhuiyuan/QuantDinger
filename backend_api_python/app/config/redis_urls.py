@@ -1,4 +1,4 @@
-"""Redis endpoint builders for cache and durable job workloads."""
+"""Redis endpoint builder for the optional cache tier."""
 
 from __future__ import annotations
 
@@ -20,30 +20,6 @@ def cache_redis_url() -> str:
         os.getenv("REDIS_PORT", "6379"),
         int(os.getenv("REDIS_DB", "0")),
         os.getenv("REDIS_PASSWORD", "").strip(),
-    )
-
-
-def celery_broker_url() -> str:
-    explicit = os.getenv("CELERY_BROKER_URL", "").strip()
-    if explicit:
-        return explicit
-    return _build_url(
-        os.getenv("CELERY_REDIS_HOST", os.getenv("REDIS_HOST", "localhost")),
-        os.getenv("CELERY_REDIS_PORT", "6379"),
-        int(os.getenv("CELERY_BROKER_DB", "0")),
-        os.getenv("CELERY_REDIS_PASSWORD", os.getenv("REDIS_PASSWORD", "")).strip(),
-    )
-
-
-def celery_result_backend_url() -> str:
-    explicit = os.getenv("CELERY_RESULT_BACKEND", "").strip()
-    if explicit:
-        return explicit
-    return _build_url(
-        os.getenv("CELERY_REDIS_HOST", os.getenv("REDIS_HOST", "localhost")),
-        os.getenv("CELERY_REDIS_PORT", "6379"),
-        int(os.getenv("CELERY_RESULT_DB", "1")),
-        os.getenv("CELERY_REDIS_PASSWORD", os.getenv("REDIS_PASSWORD", "")).strip(),
     )
 
 

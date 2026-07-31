@@ -25,17 +25,13 @@
 | `easy_tdx` | `/home/quantadinger/easy_tdx` | 构建本地 wheel，随后端镜像安装 |
 | PostgreSQL | 宿主机 | 应用容器通过 `host.docker.internal` 访问 |
 | Redis 缓存 | `redis` 容器 | 可淘汰缓存，不承担持久任务 |
-| Redis 任务队列 | `redis-jobs` 容器 | AOF 持久化、`noeviction`，供 Celery 使用 |
 
 当前需要启动的 Compose 服务如下：
 
 ```text
 redis
-redis-jobs
 migration
 backend
-celery-worker
-celery-beat
 scheduler-worker
 trading-worker
 frontend
@@ -236,7 +232,6 @@ FRONTEND_PORT=8888
 REDIS_PORT=127.0.0.1:6379
 
 REDIS_PASSWORD=独立生成的缓存密码
-CELERY_REDIS_PASSWORD=另一个独立生成的任务队列密码
 ```
 
 说明：
@@ -381,8 +376,7 @@ docker compose run --rm --no-deps backend \
 
 ```bash
 docker compose up -d --no-build \
-  redis redis-jobs migration backend \
-  celery-worker celery-beat scheduler-worker trading-worker frontend
+  redis migration backend scheduler-worker trading-worker frontend
 ```
 
 `migration` 是一次性容器，成功应用数据库迁移后应以退出码 0 结束。其他应用服务依赖迁移
@@ -415,16 +409,13 @@ curl -fsS http://127.0.0.1:5000/api/health/workers
 curl -fsS http://127.0.0.1:8888/health
 ```
 
-`/api/health/ready` 必须确认 PostgreSQL 与 Celery broker 均可用。Worker 接口应出现近期的
-`trading`、`scheduler` 和 `celery` 心跳。
+`/api/health/ready` 必须确认 PostgreSQL 与内部 Task Scheduler 均可用。Worker 接口应出现近期的 `trading` 和 `scheduler` 心跳；Task Management 概览应显示 Domain Scheduler、Task Scheduler 与 Task executor 均为 `running`。
 
 检查关键日志：
 
 ```bash
 docker compose logs --tail=100 backend
-docker compose logs --tail=100 celery-worker
-docker compose logs --tail=100 celery-beat
-docker compose logs --tail=100 scheduler-worker
+docker compose logs --tail=100 docker compose logs --tail=100 docker compose logs --tail=100 scheduler-worker
 docker compose logs --tail=100 trading-worker
 ```
 
@@ -532,7 +523,7 @@ GET  /api/market-history/disk-status
 ```
 
 定向任务请求范围应明确，例如 `2024-01-01` 至最近已确认收盘日，并保持单批标的数很小。
-Celery maintenance 队列会执行任务；不要并行提交重叠区间。
+内部 Task Scheduler 会创建持久化 Run；相同互斥范围的重叠计划会跳过，手工重复启动返回现有 Run。
 
 ### 13.3 最终运行配置
 
@@ -544,16 +535,13 @@ CN_HISTORY_ENABLED=true
 CN_HISTORY_SYNC_ENABLED=true
 CN_HISTORY_DAILY_SYMBOLS=CNStock:600519.SH,CNStock:000001.SZ
 CN_HISTORY_INCREMENTAL_LOOKBACK_DAYS=14
-CN_HISTORY_DAILY_SYNC_INTERVAL_SEC=86400
 ```
 
 配置变化后只重建/重启读取该 env 的应用容器，不需要重新构建镜像：
 
 ```bash
 docker compose up -d --no-build --force-recreate --no-deps backend
-docker compose up -d --no-build --force-recreate --no-deps celery-worker
-docker compose up -d --no-build --force-recreate --no-deps celery-beat
-docker compose up -d --no-build --force-recreate --no-deps scheduler-worker
+docker compose up -d --no-build --force-recreate --no-deps docker compose up -d --no-build --force-recreate --no-deps docker compose up -d --no-build --force-recreate --no-deps scheduler-worker
 docker compose up -d --no-build --force-recreate --no-deps trading-worker
 ```
 
@@ -593,9 +581,7 @@ docker compose up -d --no-build --force-recreate migration
 docker compose logs --tail=100 migration
 
 docker compose up -d --no-build --force-recreate --no-deps backend
-docker compose up -d --no-build --force-recreate --no-deps celery-worker
-docker compose up -d --no-build --force-recreate --no-deps celery-beat
-docker compose up -d --no-build --force-recreate --no-deps scheduler-worker
+docker compose up -d --no-build --force-recreate --no-deps docker compose up -d --no-build --force-recreate --no-deps docker compose up -d --no-build --force-recreate --no-deps scheduler-worker
 docker compose up -d --no-build --force-recreate --no-deps trading-worker
 ```
 
@@ -629,7 +615,6 @@ docker compose up -d --no-build --force-recreate --no-deps frontend
 ```bash
 docker compose ps -a
 docker compose logs -f --tail=100 backend
-docker compose logs -f --tail=100 celery-worker
 docker compose restart backend
 docker compose stop frontend
 docker compose start frontend
@@ -639,8 +624,7 @@ docker compose start frontend
 
 ```bash
 docker compose stop \
-  frontend backend celery-worker celery-beat scheduler-worker trading-worker \
-  redis redis-jobs
+  frontend backend scheduler-worker trading-worker redis
 ```
 
 不要使用 `docker compose down -v`，`-v` 会删除命名数据卷。
@@ -669,18 +653,10 @@ pg_restore --list /home/quantadinger/backups/quantdinger-日期时间.dump | hea
 备份文件包含账户、配置、行情和审计数据，应限制权限并异机保存。定期在独立测试数据库做
 恢复演练，不能只验证文件存在。
 
-### 16.2 Redis Jobs 与应用数据卷
+### 16.2 PostgreSQL 任务控制与应用数据卷
 
-`redis-jobs` 使用 AOF，但它不能替代 PostgreSQL 备份。备份命名卷前应先停止会持续写入的
-Celery 服务，确认 Redis 已落盘，再使用经过审查的卷备份工具复制：
+计划、Run、租约、事件、审计和领域检查点引用均持久化在 PostgreSQL。备份时使用经过审查的 PostgreSQL 备份流程，并同时保留 `backend_data`/`backend_logs` 中确有运维价值的数据；缓存 Redis 不需要作为任务队列备份。
 
-```bash
-docker compose stop celery-beat celery-worker
-docker compose exec redis-jobs redis-cli SAVE
-docker volume ls | grep -E 'celery_redis_data|backend_data|backend_logs'
-```
-
-如配置了 Redis 密码，`redis-cli` 必须使用对应认证参数。完成卷备份后再启动 Celery。
 不要为了备份测试而删除或覆盖现有卷。
 
 ## 17. 回滚
@@ -705,7 +681,7 @@ CN_HISTORY_ENABLED=false
 CN_HISTORY_SYNC_ENABLED=false
 ```
 
-随后停止或撤销待处理的历史同步任务，逐个重建后端、Celery 和相关 Worker 容器。保留
+随后暂停未来计划、安全取消活动 Task Run，并逐个重建后端与相关 Worker 容器。保留
 `qd_cn_*` 表及其行情、质量、同步和来源证据，不在普通回滚中删表。
 
 完整说明见 [A 股历史数据回滚](CN_MARKET_HISTORY_ROLLBACK.md)。

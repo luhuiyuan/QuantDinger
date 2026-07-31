@@ -68,6 +68,7 @@ def register_human_blueprints(api: Api) -> None:
     from app.routes.factors import factors_blp
     from app.routes.market_modules import market_modules_blp
     from app.routes.cn_market_history_admin import cn_market_history_blp
+    from app.routes.task_management import task_management_blp
     from app.routes.ai_chat import ai_chat_blp
     from app.routes.indicator import indicator_blp
     from app.routes.indicator_signal_alerts import indicator_signal_alerts_blp
@@ -97,6 +98,7 @@ def register_human_blueprints(api: Api) -> None:
         (factors_blp, "/api/factors"),
         (market_modules_blp, "/api/market-modules"),
         (cn_market_history_blp, "/api/market-history"),
+        (task_management_blp, "/api/task-management"),
         (ai_chat_blp, "/api/ai"),
         (indicator_blp, "/api/indicator"),
         (indicator_signal_alerts_blp, "/api/indicator"),

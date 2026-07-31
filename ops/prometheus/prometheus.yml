@@ -24,10 +24,6 @@ scrape_configs:
     static_configs:
       - targets: [redis-cache-exporter:9121]
 
-  - job_name: redis-jobs
-    static_configs:
-      - targets: [redis-jobs-exporter:9121]
-
   - job_name: prometheus
     static_configs:
       - targets: [localhost:9090]

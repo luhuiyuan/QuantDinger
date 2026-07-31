@@ -11,6 +11,7 @@ from app.utils.logger import get_logger
 from app.services.fast_analysis_tasks import (
     acquire_inflight,
     build_inflight_key,
+    build_task_exclusivity_key,
     release_inflight,
     start_async_analysis_task,
     try_refund_credits,
@@ -61,12 +62,25 @@ def analyze():
             return jsonify({'code': 0, 'msg': 'Unauthorized', 'data': None}), 401
 
         inflight_key = build_inflight_key(user_id, market, symbol, timeframe)
-        if not acquire_inflight(inflight_key, ttl_sec=90):
+        if not acquire_inflight(inflight_key, ttl_sec=90, distributed=async_submit):
             return jsonify({
                 'code': 0,
                 'msg': 'Analysis already in progress for this symbol/timeframe. Please wait.',
                 'data': {'in_progress': True}
             }), 429
+
+        if async_submit:
+            from app.services.task_control.repository import TaskControlRepository
+
+            active_task = TaskControlRepository().get_active_run_by_exclusivity(
+                build_task_exclusivity_key(user_id, market, symbol, timeframe)
+            )
+            if active_task is not None:
+                return jsonify({
+                    'code': 0,
+                    'msg': 'Analysis already in progress for this symbol/timeframe. Please wait.',
+                    'data': {'in_progress': True, 'task_run_id': active_task.run_id},
+                }), 429
 
         # Billing / credits (best-effort)
         credits_charged = 0
@@ -130,7 +144,9 @@ def analyze():
                 int(pending_id), market, symbol, language, model, timeframe,
                 int(user_id), inflight_key, int(credits_charged or 0),
             )
-            # worker owns inflight release
+            # The durable Task Run now owns duplicate prevention. Release the
+            # short cross-process submission guard in this API process.
+            release_inflight(inflight_key)
             inflight_key = None
 
             return jsonify({

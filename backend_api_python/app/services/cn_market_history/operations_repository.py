@@ -133,7 +133,7 @@ class CNMarketHistoryOperationsRepository:
                     SELECT DISTINCT r.*
                     FROM qd_cn_history_sync_runs r
                     JOIN qd_cn_history_sync_targets t ON t.run_id = r.run_id
-                    WHERE r.status IN ('pending', 'running', 'paused')
+                    WHERE r.status IN ('pending', 'running')
                       AND (%s IS NULL OR r.run_id <> %s)
                       AND t.instrument = ANY(%s)
                       AND t.target_start <= %s

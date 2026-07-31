@@ -21,7 +21,6 @@ class SyncStatus(StrEnum):
     SUCCEEDED = "succeeded"
     PARTIAL = "partial"
     FAILED = "failed"
-    PAUSED = "paused"
     CANCELLED = "cancelled"
     SKIPPED = "skipped"
 

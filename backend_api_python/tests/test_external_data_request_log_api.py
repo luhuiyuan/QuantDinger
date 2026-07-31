@@ -39,11 +39,12 @@ def test_admin_log_routes_return_enveloped_overview_list_detail_and_settings(mon
     with app.test_request_context("/overview?hours=12"):
         response = _raw(routes.get_overview)()
         assert response.get_json()["data"]["overview"]["external_calls"] == 3
-    with app.test_request_context("/logs?page=2&page_size=20&provider=fred&data_domain=macro&result=timeout"):
+    with app.test_request_context("/logs?page=2&page_size=20&provider=fred&data_domain=macro&result=timeout&request_id=run-123"):
         response = _raw(routes.list_logs)()
         assert response.get_json()["data"]["items"][0]["error_summary"] == "[REDACTED]"
         assert service.kwargs["page"] == "2"
         assert service.kwargs["provider"] == "fred"
+        assert service.kwargs["request_id"] == "run-123"
     with app.test_request_context("/logs/2"):
         response = _raw(routes.get_log)(2)
         assert response.get_json()["code"] == 1

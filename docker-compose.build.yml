@@ -60,24 +60,6 @@ services:
         condition: service_healthy
         required: false
 
-  celery-worker:
-    <<: *host-postgres-runtime
-    environment:
-      DATABASE_URL: !reset null
-    depends_on:
-      postgres:
-        condition: service_healthy
-        required: false
-
-  celery-beat:
-    <<: *host-postgres-runtime
-    environment:
-      DATABASE_URL: !reset null
-    depends_on:
-      postgres:
-        condition: service_healthy
-        required: false
-
   frontend:
     # Disable the `pull_policy: always` inherited from docker-compose.yml.
     # Without this, a plain `docker compose up` (or `pull frontend`) would

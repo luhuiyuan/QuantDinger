@@ -5,6 +5,7 @@ Admin-only endpoints for system configuration management.
 """
 import os
 import re
+import uuid
 from flask import jsonify, request
 from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app._version import APP_VERSION
@@ -1851,8 +1852,18 @@ def get_market_catalog():
 def sync_market_catalog():
     """Start a non-blocking full sync for the supported crypto venues."""
     try:
-        from app.services.market_catalog_sync import start_market_catalog_sync
-        result = start_market_catalog_sync('manual')
+        from app.services.task_control.repository import TaskControlRepository
+        from app.services.task_control.registry import default_task_registry
+        from app.services.task_control.builtin_tasks import register_phase_one_tasks
+        register_phase_one_tasks(default_task_registry)
+        definition = default_task_registry.get("market_catalog_sync")
+        run, created = TaskControlRepository().create_run(
+            task_key=definition.task_key,
+            definition_version=definition.definition_version,
+            exclusivity_key=definition.exclusivity_key({}), parameters={},
+            owner_user_id=int(g.user_id), run_id=uuid.uuid4().hex,
+        )
+        result = {"started": created, "run_id": run.run_id, "reason": "already_running" if not created else ""}
         if not result.get('started'):
             return jsonify({
                 'code': 0,

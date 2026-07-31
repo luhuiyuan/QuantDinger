@@ -200,7 +200,7 @@ def run_startup_hooks(app: Flask) -> None:
     if skip_hooks:
         return
     role = current_process_role()
-    if role in {ProcessRole.API, ProcessRole.CELERY}:
+    if role is ProcessRole.API:
         logger.info("No process-local background services for role=%s", role.value)
         return
     with app.app_context():
@@ -208,7 +208,7 @@ def run_startup_hooks(app: Flask) -> None:
             logger.info("Process services are controlled by the %s entrypoint", role.value)
             return
         _start_trading_support_services()
-        _start_scheduler_services(include_celery_managed=True)
+        _start_scheduler_services()
         restore_running_strategies()
 
 
@@ -218,8 +218,8 @@ def _start_trading_support_services() -> None:
     start_grid_fill_poller()
 
 
-def _start_scheduler_services(*, include_celery_managed: bool = False) -> None:
-    """Start long-lived schedulers that are not Celery tasks."""
+def _start_scheduler_services() -> None:
+    """Start long-lived Domain Scheduler services."""
     start_portfolio_monitor()
     start_usdt_order_worker()
     try:
@@ -229,24 +229,5 @@ def _start_scheduler_services(*, include_celery_managed: bool = False) -> None:
     except Exception:
         logger.error("Failed to start indicator signal alert worker", exc_info=True)
 
-    try:
-        from app.services.market_catalog_sync import start_market_catalog_sync_on_boot
-
-        start_market_catalog_sync_on_boot()
-    except Exception:
-        logger.error("Failed to start initial market catalog sync", exc_info=True)
-
-    if not include_celery_managed:
-        return
-    try:
-        from app.services.ai_calibration import start_ai_calibration_worker
-
-        start_ai_calibration_worker()
-    except Exception:
-        logger.error("Failed to start AI calibration", exc_info=True)
-    try:
-        from app.services.reflection import start_reflection_worker
-
-        start_reflection_worker()
-    except Exception:
-        logger.error("Failed to start reflection worker", exc_info=True)
+    # Market catalog finite work is exclusively submitted by the internal Task
+    # Scheduler; never start an invisible process-local thread during boot.

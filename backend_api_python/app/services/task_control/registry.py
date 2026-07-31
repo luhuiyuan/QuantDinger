@@ -12,6 +12,8 @@ from typing import Any, Callable, Mapping
 
 TaskHandler = Callable[..., Any]
 ExclusivityKeyBuilder = Callable[[Mapping[str, Any], int | None], str]
+CancellationHandler = Callable[[Mapping[str, Any]], None]
+ManualRetryHandler = Callable[[Mapping[str, Any], int | None], Mapping[str, Any]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,8 +25,11 @@ class TaskDefinition:
     default_parameters: dict[str, Any] = field(default_factory=dict)
     display_name: str = ""
     priority: int = 2
+    max_concurrency: int | None = None
     capabilities: dict[str, Any] = field(default_factory=dict)
     exclusivity_key_builder: ExclusivityKeyBuilder | None = None
+    cancellation_handler: CancellationHandler | None = None
+    manual_retry_handler: ManualRetryHandler | None = None
 
     def __post_init__(self) -> None:
         if not self.task_key or self.task_key.strip() != self.task_key:
@@ -35,6 +40,15 @@ class TaskDefinition:
             raise TypeError("Task Definition handler must be code callable")
         if self.priority not in {0, 1, 2, 3}:
             raise ValueError("priority must be between 0 and 3")
+        if self.max_concurrency is not None and self.max_concurrency <= 0:
+            raise ValueError("max_concurrency must be positive")
+        normalized_capabilities = {
+            "supports_cancel": True,
+            "cancel_grace_seconds": 60,
+            "max_retries": 3,
+            **dict(self.capabilities),
+        }
+        object.__setattr__(self, "capabilities", normalized_capabilities)
 
     def validate_parameters(self, parameters: Mapping[str, Any] | None = None) -> dict[str, Any]:
         merged = dict(self.default_parameters)
@@ -116,3 +130,16 @@ def _validate_value(schema: Mapping[str, Any], value: Any, *, path: str) -> None
 
 
 default_task_registry = TaskRegistry()
+
+
+def sync_registered_task_definitions(repository: Any) -> int:
+    """Materialize the code registry before Task Scheduler starts.
+
+    An empty registry is treated as not-ready rather than retiring every row;
+    callers can keep Domain Scheduler loops alive while finite-task scheduling
+    remains disabled until registrations are loaded.
+    """
+    definitions = default_task_registry.all()
+    if not definitions:
+        raise RuntimeError("Task Registry is empty; Task Scheduler is not ready")
+    return repository.sync_definitions(definitions)

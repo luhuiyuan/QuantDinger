@@ -1,4 +1,4 @@
-﻿# Generated from the verified Python 3.12 production image. Regenerate after changing requirements.txt.
+# Generated from the verified Python 3.12 production image. Regenerate after changing requirements.txt.
 aiodns==4.0.4
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.1
@@ -6,26 +6,21 @@ aiosignal==1.4.0
 akracer==0.0.14
 akshare==1.18.64
 alpaca-py==0.43.5
-amqp==5.3.1
 annotated-types==0.7.0
 anyio==4.14.1
 apispec==6.10.0
 attrs==26.1.0
 bcrypt==5.0.0
 beautifulsoup4==4.15.0
-billiard==4.2.4
 bitarray==3.9.0
 blinker==1.9.0
 cbor2==5.9.0
 ccxt==4.5.64
-celery==5.6.3
 certifi==2026.6.17
 cffi==2.1.0
 charset-normalizer==3.4.9
 click==8.4.2
-click-didyoumean==0.3.1
 click-plugins==1.1.1.2
-click-repl==0.3.0
 coincurve==21.0.0
 crcmod==1.7
 cryptography==49.0.0
@@ -60,7 +55,6 @@ jiter==0.16.0
 jsonpath==0.82.2
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
-kombu==5.6.2
 korean_lunar_calendar==0.4.0
 litellm==1.86.7
 lxml==6.1.1
@@ -128,7 +122,6 @@ typing_extensions==4.16.0
 tzdata==2026.3
 tzlocal==5.4.4
 urllib3==2.7.0
-vine==5.1.0
 wcwidth==0.8.2
 webargs==8.7.1
 webencodings==0.5.1

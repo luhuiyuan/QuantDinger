@@ -1,20 +1,15 @@
 """Async task and in-flight helpers for fast analysis routes."""
 
-import hashlib
-import os
 import threading
 import time
-from functools import lru_cache
 
-import redis
-
-from app.config.redis_urls import celery_broker_url
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 _analysis_inflight_lock = threading.Lock()
 _analysis_inflight: dict[str, float] = {}
+_distributed_inflight: dict[tuple[int, str], object] = {}
 
 
 def build_inflight_key(user_id: int, market: str, symbol: str, timeframe: str) -> str:
@@ -24,11 +19,25 @@ def build_inflight_key(user_id: int, market: str, symbol: str, timeframe: str) -
     )
 
 
-def acquire_inflight(key: str, ttl_sec: int = 90) -> bool:
-    if _celery_enabled():
-        client = _redis_client()
-        redis_key = _redis_inflight_key(key)
-        return bool(client.set(redis_key, "1", ex=max(1, int(ttl_sec)), nx=True))
+def build_task_exclusivity_key(user_id: int, market: str, symbol: str, timeframe: str) -> str:
+    return (
+        f"fast-analysis:{int(user_id)}:{str(market or '').strip().upper()}:"
+        f"{str(symbol or '').strip().upper()}:{str(timeframe or '').strip().upper()}"
+    )
+
+
+def acquire_inflight(key: str, ttl_sec: int = 90, *, distributed: bool = False) -> bool:
+    if distributed:
+        from app.services.task_control.repository import TaskControlRepository
+
+        context = TaskControlRepository().submission_lock(key)
+        acquired = bool(context.__enter__())
+        if not acquired:
+            context.__exit__(None, None, None)
+            return False
+        with _analysis_inflight_lock:
+            _distributed_inflight[(threading.get_ident(), key)] = context
+        return True
     now = time.time()
     with _analysis_inflight_lock:
         stale = [k for k, exp in _analysis_inflight.items() if float(exp) <= now]
@@ -41,27 +50,13 @@ def acquire_inflight(key: str, ttl_sec: int = 90) -> bool:
 
 
 def release_inflight(key: str) -> None:
-    if _celery_enabled():
-        _redis_client().delete(_redis_inflight_key(key))
+    with _analysis_inflight_lock:
+        context = _distributed_inflight.pop((threading.get_ident(), key), None)
+    if context is not None:
+        context.__exit__(None, None, None)
         return
     with _analysis_inflight_lock:
         _analysis_inflight.pop(key, None)
-
-
-def _celery_enabled() -> bool:
-    return os.getenv("CELERY_TASKS_ENABLED", "false").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-
-
-@lru_cache(maxsize=1)
-def _redis_client():
-    return redis.Redis.from_url(celery_broker_url(), socket_connect_timeout=2, socket_timeout=2)
-
-
-def _redis_inflight_key(key: str) -> str:
-    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
-    return f"quantdinger:fast-analysis:inflight:{digest}"
 
 
 def try_refund_credits(
@@ -97,7 +92,7 @@ def run_async_analysis_task(
     user_id: int,
     inflight_key: str,
     credits_charged: int = 0,
-) -> None:
+) -> dict:
     """Execute analysis in a background worker and finalize pending history."""
     try:
         from app.services.analysis_memory import get_analysis_memory
@@ -128,6 +123,7 @@ def run_async_analysis_task(
                 memory.delete_history(int(auto_memory_id), user_id=user_id)
             except Exception:
                 pass
+        return result
     except Exception as exc:
         logger.error("Async analysis task failed: %s", exc, exc_info=True)
         try_refund_credits(
@@ -142,6 +138,7 @@ def run_async_analysis_task(
             get_analysis_memory().fail_pending_task(task_memory_id, str(exc))
         except Exception:
             pass
+        raise
     finally:
         try:
             release_inflight(inflight_key)
@@ -150,11 +147,24 @@ def run_async_analysis_task(
 
 
 def start_async_analysis_task(*args, **kwargs):
-    if _celery_enabled():
-        from app.tasks.fast_analysis import execute_fast_analysis
+    names = ("task_memory_id", "market", "symbol", "language", "model", "timeframe", "user_id", "inflight_key", "credits_charged")
+    parameters = dict(zip(names, args))
+    parameters.update(kwargs)
+    parameters.setdefault("model", "")
+    parameters.setdefault("credits_charged", 0)
+    from app.services.task_control.builtin_tasks import register_phase_two_tasks
+    from app.services.task_control.registry import default_task_registry
+    from app.services.task_control.repository import TaskControlRepository
 
-        return execute_fast_analysis.delay(*args, **kwargs)
-    thread = threading.Thread(target=run_async_analysis_task, args=args, kwargs=kwargs, daemon=True)
-    thread.start()
-    return thread
-
+    register_phase_two_tasks(default_task_registry)
+    definition = default_task_registry.get("fast_ai_analysis")
+    validated = definition.validate_parameters(parameters)
+    run, _created = TaskControlRepository().create_run(
+        task_key=definition.task_key, definition_version=definition.definition_version,
+        exclusivity_key=definition.exclusivity_key(validated, int(validated["user_id"])), parameters=validated,
+        priority=definition.priority, owner_user_id=int(validated["user_id"]), domain_kind="fast_analysis",
+        domain_run_id=str(validated["task_memory_id"]),
+    )
+    if not _created:
+        raise RuntimeError(f"Fast analysis Task Run already active: {run.run_id}")
+    return run

@@ -27,8 +27,7 @@ psycopg2-binary>=2.9.9
 prometheus-client>=0.22.0,<1
 # Redis cache (optional but recommended for multi-worker setups)
 redis>=5.0.0
-# Durable background jobs and periodic maintenance
-celery[redis]>=5.5.0,<6
+# Internal task control uses PostgreSQL and the scheduler-worker process.
 # Production WSGI server
 gunicorn>=22.0.0
 # OpenAPI generation (flask-smorest)

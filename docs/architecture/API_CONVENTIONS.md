@@ -18,6 +18,10 @@ Browse the human spec locally: open [`docs/api/index.html`](../api/index.html) (
 
 - Authenticated with **user JWT** (`Authorization: Bearer <jwt>`) unless noted.
 - Used by the QuantDinger web/mobile UI.
+- Internal finite-task operations are exposed under `/api/task-management`.
+  Administrators manage schedules and all Runs; ordinary users can only read
+  their own user-owned Runs and events. Object authorization failures return a
+  non-disclosing not-found response.
 
 ### Agent Gateway (`/api/agent/v1/...`)
 
@@ -146,4 +150,3 @@ The current high-risk contract set covers authentication, strategy lifecycle,
 credential creation and deletion, billing order creation, and quick-trade order
 and close operations. Remaining read models and lower-risk mutations should be
 migrated incrementally without changing compatibility paths.
-

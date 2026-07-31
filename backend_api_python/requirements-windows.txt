@@ -1,2 +1,1 @@
 # Windows-specific optional dependencies.
-celery[redis]>=5.5.0,<6

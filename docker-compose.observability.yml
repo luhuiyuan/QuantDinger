@@ -98,20 +98,6 @@ services:
     networks:
       - quantdinger-network
 
-  redis-jobs-exporter:
-    <<: *monitor-runtime
-    image: oliver006/redis_exporter:v1.84.0
-    container_name: quantdinger-redis-jobs-exporter
-    restart: unless-stopped
-    environment:
-      REDIS_ADDR: redis://redis-jobs:6379
-      REDIS_PASSWORD: ${CELERY_REDIS_PASSWORD:-}
-    depends_on:
-      redis-jobs:
-        condition: service_healthy
-    networks:
-      - quantdinger-network
-
 volumes:
   prometheus_data:
   alertmanager_data:

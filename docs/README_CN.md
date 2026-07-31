@@ -72,9 +72,9 @@ QuantDinger 是一套面向独立交易者、Python 策略开发者和小型团�
 v5 后端按照清晰的进程职责和运维边界重新组织：
 
 - HTTP API 不再承载长期运行的交易循环和调度线程；
-- API、交易、调度、Celery、定时投递和数据库迁移使用独立进程；
-- Celery 只处理有限、可序列化、可重试的任务，长期策略仍归交易进程管理；
-- 普通缓存 Redis 与持久任务 Redis 完全分离，使用不同淘汰策略；
+- API、交易、调度、有限 Task Run 和数据库迁移具有明确的进程归属；
+- `scheduler-worker` 内部分离 Domain Scheduler、Task Scheduler 和 Task executor 三项职责；
+- PostgreSQL 持久化计划、Run、租约、进度、事件和审计，缓存 Redis 不参与任务正确性；
 - 高风险 API 契约进入 OpenAPI 和自动化测试；
 - 可通过独立覆盖层启用 JSON 日志、请求 ID、Prometheus 指标、仪表盘和告警；
 - 生产覆盖层启用非 root 用户、只读根文件系统、能力移除和资源限制；
@@ -100,11 +100,8 @@ flowchart TB
     API["Flask + Gunicorn API"]
     PG[("PostgreSQL")]
     CACHE[("Redis 缓存")]
-    JOBS[("Redis 任务队列")]
     TW["交易 Worker"]
     SW["调度 Worker"]
-    CW["Celery Worker"]
-    BEAT["Celery Beat"]
     PROM["Prometheus"]
     GRAF["Grafana"]
     ALERT["Alertmanager"]
@@ -114,14 +111,11 @@ flowchart TB
     API --> CACHE
     API -->|"持久命令"| PG
     TW -->|"租约、订单、心跳"| PG
-    SW -->|"计划任务、监控、心跳"| PG
-    API -->|"有限异步任务"| JOBS
-    BEAT --> JOBS --> CW
-    CW --> PG
+    SW -->|"领域计划、有限 Task Run、租约、心跳"| PG
+    API -->|"注册有限 Task Run"| PG
     API -. 指标 .-> PROM
     PG -. exporter .-> PROM
     CACHE -. exporter .-> PROM
-    JOBS -. exporter .-> PROM
     PROM --> GRAF
     PROM --> ALERT
 ```
@@ -133,9 +127,7 @@ flowchart TB
 | `migration` | 启动前应用数据库结构，成功后退出。 |
 | `backend` | 处理 HTTP、认证、校验和持久命令提交。 |
 | `trading-worker` | 管理策略运行、待处理订单、券商会话和状态对账。 |
-| `scheduler-worker` | 执行组合、部署、支付和信号相关的计划任务。 |
-| `celery-worker` | 执行有限的 AI、回测、实验、报告和维护任务。 |
-| `celery-beat` | 定期向 Celery 投递任务。 |
+| `scheduler-worker` | 承载 Domain Scheduler、内部 Task Scheduler 和隔离 Task Run executor。 |
 
 详细规则见[后端进程职责](architecture/PROCESS_ROLES_AND_TASKS.md)、
 [架构说明](architecture/ARCHITECTURE.md)和[并发模型](architecture/CONCURRENCY_MODEL.md)。
@@ -185,7 +177,7 @@ cp .env.example .env
 | 文件 | 生产环境必须设置的变量 |
 | --- | --- |
 | `backend_api_python/.env` | `SECRET_KEY`、`CREDENTIAL_ENCRYPTION_KEY`、`ADMIN_USER`、`ADMIN_PASSWORD` |
-| `.env` | `POSTGRES_PASSWORD`、`REDIS_PASSWORD`、`CELERY_REDIS_PASSWORD`、`GRAFANA_ADMIN_PASSWORD` |
+| `.env` | `POSTGRES_PASSWORD`、`REDIS_PASSWORD`、`GRAFANA_ADMIN_PASSWORD` |
 
 每个密钥应独立生成：
 
@@ -231,10 +223,10 @@ docker compose \
 生产规则：
 
 - 只通过 TLS 反向代理对外开放 80/443；
-- PostgreSQL、两套 Redis、Prometheus、Grafana、Alertmanager 不直接暴露公网；
+- PostgreSQL、缓存 Redis、Prometheus、Grafana、Alertmanager 不直接暴露公网；
 - 不使用示例密码，不允许核心加密密钥为空；
-- 备份 PostgreSQL 和持久化的 `redis-jobs` 数据卷；
-- 缓存 Redis 可以淘汰数据，但不能作为 Celery broker；
+- 备份 PostgreSQL 中的任务控制、审计、检查点引用和领域运行记录；
+- 缓存 Redis 可淘汰数据，不承担任务执行正确性；
 - 每次部署后检查 API 就绪状态和 Worker 心跳。
 
 完整清单见[生产加固](deployment/PRODUCTION_HARDENING.md)。
@@ -295,7 +287,7 @@ docker compose \
 | 加密货币 | Binance、OKX、Bitget、Bybit、Gate、HTX、Coinbase Exchange、Kraken 及扩展适配器。 |
 | 传统券商 | IBKR 和 Alpaca 工作流。 |
 | AI 提供商 | OpenRouter、OpenAI 兼容接口、Google、DeepSeek、Grok、MiniMax 和自定义端点。 |
-| 自动化 | Human API、Agent Gateway、MCP、Celery、计划任务和通知。 |
+| 自动化 | Human API、Agent Gateway、MCP、内部 Task Run、计划任务和通知。 |
 
 开发前建议阅读[指标开发指南](trading/INDICATOR_DEV_GUIDE_CN.md)、
 [策略开发指南](trading/STRATEGY_DEV_GUIDE_CN.md)和[扩展指南](architecture/EXTENSION_GUIDE.md)。
@@ -352,7 +344,6 @@ QuantDinger/
 |   |-- app/
 |   |   |-- __init__.py                Flask 应用工厂与基础装配
 |   |   |-- startup.py                 按进程职责执行启动钩子并管理进程内单例
-|   |   |-- celery_app.py              Celery 应用与任务注册
 |   |   |-- commands/                  迁移、调度、交易 Worker 与健康检查入口
 |   |   |-- config/                    数据库、Redis 和供应商的环境配置
 |   |   |-- routes/                    面向 Web 和移动端的 HTTP API 路由外壳
@@ -367,7 +358,7 @@ QuantDinger/
 |   |   |-- data_sources/              原始行情数据源适配器
 |   |   |-- data_providers/            行情、宏观、新闻和情绪聚合服务
 |   |   |-- markets/                   市场与标的代码标准化
-|   |   |-- tasks/                     有限、可重试的 Celery 任务
+|   |   |-- services/task_control/     注册任务、计划、Run、租约与执行器
 |   |   |-- workers/                   长期运行的 Worker 进程外壳
 |   |   |-- runtime/                   进程角色与任务归属辅助模块
 |   |   |-- observability/             请求上下文、指标和 HTTP 监控
@@ -406,12 +397,12 @@ QuantDinger/
 | --- | --- |
 | 同步 API 请求 | `app/routes` → `app/services` → 数据库、缓存、行情源或交易适配器 |
 | 持久化策略命令 | API 路由 → PostgreSQL 命令记录 → `trading-worker` → 策略运行时与券商适配器 |
-| 有限后台任务 | API 或 Celery beat → Job Redis → `celery-worker` 中的 `app/tasks` → PostgreSQL 结果 |
+| 有限后台任务 | API 或 Task Scheduler → PostgreSQL Task Run → 隔离子进程 → 领域检查点/结果 |
 | 定时领域任务 | `app/commands/scheduler.py` → 调度服务 → 持久状态与通知 |
 | 监控链路 | API 与 Worker → `app/observability` 指标 → Prometheus → Grafana 与 Alertmanager |
 | Agent 或 MCP 调用 | MCP 客户端 → `mcp_server` → `/api/agent/v1` → 与 Human API 共用的服务层 |
 
-长期运行的交易循环归 `trading-worker` 管理；有限且可重试的工作交给 Celery。
+长期运行的交易循环归 `trading-worker` 管理；有限且可重试的工作由 `scheduler-worker` 内的注册任务系统执行。
 HTTP 路由只负责校验、鉴权和结果映射，不应承载交易循环、交易所专属逻辑或大型数据库流程。
 
 ### 修改功能时应该去哪里
@@ -423,7 +414,7 @@ HTTP 路由只负责校验、鉴权和结果映射，不应承载交易循环、
 | 新增加密交易所或券商 | `app/services/live_trading/` 或对应券商包 | 凭证策略、适配器测试、接入文档 |
 | 新增行情数据源 | `app/data_sources/` | 聚合服务、缓存键、数据源测试 |
 | 新增看板、新闻或宏观数据聚合 | `app/data_providers/` | 路由外壳与缓存策略 |
-| 新增有限异步任务 | `app/tasks/` | `celery_app.py`、队列路由、任务测试 |
+| 新增有限异步任务 | `app/services/task_control/builtin_tasks.py` | 注册 Schema、领域适配器、timeout/retry/cancel 策略与测试 |
 | 新增长期运行进程行为 | `app/workers/`、`app/commands/` 或 `app/runtime/` | Compose 命令、健康检查、归属测试 |
 | 修改数据库结构 | `backend_api_python/migrations/` | 迁移测试、发布门禁与相关文档 |
 | 新增指标或告警 | `app/observability/` 与 `ops/` | 仪表盘、告警规则、可观测性文档 |
@@ -546,7 +537,6 @@ QuantDinger 建立在优秀的开源生态之上，特别感谢以下项目的�
 
 - [Flask](https://flask.palletsprojects.com/)
 - [Gunicorn](https://gunicorn.org/)
-- [Celery](https://docs.celeryq.dev/)
 - [PostgreSQL](https://www.postgresql.org/)
 - [Redis](https://redis.io/)
 - [Pandas](https://pandas.pydata.org/)

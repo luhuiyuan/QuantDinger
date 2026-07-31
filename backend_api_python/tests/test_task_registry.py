@@ -45,3 +45,9 @@ def test_exclusivity_key_builder_receives_owner_and_validated_parameters():
     )
 
     assert definition.exclusivity_key({"symbol": "600000"}, 7) == "agent:7:600000"
+
+
+def test_registry_rejects_non_callable_shell_python_or_sql_entrypoints():
+    for entrypoint in ("/bin/sh -c whoami", "module:function", "SELECT * FROM qd_users"):
+        with pytest.raises(TypeError, match="code callable"):
+            TaskDefinition("unsafe.task", "1", entrypoint)  # type: ignore[arg-type]

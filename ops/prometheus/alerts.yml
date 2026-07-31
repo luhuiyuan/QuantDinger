@@ -10,7 +10,7 @@ groups:
           summary: QuantDinger API is unavailable
 
       - alert: QuantDingerWorkerMissing
-        expr: quantdinger_workers_healthy{role=~"trading|scheduler|celery"} < 1
+        expr: quantdinger_workers_healthy{role=~"trading|scheduler"} < 1
         for: 2m
         labels:
           severity: critical
@@ -59,7 +59,7 @@ groups:
           summary: PostgreSQL exporter is unavailable
 
       - alert: QuantDingerRedisExporterDown
-        expr: up{job=~"redis-cache|redis-jobs"} == 0
+        expr: up{job="redis-cache"} == 0
         for: 3m
         labels:
           severity: warning

@@ -1847,11 +1847,16 @@ CREATE TABLE IF NOT EXISTS qd_worker_heartbeats (
     started_at TIMESTAMP NOT NULL DEFAULT NOW(),
     heartbeat_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    CHECK (role IN ('api', 'trading', 'scheduler', 'celery', 'celery-beat')),
+    CHECK (role IN ('api', 'trading', 'scheduler')),
     CHECK (status IN ('running', 'stopped', 'failed'))
 );
 CREATE INDEX IF NOT EXISTS idx_worker_heartbeats_role
     ON qd_worker_heartbeats(role, heartbeat_at DESC);
+DELETE FROM qd_worker_heartbeats WHERE role NOT IN ('api', 'trading', 'scheduler');
+ALTER TABLE qd_worker_heartbeats DROP CONSTRAINT IF EXISTS qd_worker_heartbeats_role_check;
+ALTER TABLE qd_worker_heartbeats
+    ADD CONSTRAINT qd_worker_heartbeats_role_check
+    CHECK (role IN ('api', 'trading', 'scheduler'));
 CREATE TABLE IF NOT EXISTS qd_process_leases (
     lease_key VARCHAR(128) PRIMARY KEY,
     owner_id VARCHAR(160) NOT NULL,
@@ -2628,10 +2633,25 @@ CREATE TABLE IF NOT EXISTS qd_task_definitions (
     default_parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
     capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
     priority SMALLINT NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 3),
+    max_concurrency INTEGER CHECK (max_concurrency IS NULL OR max_concurrency > 0),
     status VARCHAR(16) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'retired')),
     registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE qd_task_definitions
+    ADD COLUMN IF NOT EXISTS max_concurrency INTEGER;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'qd_task_definitions_max_concurrency_check'
+          AND conrelid = 'qd_task_definitions'::regclass
+    ) THEN
+        ALTER TABLE qd_task_definitions
+            ADD CONSTRAINT qd_task_definitions_max_concurrency_check
+            CHECK (max_concurrency IS NULL OR max_concurrency > 0);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS qd_task_schedules (
     id BIGSERIAL PRIMARY KEY,
@@ -2681,17 +2701,23 @@ CREATE TABLE IF NOT EXISTS qd_task_runs (
     error_code VARCHAR(120) NOT NULL DEFAULT '',
     error_summary VARCHAR(2000) NOT NULL DEFAULT '',
     heartbeat_at TIMESTAMPTZ,
+    last_progress_at TIMESTAMPTZ,
     started_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     retry_of_run_id VARCHAR(64) REFERENCES qd_task_runs(run_id) ON DELETE SET NULL
 );
+ALTER TABLE qd_task_runs
+    ADD COLUMN IF NOT EXISTS last_progress_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_task_runs_queue ON qd_task_runs(status, priority, available_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_task_runs_task_status ON qd_task_runs(task_key, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_runs_owner ON qd_task_runs(owner_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_runs_domain ON qd_task_runs(domain_kind, domain_run_id);
 CREATE INDEX IF NOT EXISTS idx_task_runs_heartbeat ON qd_task_runs(status, heartbeat_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_runs_schedule_scheduled
+    ON qd_task_runs(schedule_id, scheduled_at)
+    WHERE schedule_id IS NOT NULL AND scheduled_at IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_runs_active_exclusivity
     ON qd_task_runs(exclusivity_key)
     WHERE status IN ('queued', 'running', 'retry_wait', 'cancel_requested');

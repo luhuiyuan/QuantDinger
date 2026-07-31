@@ -16,20 +16,16 @@ roles:
 | API | `gunicorn -c gunicorn_config.py run:app` | HTTP, authentication, validation, and durable command submission. |
 | Migration | `python -m app.commands.migrate` | Fail-fast schema application before services start. |
 | Trading | `python -m app.commands.trading_worker` | Strategy runtimes, pending orders, broker sessions, and reconciliation. |
-| Scheduler | `python -m app.commands.scheduler` | Portfolio, deployment, payment, and signal schedules. |
-| Celery worker | `celery -A app.celery_app:celery_app worker` | Finite AI, backtest, experiment, report, and maintenance jobs. |
-| Celery beat | `celery -A app.celery_app:celery_app beat` | Periodic task dispatch. |
+| Scheduler Worker | `python -m app.commands.scheduler` | Domain Scheduler loops, internal Task Scheduler, and isolated finite Task Run execution. |
 
-HTTP processes must not start trading or scheduler threads. Celery must not own
-long-lived strategy loops or broker sessions. See
+HTTP processes must not start trading, scheduling, or finite-task executor threads. The Task Scheduler must not own long-lived strategy loops or broker sessions. See
 [Process roles and durable tasks](../docs/architecture/PROCESS_ROLES_AND_TASKS.md).
 
 ## Storage model
 
 - PostgreSQL 18 is the system of record.
-- `redis` is an evictable application cache.
-- `redis-jobs` is the durable Celery broker/result tier with AOF and
-  `noeviction`.
+- `redis` is an evictable application cache and is not part of Task Run correctness.
+- PostgreSQL is the durable control plane for schedules, Runs, leases, events, audit, and domain references.
 - Strategy ownership uses PostgreSQL commands, leases, fencing tokens, and
   worker heartbeats.
 
@@ -47,7 +43,7 @@ app/
   openapi/              Human API schemas, registration, and export metadata
   routes/               HTTP facades and compatibility routes
   services/             Domain workflows and integration orchestration
-  tasks/                Celery task definitions
+  services/task_control/ Internal finite-task registry, scheduler, repository, and executor
   utils/                Small infrastructure helpers
 migrations/             PostgreSQL schema and incremental migrations
 scripts/                Backend quality, export, and production checks
@@ -118,7 +114,7 @@ Prerequisites:
 
 - Python 3.12;
 - PostgreSQL 18;
-- Redis 8 for cache and Celery-backed workflows.
+- Redis 8 for optional application caching.
 
 Create an environment and install development dependencies:
 
@@ -147,7 +143,7 @@ Start the API for local debugging:
 python run.py
 ```
 
-Use the Docker process model when testing trading, scheduler, or Celery ownership
+Use the Docker process model when testing trading, scheduler, or Task Run ownership
 boundaries. A single local API process is not a substitute for production role
 separation.
 
@@ -157,8 +153,8 @@ separation.
 | --- | --- |
 | `GET /` | Application identity and resolved version. |
 | `GET /api/health` | Basic liveness. |
-| `GET /api/health/ready` | PostgreSQL and Celery broker readiness. |
-| `GET /api/health/workers` | Trading, scheduler, and Celery heartbeat summary. |
+| `GET /api/health/ready` | PostgreSQL and internal Task Scheduler readiness. |
+| `GET /api/health/workers` | Trading and scheduler-worker heartbeat summary. |
 | `GET /metrics` | Prometheus metrics. Keep this private. |
 
 Container logs default to structured JSON and include process role and request
@@ -217,8 +213,7 @@ Security CI additionally runs `pip-audit`, Bandit, Gitleaks, and CodeQL.
 - Keep code comments, docstrings, logs, and internal errors in English.
 - Preserve existing paths and response fields unless an intentional contract
   change is documented and tested.
-- Add finite retryable work to Celery; keep long-lived ownership in the trading
-  or scheduler process.
+- Add finite retryable work through the code Task Registry and Task Run control plane; keep long-lived ownership in the trading or Domain Scheduler process.
 
 ## Versioning
 

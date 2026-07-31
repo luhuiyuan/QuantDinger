@@ -11,7 +11,7 @@ release. Start with the [project README](../README.md) or the
 | [Architecture](architecture/ARCHITECTURE.md) | Backend ownership map and contributor design rules. |
 | [Module boundaries](architecture/MODULE_BOUNDARIES.md) | Dependency direction and package responsibilities. |
 | [Concurrency model](architecture/CONCURRENCY_MODEL.md) | Database, worker, and thread ownership rules. |
-| [Process roles](architecture/PROCESS_ROLES_AND_TASKS.md) | API, trading, scheduler, Celery, and migration boundaries. |
+| [Process roles](architecture/PROCESS_ROLES_AND_TASKS.md) | API, trading, scheduler-worker, internal Task Run, and migration boundaries. |
 | [API conventions](architecture/API_CONVENTIONS.md) | Human API envelopes, authentication, and stability classes. |
 | [Extension guide](architecture/EXTENSION_GUIDE.md) | How to add routes, services, adapters, and tasks safely. |
 

@@ -11,10 +11,11 @@ CN_HISTORY_SYNC_ENABLED=false
 ## Non-Destructive Rollback
 
 1. Set both switches to `false`.
-2. Stop or revoke pending `cn_market_history` Celery tasks.
-3. Restart only the backend and Celery services that load the changed config.
+2. Pause the future schedule and safely cancel any active `cn_market_history` Task Run.
+3. Restart only the backend or scheduler-worker that loads the changed config.
 4. Confirm Strategy API V2 no longer selects the local CN history path.
-5. Leave all `qd_cn_*` tables in place for audit and a later retry.
+5. Inspect the final Task Run checkpoint and event log.
+6. Leave all `qd_cn_*` tables in place for audit and a later retry.
 
 Disabling the feature does not modify existing market-data, strategy, or
 backtest tables. The dated migration and the matching section in `init.sql`

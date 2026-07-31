@@ -26,10 +26,8 @@ docker compose \
 
 Prepare both backend secrets before the first locked start because the non-root containers cannot generate or persist them. Run migrations through the bundled migration service; do not run migrations concurrently from API workers.
 
-## Redis tiers
+## Redis cache and task durability
 
-`redis` is a disposable cache with `allkeys-lru`. `redis-jobs` is a durable Celery broker/result store with AOF, periodic snapshots, and `noeviction`. They use separate passwords (`REDIS_PASSWORD` and `CELERY_REDIS_PASSWORD`), separate databases, and separate memory limits.
-
-Back up the `celery_redis_data` volume when queued work must survive a host loss. Cache data does not require backup. Monitor job Redis memory and increase `REDIS_JOBS_MAXMEMORY` before it reaches the limit; `noeviction` intentionally rejects new writes instead of silently losing queued work.
+`redis` is a disposable cache with `allkeys-lru`. Internal schedules, Runs, leases, progress, events, audit records, and domain references are stored in PostgreSQL; no durable task queue Redis exists. Back up PostgreSQL and monitor Task Scheduler/Task executor health through the worker heartbeat and Task Management APIs. Cache data does not require backup.
 
 Keep PostgreSQL and Redis ports on their default loopback bindings. Public access should terminate at a TLS reverse proxy in front of the frontend and backend only.

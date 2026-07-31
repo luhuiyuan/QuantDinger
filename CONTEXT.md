@@ -38,7 +38,7 @@ _Avoid_: Domain Scheduler, timer thread
 The long-lived process that owns portfolio monitoring, payment scans, signal
 alerts, and other domain loops requiring renewable ownership and controlled
 shutdown. It is not the owner of finite background Task Runs.
-_Avoid_: Task Scheduler, Celery Beat
+_Avoid_: finite Task Scheduler, short-lived Task Run
 
 **Task Run**:
 One durable execution instance of a finite background task, with an explicit

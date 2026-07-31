@@ -15,6 +15,7 @@ import time
 import pytest
 
 from app.utils import agent_jobs
+from app.services.task_control.repository import TaskRunRecord
 
 
 @pytest.fixture(autouse=True)
@@ -102,3 +103,64 @@ def test_stream_picks_up_live_event():
     assert len(events) == 1
     assert events[0]["data"]["hello"] == "world"
     assert events[0]["terminal"] is True
+
+
+def test_backtest_mutex_reuses_same_user_run_but_separates_users(monkeypatch):
+    class Cursor:
+        def execute(self, *_args, **_kwargs):
+            return None
+
+        def close(self):
+            return None
+
+    class Database:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            return None
+
+    class Repository:
+        active = {}
+
+        def get_active_run_by_exclusivity(self, key):
+            return self.active.get(key)
+
+        def create_run(self, **kwargs):
+            existing = self.active.get(kwargs["exclusivity_key"])
+            if existing:
+                return existing, False
+            run = TaskRunRecord(
+                f"run-{kwargs['domain_run_id']}", kwargs["task_key"], kwargs["definition_version"],
+                "queued", kwargs["exclusivity_key"], kwargs["parameters"], kwargs["priority"],
+                owner_user_id=kwargs["owner_user_id"], domain_kind=kwargs["domain_kind"],
+                domain_run_id=kwargs["domain_run_id"],
+            )
+            self.active[kwargs["exclusivity_key"]] = run
+            return run, True
+
+    ids = iter(("job-user-1", "job-user-2"))
+    monkeypatch.setattr(agent_jobs, "_new_job_id", lambda: next(ids))
+    monkeypatch.setattr(agent_jobs, "get_db_connection", lambda: Database())
+    monkeypatch.setattr("app.services.task_control.repository.TaskControlRepository", Repository)
+
+    first = agent_jobs.submit_job(
+        user_id=1, agent_token_id=None, kind="backtest", request_payload={}, runner=lambda payload: payload,
+    )
+    duplicate = agent_jobs.submit_job(
+        user_id=1, agent_token_id=None, kind="backtest", request_payload={}, runner=lambda payload: payload,
+    )
+    second_user = agent_jobs.submit_job(
+        user_id=2, agent_token_id=None, kind="backtest", request_payload={}, runner=lambda payload: payload,
+    )
+
+    assert first["created"] is True
+    assert duplicate == {"job_id": "job-user-1", "status": "queued", "kind": "backtest", "created": False}
+    assert second_user["created"] is True
+    assert second_user["job_id"] == "job-user-2"

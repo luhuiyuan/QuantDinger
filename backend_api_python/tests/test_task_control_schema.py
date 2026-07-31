@@ -26,3 +26,10 @@ def test_task_run_state_and_active_exclusivity_constraints_are_declared():
 def test_task_event_requires_run_or_schedule_reference():
     assert "CHECK (run_id IS NOT NULL OR schedule_id IS NOT NULL)" in SCHEMA
     assert "idx_task_events_run_time" in SCHEMA
+
+
+def test_definition_reserves_task_level_concurrency_and_progress_timestamp():
+    assert "max_concurrency INTEGER" in SCHEMA
+    assert "last_progress_at TIMESTAMPTZ" in SCHEMA
+    assert "ADD COLUMN IF NOT EXISTS max_concurrency INTEGER" in SCHEMA
+    assert "ADD COLUMN IF NOT EXISTS last_progress_at TIMESTAMPTZ" in SCHEMA

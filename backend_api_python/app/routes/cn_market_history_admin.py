@@ -58,24 +58,78 @@ def get_fundamental_run_service() -> CNFundamentalRunService:
     )
 
 
-def _enqueue_sync(run_id: str) -> None:
-    from app.celery_app import celery_app
+def _submit_sync(domain_factory, *, owner_user_id: int | None, retry_of_run_id: str | None = None):
+    from app.services.task_control.builtin_tasks import register_phase_one_tasks
+    from app.services.task_control.registry import default_task_registry
+    from app.services.task_control.repository import TaskControlRepository
 
-    celery_app.send_task(
-        "quantdinger.tasks.cn_market_history_sync",
-        args=[run_id],
-        queue="maintenance",
+    register_phase_one_tasks(default_task_registry)
+    definition = default_task_registry.get("cn_market_history_sync")
+    repository = TaskControlRepository()
+    service = get_sync_service()
+
+    def materialize_domain():
+        run_id = domain_factory()
+        return {"run_id": run_id}, run_id
+
+    return repository.create_run_with_domain_factory(
+        task_key=definition.task_key,
+        definition_version=definition.definition_version,
+        exclusivity_key=definition.exclusivity_key({"run_id": "pending"}),
+        domain_factory=materialize_domain,
+        priority=definition.priority,
+        owner_user_id=owner_user_id,
+        domain_kind="cn_market_history",
+        retry_of_run_id=retry_of_run_id,
+        compensate=lambda run_id: service.cancel_run(run_id, requested_by=owner_user_id),
     )
 
 
-def _enqueue_fundamental_sync(run_id: str) -> None:
-    from app.celery_app import celery_app
+def _submit_fundamental_sync(domain_factory, *, owner_user_id: int | None, retry_of_run_id: str | None = None):
+    from app.services.task_control.builtin_tasks import register_phase_one_tasks
+    from app.services.task_control.registry import default_task_registry
+    from app.services.task_control.repository import TaskControlRepository
 
-    celery_app.send_task(
-        "quantdinger.tasks.cn_fundamental_run",
-        args=[run_id],
-        queue="maintenance",
+    register_phase_one_tasks(default_task_registry)
+    definition = default_task_registry.get("cn_fundamental_backfill")
+    repository = TaskControlRepository()
+    service = get_fundamental_run_service()
+
+    def materialize_domain():
+        run_id = domain_factory()
+        return {"run_id": run_id}, run_id
+
+    return repository.create_run_with_domain_factory(
+        task_key=definition.task_key,
+        definition_version=definition.definition_version,
+        exclusivity_key=definition.exclusivity_key({"run_id": "pending"}),
+        domain_factory=materialize_domain,
+        priority=definition.priority,
+        owner_user_id=owner_user_id,
+        domain_kind="cn_fundamental",
+        retry_of_run_id=retry_of_run_id,
+        compensate=lambda run_id: service.set_control_status(
+            run_id, "cancelled", actor_user_id=owner_user_id
+        ),
     )
+
+
+def _existing_run_response(task_run):
+    return _success({
+        "runId": task_run.domain_run_id or None,
+        "taskRunId": task_run.run_id,
+        "status": task_run.status,
+        "created": False,
+    })
+
+
+def _request_task_cancel_by_domain(domain_kind: str, domain_run_id: str) -> None:
+    from app.services.task_control.repository import TaskControlRepository
+
+    repository = TaskControlRepository()
+    task_run = repository.get_run_by_domain(domain_kind, domain_run_id)
+    if task_run is not None:
+        repository.request_cancel(task_run.run_id)
 
 
 def _success(data: Any = None, *, status: int = 200):
@@ -124,20 +178,21 @@ def create_sync_run():
         if request_kind not in ({"targeted", "repair"} if not full_market else {"backfill"}):
             raise ValueError("cn_history.request_kind_unsupported")
         service = get_sync_service()
-        if full_market:
-            run_id = service.create_full_market_run(
-                start_date, end_date, requested_by=int(g.user_id)
+        def create_domain_run():
+            if full_market:
+                return service.create_full_market_run(
+                    start_date, end_date, requested_by=int(g.user_id)
+                )
+            return service.create_targeted_run(
+                instruments, start_date, end_date,
+                requested_by=int(g.user_id), request_kind=request_kind,
             )
-        else:
-            run_id = service.create_targeted_run(
-                instruments,
-                start_date,
-                end_date,
-                requested_by=int(g.user_id),
-                request_kind=request_kind,
-            )
-        _enqueue_sync(run_id)
-        return _success({"runId": run_id, "status": "pending"}, status=202)
+
+        task_run, created = _submit_sync(create_domain_run, owner_user_id=int(g.user_id))
+        if not created:
+            return _existing_run_response(task_run)
+        run_id = task_run.domain_run_id
+        return _success({"runId": run_id, "status": "pending", "created": True}, status=202)
     except Exception as exc:
         return _operation_error(exc, "create")
 
@@ -173,10 +228,24 @@ def get_sync_run(run_id: str):
 @admin_required
 def retry_sync_run(run_id: str):
     try:
-        retry_id = get_sync_service().retry_failed_run(
-            run_id, requested_by=int(g.user_id)
+        service = get_sync_service()
+        from app.services.task_control.repository import TaskControlRepository
+        try:
+            parent_task = TaskControlRepository().get_run_by_domain("cn_market_history", run_id)
+        except Exception:
+            # Domain retry remains safe when the generic history is unavailable;
+            # production records lineage whenever the repository is reachable.
+            parent_task = None
+        submit_kwargs = {"owner_user_id": int(g.user_id)}
+        if parent_task is not None:
+            submit_kwargs["retry_of_run_id"] = parent_task.run_id
+        task_run, created = _submit_sync(
+            lambda: service.retry_failed_run(run_id, requested_by=int(g.user_id)),
+            **submit_kwargs,
         )
-        _enqueue_sync(retry_id)
+        if not created:
+            return _existing_run_response(task_run)
+        retry_id = task_run.domain_run_id
         return _success(
             {"runId": retry_id, "parentRunId": run_id, "status": "pending"},
             status=202,
@@ -191,6 +260,7 @@ def retry_sync_run(run_id: str):
 def cancel_sync_run(run_id: str):
     try:
         get_sync_service().cancel_run(run_id, requested_by=int(g.user_id))
+        _request_task_cancel_by_domain("cn_market_history", run_id)
         return _success({"runId": run_id, "status": "cancelled"})
     except Exception as exc:
         return _operation_error(exc, "cancel")
@@ -359,12 +429,18 @@ def create_fundamental_sync_run():
         instruments = payload.get('instruments') or []
         if not isinstance(instruments, list):
             raise ValueError('cn_fundamental.instruments_required')
-        run_id = get_fundamental_run_service().create_run(
-            instruments, requested_by=int(g.user_id), request_kind='backfill',
-            full_market=bool(payload.get('fullMarket')),
+        service = get_fundamental_run_service()
+        task_run, created = _submit_fundamental_sync(
+            lambda: service.create_run(
+                instruments, requested_by=int(g.user_id), request_kind='backfill',
+                full_market=bool(payload.get('fullMarket')),
+            ),
+            owner_user_id=int(g.user_id),
         )
-        _enqueue_fundamental_sync(run_id)
-        return _success({'runId': run_id, 'status': 'pending'}, status=202)
+        if not created:
+            return _existing_run_response(task_run)
+        run_id = task_run.domain_run_id
+        return _success({'runId': run_id, 'status': 'pending', 'created': True}, status=202)
     except Exception as exc:
         return _operation_error(exc, 'fundamental_create')
 
@@ -391,25 +467,11 @@ def _control_fundamental_run(run_id: str, status: str):
     try:
         service = get_fundamental_run_service()
         service.set_control_status(run_id, status, actor_user_id=int(g.user_id))
-        if status == 'pending':
-            _enqueue_fundamental_sync(run_id)
+        if status == 'cancelled':
+            _request_task_cancel_by_domain("cn_fundamental", run_id)
         return _success({'runId': run_id, 'status': status})
     except Exception as exc:
         return _operation_error(exc, f'fundamental_{status}')
-
-
-@cn_market_history_blp.route('/fundamentals/sync-runs/<string:run_id>/pause', methods=['POST'])
-@login_required
-@admin_required
-def pause_fundamental_sync_run(run_id: str):
-    return _control_fundamental_run(run_id, 'paused')
-
-
-@cn_market_history_blp.route('/fundamentals/sync-runs/<string:run_id>/resume', methods=['POST'])
-@login_required
-@admin_required
-def resume_fundamental_sync_run(run_id: str):
-    return _control_fundamental_run(run_id, 'pending')
 
 
 @cn_market_history_blp.route('/fundamentals/sync-runs/<string:run_id>/cancel', methods=['POST'])
@@ -424,10 +486,22 @@ def cancel_fundamental_sync_run(run_id: str):
 @admin_required
 def retry_fundamental_sync_run(run_id: str):
     try:
-        retry_id = get_fundamental_run_service().retry_failed(
-            run_id, actor_user_id=int(g.user_id)
+        service = get_fundamental_run_service()
+        from app.services.task_control.repository import TaskControlRepository
+        try:
+            parent_task = TaskControlRepository().get_run_by_domain("cn_fundamental", run_id)
+        except Exception:
+            parent_task = None
+        submit_kwargs = {"owner_user_id": int(g.user_id)}
+        if parent_task is not None:
+            submit_kwargs["retry_of_run_id"] = parent_task.run_id
+        task_run, created = _submit_fundamental_sync(
+            lambda: service.retry_failed(run_id, actor_user_id=int(g.user_id)),
+            **submit_kwargs,
         )
-        _enqueue_fundamental_sync(retry_id)
+        if not created:
+            return _existing_run_response(task_run)
+        retry_id = task_run.domain_run_id
         return _success({'runId': retry_id, 'parentRunId': run_id, 'status': 'pending'}, status=202)
     except Exception as exc:
         return _operation_error(exc, 'fundamental_retry')

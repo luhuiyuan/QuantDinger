@@ -12,6 +12,7 @@ from app.services.cn_market_history.sync_service import (
 )
 from app.services.cn_market_history.models import CoverageReport
 from app.services.cn_market_history.quality import QualityAssessment
+from app.services.task_control.repository import TaskRunRecord
 from app.utils import auth
 
 
@@ -46,6 +47,18 @@ def _auth(monkeypatch, role="admin"):
             "_verified_user_role": role,
         },
     )
+
+
+@pytest.fixture(autouse=True)
+def _internal_task_submit(monkeypatch):
+    def submit(domain_factory, **_kwargs):
+        run_id = domain_factory()
+        return TaskRunRecord(
+            "task-run", "cn_market_history_sync", "1", "queued",
+            "cn_market_history", {"run_id": run_id}, 3,
+            owner_user_id=7, domain_kind="cn_market_history", domain_run_id=run_id,
+        ), True
+    monkeypatch.setattr(routes, "_submit_sync", submit)
 
 
 class _SyncService:
@@ -101,7 +114,10 @@ def test_admin_creates_persistent_run_and_enqueues_one_task(client, monkeypatch)
     service = _SyncService()
     queued = []
     monkeypatch.setattr(routes, "get_sync_service", lambda: service)
-    monkeypatch.setattr(routes, "_enqueue_sync", queued.append)
+    def submit(domain_factory, **kwargs):
+        run_id = domain_factory(); queued.append((run_id, kwargs))
+        return TaskRunRecord("task-run", "cn_market_history_sync", "1", "queued", "cn_market_history", {"run_id": run_id}, 3, domain_kind="cn_market_history", domain_run_id=run_id), True
+    monkeypatch.setattr(routes, "_submit_sync", submit)
 
     response = client.post(
         "/api/market-history/sync-runs",
@@ -115,7 +131,7 @@ def test_admin_creates_persistent_run_and_enqueues_one_task(client, monkeypatch)
 
     assert response.status_code == 202
     assert response.get_json()["data"]["runId"] == "run-new"
-    assert queued == ["run-new"]
+    assert queued == [("run-new", {"owner_user_id": 7})]
     assert service.created[0][3]["requested_by"] == 7
 
 
@@ -124,7 +140,10 @@ def test_admin_creates_full_market_backfill_without_target_cap(client, monkeypat
     service = _SyncService()
     queued = []
     monkeypatch.setattr(routes, "get_sync_service", lambda: service)
-    monkeypatch.setattr(routes, "_enqueue_sync", queued.append)
+    def submit(domain_factory, **kwargs):
+        run_id = domain_factory(); queued.append((run_id, kwargs))
+        return TaskRunRecord("task-run", "cn_market_history_sync", "1", "queued", "cn_market_history", {"run_id": run_id}, 3, domain_kind="cn_market_history", domain_run_id=run_id), True
+    monkeypatch.setattr(routes, "_submit_sync", submit)
 
     response = client.post(
         "/api/market-history/sync-runs",
@@ -139,7 +158,7 @@ def test_admin_creates_full_market_backfill_without_target_cap(client, monkeypat
     assert response.status_code == 202
     assert response.get_json()["data"]["runId"] == "run-full-market"
     assert service.created == [("full-market", date(2020, 1, 1), date(2026, 1, 31), {"requested_by": 7})]
-    assert queued == ["run-full-market"]
+    assert queued == [("run-full-market", {"owner_user_id": 7})]
 
 
 def test_duplicate_active_run_returns_conflict_without_enqueue(client, monkeypatch):
@@ -147,7 +166,7 @@ def test_duplicate_active_run_returns_conflict_without_enqueue(client, monkeypat
     service = _SyncService(CNHistoryDuplicateRun("run-active"))
     queued = []
     monkeypatch.setattr(routes, "get_sync_service", lambda: service)
-    monkeypatch.setattr(routes, "_enqueue_sync", queued.append)
+    monkeypatch.setattr(routes, "_submit_sync", lambda domain_factory, **kwargs: domain_factory())
 
     response = client.post(
         "/api/market-history/sync-runs",
@@ -162,6 +181,27 @@ def test_duplicate_active_run_returns_conflict_without_enqueue(client, monkeypat
     assert response.status_code == 409
     assert response.get_json()["data"]["activeRunId"] == "run-active"
     assert queued == []
+
+
+def test_generic_mutex_duplicate_does_not_create_domain_run(client, monkeypatch):
+    _auth(monkeypatch)
+    service = _SyncService()
+    existing = TaskRunRecord(
+        "task-active", "cn_market_history_sync", "1", "running",
+        "cn_market_history", {"run_id": "domain-active"}, 3,
+        domain_kind="cn_market_history", domain_run_id="domain-active",
+    )
+    monkeypatch.setattr(routes, "get_sync_service", lambda: service)
+    monkeypatch.setattr(routes, "_submit_sync", lambda domain_factory, **kwargs: (existing, False))
+
+    response = client.post(
+        "/api/market-history/sync-runs", headers=_headers(),
+        json={"instruments": ["CNStock:600519.SH"], "startDate": "2026-01-01", "endDate": "2026-01-31"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["data"]["runId"] == "domain-active"
+    assert service.created == []
 
 
 def test_invalid_sync_range_is_rejected_before_service_call(client, monkeypatch):
@@ -248,7 +288,11 @@ def test_admin_can_retry_and_cancel_runs_without_inline_execution(client, monkey
     service = _SyncService()
     queued = []
     monkeypatch.setattr(routes, "get_sync_service", lambda: service)
-    monkeypatch.setattr(routes, "_enqueue_sync", queued.append)
+    monkeypatch.setattr(routes, "_request_task_cancel_by_domain", lambda *args: None)
+    def submit(domain_factory, **kwargs):
+        retry_id = domain_factory(); queued.append((retry_id, kwargs))
+        return TaskRunRecord("task-retry", "cn_market_history_sync", "1", "queued", "cn_market_history", {"run_id": retry_id}, 3, domain_kind="cn_market_history", domain_run_id=retry_id), True
+    monkeypatch.setattr(routes, "_submit_sync", submit)
 
     retry = client.post(
         "/api/market-history/sync-runs/run-old/retry", headers=_headers()
@@ -259,7 +303,7 @@ def test_admin_can_retry_and_cancel_runs_without_inline_execution(client, monkey
 
     assert retry.status_code == 202
     assert retry.get_json()["data"]["parentRunId"] == "run-old"
-    assert queued == ["retry-run-old"]
+    assert queued == [("retry-run-old", {"owner_user_id": 7})]
     assert cancel.status_code == 200
     assert service.cancelled[0][0] == "run-old"
 

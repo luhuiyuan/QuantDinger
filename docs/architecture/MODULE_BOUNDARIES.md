@@ -10,6 +10,7 @@ immediate rewrite. It is the contract to follow as existing code is decomposed.
 | `routes` | HTTP parsing, auth checks, status codes, request/response mapping | trading loops, exchange-specific rules, long-running jobs |
 | `openapi` | schema registration, OpenAPI export, operation metadata | business logic |
 | `services` | business workflows and use-case orchestration | raw Flask request objects except at route boundary |
+| `services/task_control` | registered finite-task definitions, schedules, Runs, leases, executor IPC, events, retry/cancel policy | arbitrary Shell/Python/SQL entrypoints, domain checkpoints, HTTP response shaping |
 | `services/live_trading` | exchange and broker adapters, order API normalization | strategy lifecycle, user auth, HTTP responses |
 | `services/grid` | grid engine, cell state, fill normalization, reconciliation | route parsing, frontend-specific formatting |
 | `data_sources` | market data adapters and fetch policy | strategy execution or account mutation |
@@ -59,6 +60,9 @@ These files mix multiple responsibilities and should be decomposed gradually:
 - Services should return plain dicts/dataclasses or typed result objects.
 - Services should define idempotency behavior when they mutate state.
 - Long-running service work should be runnable as a job or worker task.
+- Finite background work must be registered in `services/task_control`; domain
+  services retain business checkpoints and expose controlled progress/cancel
+  adapters to the generic Task Run layer.
 
 ## Adapter Rules
 

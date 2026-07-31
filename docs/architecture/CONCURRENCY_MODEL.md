@@ -20,8 +20,9 @@ conflicting position row.
 | Pending order dispatch | Multiple pending orders may run in parallel | `pending_order_id` and venue order id | claim-before-dispatch, retry dedupe |
 | Grid resting orders | Different grid cells may run in parallel | `strategy_id:symbol:cell_index` | DB unique cell, fill reconciliation |
 | Account mirror | One row per credential/market/instrument/side | `credential_id:market_type:inst_id:side` | upsert, no blind delete on partial data |
-| Backtest jobs | Many jobs may run in parallel | `job_id` | bounded worker pool, no shared mutable state |
-| Agent jobs | Many jobs may run in parallel | token + kind + idempotency key | DB unique index, replay returns same job |
+| Finite Task Runs | Global concurrency 1 in the current deployment | registered `exclusivity_key` | priority/FIFO claim, advisory lock, Run lease |
+| Backtest jobs | Different users may queue independently; execution follows the global Task Run limit | `agent:{user_id}:backtest` | registered mutex, isolated subprocess, domain Job link |
+| Agent jobs | Different user domains may queue independently | user + registered task kind | DB idempotency plus Task Run mutex; replay returns existing work |
 | USDT payments | Many users may pay in parallel | `order_id` and tx hash | order status state machine, one activation |
 | Market data cache | Reads parallel, refresh single-flight per key | cache key | stale-while-revalidate, TTL |
 | SSE streams | Many read streams allowed | `job_id:user_id` | heartbeat, disconnect handling |
@@ -29,6 +30,8 @@ conflicting position row.
 ## Existing Protections To Preserve
 
 - Agent jobs have `job_id` and `idempotency_key` columns with a unique index.
+- Internal Task Runs have an active exclusivity-key unique constraint, fixed
+  priority ordering, FIFO within each priority, and a renewable database lease.
 - Agent quick-trade and backtest routes already use idempotency helpers.
 - Strategy positions and account mirror tables use uniqueness on natural keys.
 - Grid cells use a unique `(strategy_id, symbol, cell_index)` constraint.
@@ -45,6 +48,8 @@ conflicting position row.
 - Pending-order dispatch should atomically claim work before calling exchanges.
 - Exchange retry code must dedupe by `client_order_id` where the venue supports it.
 - Long-running LLM/backtest endpoints should avoid blocking request threads.
+- Increasing finite-task concurrency above 1 requires an explicit capacity
+  review and must preserve definition-level concurrency and mutex constraints.
 
 ## Required Patterns
 
