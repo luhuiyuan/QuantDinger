@@ -21,7 +21,7 @@
 
 ## 4. Cron 调度与领取顺序
 
-- [ ] 4.1 实现标准五字段 Cron、计划时区、默认 `Asia/Shanghai`、5 秒扫描及下一次未来触发计算
+- [x] 4.1 实现标准五字段 Cron、计划时区、默认 `Asia/Shanghai`、5 秒扫描及下一次未来触发计算
 - [ ] 4.2 使用 PostgreSQL advisory lock 和唯一约束实现多实例分钟级去重，并记录 `missed_skipped` 和 `overlap_skipped`
 - [ ] 4.3 实现注册代码生成的 `exclusivity_key`，使手工重复启动返回现有 Run、Cron 重叠不创建 Run
 - [ ] 4.4 实现 critical/high/normal/low 固定优先级、优先级内 FIFO、全局并发 1，并预留 Task Definition 级并发字段
