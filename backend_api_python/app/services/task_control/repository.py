@@ -27,6 +27,29 @@ def _json(value: Mapping[str, Any] | None) -> str:
     return json.dumps(dict(value or {}), ensure_ascii=True, sort_keys=True, default=str)
 
 
+def _bounded_metadata(value: Mapping[str, Any] | None, max_bytes: int = 16 * 1024) -> tuple[str, bool]:
+    encoded = _json(_sanitize_metadata(value or {}))
+    if len(encoded.encode("utf-8")) <= max_bytes:
+        return encoded, False
+    return _json({"metadata_truncated": True, "original_bytes": len(encoded.encode("utf-8"))}), True
+
+
+_SENSITIVE_METADATA_KEYS = frozenset({
+    "token", "access_token", "refresh_token", "authorization", "cookie",
+    "password", "secret", "api_key", "apikey", "request_body", "response_body", "sql",
+})
+
+
+def _sanitize_metadata(value: Any, *, key: str = "") -> Any:
+    if key.lower() in _SENSITIVE_METADATA_KEYS:
+        return "[REDACTED]"
+    if isinstance(value, Mapping):
+        return {str(child_key): _sanitize_metadata(child_value, key=str(child_key)) for child_key, child_value in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_metadata(item) for item in value]
+    return value
+
+
 def validate_run_transition(current: str, target: str) -> None:
     current = str(current or "")
     target = str(target or "")
@@ -219,6 +242,213 @@ class TaskControlRepository:
                 updated = cur.fetchone()
                 db.commit()
                 return TaskRunRecord.from_row(dict(updated))
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                cur.close()
+
+    def claim_next(self, *, holder_id: str, lease_seconds: int = 60) -> TaskRunRecord | None:
+        """Claim one eligible Run in priority/FIFO order and create its lease."""
+        if int(lease_seconds) <= 0:
+            raise ValueError("lease_seconds must be positive")
+        with self._connection_factory() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    """
+                    WITH candidate AS (
+                        SELECT id
+                        FROM qd_task_runs
+                        WHERE status IN ('queued', 'retry_wait')
+                          AND available_at <= NOW()
+                        ORDER BY priority ASC, created_at ASC, id ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                    )
+                    UPDATE qd_task_runs AS run
+                    SET status = 'running',
+                        attempt_no = run.attempt_no + 1,
+                        heartbeat_at = NOW(),
+                        started_at = COALESCE(run.started_at, NOW()),
+                        updated_at = NOW()
+                    FROM candidate
+                    WHERE run.id = candidate.id
+                    RETURNING run.*
+                    """
+                )
+                row = cur.fetchone()
+                if not row:
+                    db.commit()
+                    return None
+                record = TaskRunRecord.from_row(dict(row))
+                cur.execute(
+                    """
+                    INSERT INTO qd_task_leases
+                        (run_id, holder_id, fencing_token, lease_expires_at, heartbeat_at)
+                    VALUES (%s, %s, 1, NOW() + (%s * INTERVAL '1 second'), NOW())
+                    ON CONFLICT (run_id) DO UPDATE SET
+                        holder_id = EXCLUDED.holder_id,
+                        fencing_token = qd_task_leases.fencing_token + 1,
+                        lease_expires_at = EXCLUDED.lease_expires_at,
+                        heartbeat_at = EXCLUDED.heartbeat_at,
+                        updated_at = NOW()
+                    """,
+                    (record.run_id, str(holder_id), int(lease_seconds)),
+                )
+                db.commit()
+                return record
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                cur.close()
+
+    def renew_lease(self, *, run_id: str, holder_id: str, lease_seconds: int = 60) -> bool:
+        if int(lease_seconds) <= 0:
+            raise ValueError("lease_seconds must be positive")
+        with self._connection_factory() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    """
+                    UPDATE qd_task_leases
+                    SET lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                        heartbeat_at = NOW(), updated_at = NOW()
+                    WHERE run_id = %s AND holder_id = %s AND lease_expires_at > NOW()
+                    """,
+                    (int(lease_seconds), str(run_id), str(holder_id)),
+                )
+                renewed = cur.rowcount == 1
+                if renewed:
+                    cur.execute(
+                        """
+                        UPDATE qd_task_runs
+                        SET heartbeat_at = NOW(), updated_at = NOW()
+                        WHERE run_id = %s AND status IN ('running', 'cancel_requested')
+                        """,
+                        (str(run_id),),
+                    )
+                db.commit()
+                return renewed
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                cur.close()
+
+    def mark_stale_runs(self, *, stale_after_seconds: int = 180) -> int:
+        """Fail Runs with no heartbeat and release their leases."""
+        if int(stale_after_seconds) <= 0:
+            raise ValueError("stale_after_seconds must be positive")
+        with self._connection_factory() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    """
+                    UPDATE qd_task_runs
+                    SET status = 'failed', error_code = 'worker_lost',
+                        error_summary = 'scheduler-worker heartbeat expired',
+                        finished_at = NOW(), updated_at = NOW()
+                    WHERE status IN ('running', 'cancel_requested')
+                      AND heartbeat_at < NOW() - (%s * INTERVAL '1 second')
+                    """,
+                    (int(stale_after_seconds),),
+                )
+                count = cur.rowcount
+                cur.execute(
+                    """
+                    DELETE FROM qd_task_leases lease
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM qd_task_runs run
+                        WHERE run.run_id = lease.run_id
+                          AND run.status IN ('running', 'cancel_requested')
+                    )
+                    """
+                )
+                db.commit()
+                return int(count)
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                cur.close()
+
+    def request_cancel(self, run_id: str) -> TaskRunRecord:
+        with self._connection_factory() as db:
+            cur = db.cursor()
+            try:
+                cur.execute("SELECT * FROM qd_task_runs WHERE run_id = %s FOR UPDATE", (str(run_id),))
+                row = cur.fetchone()
+                if not row:
+                    raise KeyError(f"Task Run does not exist: {run_id}")
+                current = str(row["status"])
+                if current in TERMINAL_RUN_STATUSES:
+                    return TaskRunRecord.from_row(dict(row))
+                target = "cancel_requested" if current == "running" else "cancelled"
+                cur.execute(
+                    "UPDATE qd_task_runs SET status = %s, updated_at = NOW(), finished_at = CASE WHEN %s = 'cancelled' THEN NOW() ELSE finished_at END WHERE run_id = %s RETURNING *",
+                    (target, target, str(run_id)),
+                )
+                updated = cur.fetchone()
+                db.commit()
+                return TaskRunRecord.from_row(dict(updated))
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                cur.close()
+
+    def append_event(
+        self,
+        *,
+        run_id: str,
+        event_type: str,
+        severity: str = "info",
+        stage: str = "",
+        message: str = "",
+        error_code: str = "",
+        metadata: Mapping[str, Any] | None = None,
+        actor: str = "system",
+        correlation_id: str = "",
+        external_request_id: str = "",
+        holder_id: str | None = None,
+    ) -> int:
+        if severity not in {"debug", "info", "warning", "error"}:
+            raise ValueError(f"Unsupported Task Event severity: {severity}")
+        metadata_json, truncated = _bounded_metadata(metadata)
+        if truncated:
+            event_type = "metadata_truncated"
+        with self._connection_factory() as db:
+            cur = db.cursor()
+            try:
+                if holder_id is not None:
+                    cur.execute(
+                        """
+                        SELECT 1 FROM qd_task_leases
+                        WHERE run_id = %s AND holder_id = %s AND lease_expires_at > NOW()
+                        """,
+                        (str(run_id), str(holder_id)),
+                    )
+                    if not cur.fetchone():
+                        raise PermissionError("Task Run lease is missing or expired")
+                cur.execute(
+                    """
+                    INSERT INTO qd_task_events
+                        (run_id, event_type, severity, stage, message, error_code,
+                         metadata, actor, correlation_id, external_request_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        str(run_id), str(event_type), severity, str(stage)[:120],
+                        str(message)[:2000], str(error_code)[:120], metadata_json,
+                        str(actor)[:32], str(correlation_id)[:255], str(external_request_id)[:120],
+                    ),
+                )
+                event_id = int(cur.fetchone()["id"])
+                db.commit()
+                return event_id
             except Exception:
                 db.rollback()
                 raise

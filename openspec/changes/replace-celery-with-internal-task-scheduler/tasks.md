@@ -29,8 +29,8 @@
 
 ## 5. Lease 与隔离执行器
 
-- [ ] 5.1 实现 Run lease 获取、60 秒有效期、父进程每 20 秒续租以及只有 lease 持有者可提交状态和事件的校验
-- [ ] 5.2 实现 180 秒无有效心跳后的 `failed/worker_lost` 协调逻辑，保留最后心跳、lease holder 和检查点引用且不自动续跑
+- [x] 5.1 实现 Run lease 获取、60 秒有效期、父进程每 20 秒续租以及只有 lease 持有者可提交状态和事件的校验
+- [x] 5.2 实现 180 秒无有效心跳后的 `failed/worker_lost` 协调逻辑，保留最后心跳、lease holder 和检查点引用且不自动续跑
 - [ ] 5.3 实现每个 Run 独立子进程及受控 IPC，父进程负责状态、进度、事件、lease 和最终结果落库
 - [ ] 5.4 实现 `cancel_requested` 协作信号、Task Definition 级取消宽限期、默认 60 秒和 `failed/forced_interruption` 强制终止路径
 - [ ] 5.5 添加父进程、子进程异常退出、lease 竞争、容器重启、协作取消和取消超时的故障注入测试
@@ -41,7 +41,7 @@
 - [ ] 6.2 实现管理员人工 retry 新建 Run、`retry_of_run_id` 关联、原终态不变及 checkpoint 选择校验
 - [ ] 6.3 实现 Task Definition 级总时长、provider 请求和取消超时策略，并支持基本面回填无总墙钟限制
 - [ ] 6.4 实现最新进度快照、5 秒普通进度限频、关键事件即时写入，以及“领域检查点成功后才推进进度”的适配契约
-- [ ] 6.5 实现结构化 Task Event、metadata 大小上限、`metadata_truncated`、敏感字段脱敏和 External Data Request Log 关联
+- [x] 6.5 实现结构化 Task Event、metadata 大小上限、`metadata_truncated`、敏感字段脱敏和 External Data Request Log 关联
 - [ ] 6.6 实现 Task Event 默认 90 天批量清理，确保最终 Run 摘要、结果引用和领域详情不被清除
 - [ ] 6.7 添加 retry、永久错误、timeout、未知总量进度、检查点失败、日志脱敏、限长和保留清理测试
 
