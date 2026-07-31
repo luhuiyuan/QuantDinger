@@ -27,10 +27,15 @@ def fresh_module(monkeypatch):
 
 
 def test_mcp_tool_registry_complete(fresh_module):
-    assert len(fresh_module.MCP_TOOL_NAMES) == 34
+    assert len(fresh_module.MCP_TOOL_NAMES) == 58
     # Every exported name should correspond to a registered @mcp.tool function.
     for name in fresh_module.MCP_TOOL_NAMES:
         assert hasattr(fresh_module, name), f"missing tool function: {name}"
+
+
+def test_mcp_tools_are_actually_registered(fresh_module):
+    registered = set(fresh_module.mcp._tool_manager._tools)
+    assert registered == set(fresh_module.MCP_TOOL_NAMES)
 
 
 def test_strategy_authoring_contract_uses_agent_gateway(monkeypatch, fresh_module):
@@ -80,6 +85,7 @@ def test_create_strategy_uses_canonical_deployment_payload(monkeypatch, fresh_mo
         params={"lookback": 40},
         position_side="long",
         account_risk={"maxDrawdownPct": 10},
+        idempotency_key="strategy-create-7",
     )
 
     assert out == {"strategy_id": 7}
@@ -96,6 +102,7 @@ def test_create_strategy_uses_canonical_deployment_payload(monkeypatch, fresh_mo
         "positionSide": "long",
         "accountRisk": {"maxDrawdownPct": 10},
     }
+    assert captured["headers"] == {"Idempotency-Key": "strategy-create-7"}
 
 
 def test_quick_order_forwards_native_protection(monkeypatch, fresh_module):
@@ -115,6 +122,7 @@ def test_quick_order_forwards_native_protection(monkeypatch, fresh_module):
         0.01,
         tp_price=70000,
         sl_price=60000,
+        idempotency_key="order-7",
         confirm_order=True,
     )
 
@@ -181,21 +189,28 @@ def test_strategy_source_workspace_payloads(monkeypatch, fresh_module):
     )
     monkeypatch.setattr(
         fresh_module,
-        "_patch",
-        lambda path, json=None: calls.append(("PATCH", path, json)) or {"ok": True},
+        "_patch_with_headers",
+        lambda path, json=None, headers=None: calls.append(("PATCH", path, json)) or {"ok": True},
     )
 
     fresh_module.save_strategy_source(
         "SPY trend",
         "def initialize(context):\n    pass\n",
         param_schema={"lookback": {"type": "integer"}},
+        idempotency_key="source-create",
     )
     fresh_module.save_strategy_source(
         "SPY trend v2",
         "def initialize(context):\n    pass\n",
         source_id=12,
+        idempotency_key="source-update",
     )
-    fresh_module.restore_strategy_source_version(12, 44, confirm_restore=True)
+    fresh_module.restore_strategy_source_version(
+        12,
+        44,
+        idempotency_key="source-restore",
+        confirm_restore=True,
+    )
 
     assert calls[0][0:2] == ("POST", "/api/agent/v1/strategy-sources")
     assert calls[0][2]["param_schema"]["lookback"]["type"] == "integer"

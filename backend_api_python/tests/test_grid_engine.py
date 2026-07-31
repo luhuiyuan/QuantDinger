@@ -80,6 +80,31 @@ def test_config_from_trading_config_initial_pct():
     assert cfg.grid_direction == "long"
 
 
+def test_grid_count_unit_preserves_legacy_bots_and_supports_exact_cell_counts():
+    legacy = GridBotConfig.from_trading_config({
+        "bot_params": {
+            "upperPrice": 200,
+            "lowerPrice": 100,
+            "gridCount": 10,
+            "amountPerGrid": 10,
+        },
+    })
+    current = GridBotConfig.from_trading_config({
+        "bot_params": {
+            "upperPrice": 200,
+            "lowerPrice": 100,
+            "gridCount": 10,
+            "gridCountUnit": "cells",
+            "amountPerGrid": 10,
+        },
+    })
+
+    assert legacy.grid_line_count == 10
+    assert legacy.tradable_cell_count == 9
+    assert current.grid_line_count == 11
+    assert current.tradable_cell_count == 10
+
+
 def test_initial_market_target_qty_100u_20pct_20x():
     """100 USDT * 20% margin * 20x leverage ≈ 400 USDT notional at 72710."""
     from app.services.grid.engine import GridEngine
@@ -404,9 +429,16 @@ def test_sync_exit_coverage_places_long_exit_for_uncovered_position(monkeypatch)
 
     monkeypatch.setattr("app.services.grid.engine.append_strategy_log", lambda *a, **k: None)
     monkeypatch.setattr("app.services.grid.engine.GridEngine._place_limit", fake_place)
-    monkeypatch.setattr("app.services.grid.engine.GridEngine._leg_position_qty", lambda self, side: 4.08)
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._strategy_leg_position_qty",
+        lambda self, side: 0.059111,
+    )
     monkeypatch.setattr("app.services.grid.engine.GridEngine._dedupe_open_exit_orders", lambda self, p: None)
     monkeypatch.setattr("app.services.grid.engine.GridEngine.sync_held_cell_exits", lambda self, px: 0)
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._persist_initial_seeded_cells",
+        lambda self: None,
+    )
     monkeypatch.setattr(
         "app.services.grid.engine.GridEngine._grid_base_qty",
         lambda self, px: 0.059111,
@@ -444,7 +476,127 @@ def test_sync_exit_coverage_places_long_exit_for_uncovered_position(monkeypatch)
     assert placed[0]["side"] == "sell"
     assert placed[0]["reduce_only"] is True
     assert placed[0]["quantity"] == pytest.approx(0.059111)
-    assert placed[0]["price"] > 676.8 - 20  # active cell upper near current price
+    assert placed[0]["price"] > 676.8  # seed exits never cross below the current market
+
+
+def test_sync_exit_coverage_distributes_initial_inventory_across_distinct_future_cells(monkeypatch):
+    from app.services.grid.engine import GridEngine
+    from app.services.grid.levels import generate_cells, generate_levels
+    from app.services.live_trading.grid_cells import GridCell, GridCellState
+
+    levels = generate_levels(90, 110, 10, "arithmetic")
+    cells = generate_cells(levels)
+    rows = [
+        GridCell(
+            strategy_id=19,
+            symbol="BTC/USDT",
+            cell_index=cell.index,
+            lower_price=cell.lower_price,
+            upper_price=cell.upper_price,
+            state=GridCellState.IDLE,
+        )
+        for cell in cells
+    ]
+    placed = []
+
+    class FakeOrders:
+        def list_open(self, strategy_id):
+            return []
+
+        def has_open_for_cell(self, strategy_id, cell_index, purpose):
+            # The nearest future cell already owns a working entry and cannot
+            # also be used to sell initial inventory.
+            return int(cell_index) == 5 and purpose == "long_entry"
+
+    class FakeCells:
+        def list_cells(self, strategy_id, symbol=None):
+            return rows
+
+    def fake_place(self, cell, purpose, side, price, *, reduce_only, pos_side, quantity=None):
+        placed.append((cell.index, purpose, price, quantity))
+        return True
+
+    monkeypatch.setattr("app.services.grid.engine.append_strategy_log", lambda *a, **k: None)
+    monkeypatch.setattr("app.services.grid.engine.GridEngine._place_limit", fake_place)
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._strategy_leg_position_qty",
+        lambda self, side: 3.0,
+    )
+    monkeypatch.setattr("app.services.grid.engine.GridEngine._grid_base_qty", lambda self, px: 1.0)
+    monkeypatch.setattr("app.services.grid.engine.GridEngine._dedupe_open_exit_orders", lambda self, p: None)
+    monkeypatch.setattr("app.services.grid.engine.GridEngine.sync_held_cell_exits", lambda self, px: 0)
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._levels_and_cells",
+        lambda self: (levels, cells),
+    )
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._persist_initial_seeded_cells",
+        lambda self: None,
+    )
+
+    engine = GridEngine(
+        19,
+        "BTC/USDT",
+        {
+            "initial_capital": 100,
+            "market_type": "swap",
+            "bot_params": {
+                "upperPrice": 110,
+                "lowerPrice": 90,
+                "gridCount": 10,
+                "amountPerGrid": 10,
+                "gridDirection": "long",
+                "initialPositionPct": 30,
+            },
+        },
+        {},
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *a, **k: False,
+    )
+    engine._bootstrapped = True
+    engine._orders = FakeOrders()
+    engine._cells = FakeCells()
+
+    assert engine.sync_exit_coverage(100.0) == 3
+    assert len({cell_index for cell_index, *_ in placed}) == 3
+    assert all(price > 100.0 for _, _, price, _ in placed)
+    assert all(cell_index != 5 for cell_index, *_ in placed)
+
+
+def test_initial_recovery_uses_post_start_exchange_delta_only(monkeypatch):
+    from app.services.grid.engine import GridEngine
+
+    monkeypatch.setattr(
+        "app.services.grid.engine.persist_grid_resting_state",
+        lambda *a, **k: None,
+    )
+    engine = GridEngine(
+        20,
+        "BTC/USDT",
+        {
+            "initial_capital": 100,
+            "market_type": "swap",
+            "bot_params": {
+                "upperPrice": 1.1,
+                "lowerPrice": 0.9,
+                "gridCount": 10,
+                "amountPerGrid": 10,
+                "gridDirection": "long",
+                "initialPositionPct": 60,
+            },
+        },
+        {},
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *a, **k: False,
+    )
+    engine.set_initial_exchange_baseline(long_size=0.5, short_size=0.2)
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._leg_position_qty",
+        lambda self, side: 0.6 if side == "long" else 0.2,
+    )
+
+    assert engine._initial_exchange_delta("long") == pytest.approx(0.1)
+    assert engine._initial_exchange_delta("short") == pytest.approx(0.0)
 
 
 def test_sync_exit_coverage_skips_when_exits_already_cover_position(monkeypatch):
@@ -510,7 +662,7 @@ def test_sync_exit_coverage_skips_when_exits_already_cover_position(monkeypatch)
     assert engine.sync_exit_coverage(676.8) == 0
 
 
-def test_sync_exit_coverage_skips_when_target_cell_already_has_open_exit(monkeypatch):
+def test_sync_exit_coverage_uses_a_distinct_cell_when_one_exit_is_already_open(monkeypatch):
     from app.services.grid.engine import GridEngine
     from app.services.grid.levels import generate_cells, generate_levels
     from app.services.grid.resting_orders_repo import GridRestingOrder
@@ -567,7 +719,10 @@ def test_sync_exit_coverage_skips_when_target_cell_already_has_open_exit(monkeyp
 
     monkeypatch.setattr("app.services.grid.engine.append_strategy_log", lambda *a, **k: None)
     monkeypatch.setattr("app.services.grid.engine.GridEngine._place_limit", fake_place)
-    monkeypatch.setattr("app.services.grid.engine.GridEngine._leg_position_qty", lambda self, side: 0.62)
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._strategy_leg_position_qty",
+        lambda self, side: 0.62,
+    )
     monkeypatch.setattr("app.services.grid.engine.GridEngine._dedupe_open_exit_orders", lambda self, p: None)
     monkeypatch.setattr("app.services.grid.engine.GridEngine.sync_held_cell_exits", lambda self, px: 0)
     monkeypatch.setattr(
@@ -582,6 +737,10 @@ def test_sync_exit_coverage_skips_when_target_cell_already_has_open_exit(monkeyp
         "app.services.grid.engine.GridEngine._grid_base_qty",
         lambda self, px: 0.059111,
     )
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._persist_initial_seeded_cells",
+        lambda self: None,
+    )
 
     engine = GridEngine(
         9,
@@ -594,8 +753,9 @@ def test_sync_exit_coverage_skips_when_target_cell_already_has_open_exit(monkeyp
     engine._bootstrapped = True
     engine._orders = FakeOrders()
 
-    assert engine.sync_exit_coverage(684.0) == 0
-    assert placed == []
+    assert engine.sync_exit_coverage(684.0) == 1
+    assert len(placed) == 1
+    assert placed[0]["cell"] != 13
 
 
 def test_sync_exit_coverage_skips_when_position_below_one_grid(monkeypatch):
@@ -633,7 +793,10 @@ def test_sync_exit_coverage_skips_when_position_below_one_grid(monkeypatch):
 
     monkeypatch.setattr("app.services.grid.engine.append_strategy_log", lambda *a, **k: None)
     monkeypatch.setattr("app.services.grid.engine.GridEngine._place_limit", fake_place)
-    monkeypatch.setattr("app.services.grid.engine.GridEngine._leg_position_qty", lambda self, side: 0.005)
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._strategy_leg_position_qty",
+        lambda self, side: 0.005,
+    )
     monkeypatch.setattr("app.services.grid.engine.GridEngine._dedupe_open_exit_orders", lambda self, p: None)
     monkeypatch.setattr("app.services.grid.engine.GridEngine.sync_held_cell_exits", lambda self, px: 0)
     monkeypatch.setattr(
@@ -709,7 +872,10 @@ def test_sync_exit_coverage_does_not_cover_held_cell_with_active_price_cell(monk
 
     monkeypatch.setattr("app.services.grid.engine.append_strategy_log", lambda *a, **k: None)
     monkeypatch.setattr("app.services.grid.engine.GridEngine._place_limit", fake_place)
-    monkeypatch.setattr("app.services.grid.engine.GridEngine._leg_position_qty", lambda self, side: 0.05)
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._strategy_leg_position_qty",
+        lambda self, side: 0.05,
+    )
     monkeypatch.setattr("app.services.grid.engine.GridEngine._dedupe_open_exit_orders", lambda self, p: None)
     monkeypatch.setattr(
         "app.services.grid.engine.GridEngine._levels_and_cells",
@@ -1192,4 +1358,3 @@ def test_grid_fill_profit_uses_cell_entry_price(monkeypatch):
     assert captured["profit"] == pytest.approx(expected)
     assert captured["grid_matched_profit"] == pytest.approx(expected)
     assert captured["matched_entry_price"] == pytest.approx(669.3)
-

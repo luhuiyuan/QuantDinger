@@ -259,3 +259,37 @@ def test_gate_flat_position_query_returns_zero_in_strict_mode():
         strict=True,
     )
     assert qty == 0.0
+
+
+def test_gate_dual_short_mode_is_not_misread_as_long():
+    from app.services.live_trading.gate import GateUsdtFuturesClient
+    from app.services.live_trading.position_query import query_exchange_position_size
+
+    class FakeGate(GateUsdtFuturesClient):
+        def __init__(self):
+            pass
+
+        def get_positions(self):
+            return [
+                {
+                    "contract": "BTC_USDT",
+                    "mode": "dual_short",
+                    "size": "2",
+                }
+            ]
+
+        def get_contract(self, *, contract):
+            return {"quanto_multiplier": "0.001"}
+
+    assert query_exchange_position_size(
+        client=FakeGate(),
+        symbol="BTC/USDT",
+        pos_side="short",
+        market_type="swap",
+    ) == pytest.approx(0.002)
+    assert query_exchange_position_size(
+        client=FakeGate(),
+        symbol="BTC/USDT",
+        pos_side="long",
+        market_type="swap",
+    ) == 0.0

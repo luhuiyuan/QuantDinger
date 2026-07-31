@@ -15,7 +15,9 @@ from app.services.live_trading.symbols import _split_base_quote
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CLOSE_SAFETY = 0.998
+# Position ownership is recorded net of base-asset fees. Applying an additional
+# 0.2% haircut on every close compounds into visible residual balances.
+_DEFAULT_CLOSE_SAFETY = 1.0
 _DEFAULT_OPEN_BUFFER = 0.995
 
 
@@ -217,24 +219,6 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
     except Exception as e:
         logger.warning("spot base holding (htx): %s", e)
 
-    try:
-        from app.services.live_trading.kraken import KrakenClient
-
-        if isinstance(client, KrakenClient):
-            raw = client.get_balance() or {}
-            result = raw.get("result") if isinstance(raw, dict) else None
-            if isinstance(result, dict):
-                for key, val in result.items():
-                    if base_u in str(key).upper():
-                        try:
-                            qty = float(val or 0.0)
-                        except Exception:
-                            qty = 0.0
-                        if qty > 0:
-                            return _spot_holding(qty, qty)
-    except Exception as e:
-        logger.warning("spot base holding (kraken): %s", e)
-
     return {"total": 0.0, "available": 0.0, "avg_cost": 0.0}
 
 
@@ -408,4 +392,3 @@ def clamp_spot_close_quantity(
             ratio,
         )
     return max(0.0, final), meta
-

@@ -60,6 +60,39 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value or {}, ensure_ascii=False, default=_default)
 
 
+def _json_safe(value: Any) -> Any:
+    """Convert indicator output into a strict JSON-compatible structure."""
+    if value is None:
+        return None
+    if isinstance(value, (datetime, pd.Timestamp)):
+        return value.isoformat()
+    if isinstance(value, (bool, str, int)):
+        return value
+    if isinstance(value, (float, np.floating)):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.ndarray):
+        return [_json_safe(item) for item in value.tolist()]
+    if isinstance(value, pd.Series):
+        return [_json_safe(item) for item in value.tolist()]
+    if isinstance(value, pd.DataFrame):
+        return [_json_safe(row) for row in value.to_dict(orient="records")]
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    return str(value)
+
+
 def _now() -> datetime:
     return datetime.utcnow()
 
@@ -225,6 +258,64 @@ class IndicatorSignalAlertService:
     def __init__(self) -> None:
         self.kline = KlineService()
         self.notifier = SignalNotifier()
+
+    def preview_chart(self, user_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Run a user's saved indicator once and return chart-only data."""
+        try:
+            indicator_id = int(payload.get("indicator_id") or 0)
+        except (TypeError, ValueError):
+            indicator_id = 0
+        if indicator_id <= 0:
+            raise ValueError("indicator_id is required")
+
+        market = str(payload.get("market") or "Crypto").strip() or "Crypto"
+        symbol = str(payload.get("symbol") or "").strip()
+        timeframe = str(payload.get("timeframe") or "1h").strip() or "1h"
+        if not symbol:
+            raise ValueError("symbol is required")
+        try:
+            limit = max(60, min(int(payload.get("limit") or 180), 360))
+        except (TypeError, ValueError):
+            limit = 180
+        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+
+        indicator = self._load_indicator_for_user(int(user_id), indicator_id)
+        code = str(indicator.get("runtime_code") or indicator.get("code") or "")
+        if not code.strip():
+            raise ValueError("Indicator code is empty")
+
+        bars = self.kline.get_kline(
+            market=market,
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=limit,
+            exchange_id=str(payload.get("exchange_id") or "").strip() or None,
+            market_type=str(payload.get("market_type") or "").strip() or None,
+        )
+        df = self._bars_to_df(bars)
+        if df.empty:
+            raise ValueError("No K-line data")
+
+        output = self._execute_indicator(code, df, params)
+        plots = output.get("plots") if isinstance(output.get("plots"), list) else []
+        layers = output.get("layers") if isinstance(output.get("layers"), list) else []
+        signals = output.get("signals") if isinstance(output.get("signals"), list) else []
+        latest_signal = self._latest_chart_signal(signals, df)
+
+        return _json_safe({
+            "indicator": {
+                "id": indicator_id,
+                "name": indicator.get("display_name") or indicator.get("name") or "",
+            },
+            "market": market,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "candles": df.to_dict(orient="records"),
+            "plots": plots,
+            "layers": layers,
+            "signals": signals,
+            "latest_signal": latest_signal,
+        })
 
     def list_tasks(self, user_id: int) -> List[Dict[str, Any]]:
         ensure_indicator_signal_alert_schema()
@@ -643,6 +734,33 @@ class IndicatorSignalAlertService:
                 "notify_bar_time": notify_bar_time,
                 "notify_bar_index": notify_idx,
             }
+        return None
+
+    def _latest_chart_signal(self, signals: List[Dict[str, Any]], df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        """Return the newest visible marker for the mobile chart summary."""
+        if df.empty:
+            return None
+        for idx in range(len(df) - 1, -1, -1):
+            for signal in signals:
+                if not isinstance(signal, dict):
+                    continue
+                data = signal.get("data") if isinstance(signal.get("data"), list) else []
+                marker = data[idx] if idx < len(data) else None
+                if not _signal_marker_should_notify(signal, data, idx):
+                    continue
+                text_data = signal.get("textData") if isinstance(signal.get("textData"), list) else []
+                point_text = text_data[idx] if idx < len(text_data) else None
+                signal_type = str(signal.get("type") or "signal").strip() or "signal"
+                bar = df.iloc[idx]
+                return {
+                    "type": signal_type,
+                    "label": str(point_text or signal.get("text") or signal_type).strip(),
+                    "side": _signal_side(point_text or signal.get("text"), signal_type),
+                    "price": _signal_marker_price(marker, _safe_float(bar.get("close"))),
+                    "bar_time": self._format_bar_time(bar.get("time"), idx),
+                    "bar_index": idx,
+                    "color": signal.get("color"),
+                }
         return None
 
     def _matches_selected_signal(self, selected: set[str], signal_type: str, label: str) -> bool:

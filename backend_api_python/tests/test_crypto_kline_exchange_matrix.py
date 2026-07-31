@@ -8,6 +8,7 @@ from app.data_sources.crypto import (
     CryptoDataSource,
     resolve_ccxt_for_live_trading,
 )
+from app.data_sources.factory import DataSourceFactory
 
 
 @pytest.mark.parametrize(
@@ -111,3 +112,199 @@ def test_any_exchange_falls_back_to_recent_candles_when_requested_window_is_reje
 
     assert rows
     assert calls[-1] is None
+
+
+def test_unscoped_crypto_kline_falls_back_to_another_public_exchange(monkeypatch):
+    source = object.__new__(CryptoDataSource)
+    source._allow_public_fallback = True
+    source.exchange = SimpleNamespace(id="binance", timeframes={})
+    source._symbol_for_scoped_market = lambda _symbol: "BTC/USDT"
+    source._is_invalid_symbol_cached = lambda _symbol: False
+    source._fetch_ohlcv = lambda *_args, **_kwargs: []
+
+    expected = [{
+        "time": 1,
+        "open": 2.0,
+        "high": 3.0,
+        "low": 1.0,
+        "close": 2.5,
+        "volume": 4.0,
+    }]
+    attempts = []
+
+    class FallbackSource:
+        def get_kline(self, *_args, **_kwargs):
+            return expected
+
+    monkeypatch.setattr(
+        CryptoDataSource,
+        "for_exchange",
+        classmethod(
+            lambda _cls, exchange_id, market_type: (
+                attempts.append((exchange_id, market_type)) or FallbackSource()
+            )
+        ),
+    )
+
+    rows = source.get_kline("BTC/USDT", "1H", 10)
+
+    assert rows == expected
+    assert attempts == [("bitget", "spot")]
+
+
+def test_unscoped_swap_kline_fallback_preserves_market_type(monkeypatch):
+    source = object.__new__(CryptoDataSource)
+    source._allow_public_fallback = True
+    source._scoped_market_type = "swap"
+    source.exchange = SimpleNamespace(id="binanceusdm", timeframes={})
+    source._symbol_for_scoped_market = lambda _symbol: "BTC/USDT:USDT"
+    source._is_invalid_symbol_cached = lambda _symbol: False
+    source._fetch_ohlcv = lambda *_args, **_kwargs: []
+
+    expected = [{
+        "time": 1,
+        "open": 2.0,
+        "high": 3.0,
+        "low": 1.0,
+        "close": 2.5,
+        "volume": 4.0,
+    }]
+    attempts = []
+
+    class FallbackSource:
+        def get_kline(self, *_args, **_kwargs):
+            return expected
+
+    monkeypatch.setattr(
+        CryptoDataSource,
+        "for_exchange",
+        classmethod(
+            lambda _cls, exchange_id, market_type: (
+                attempts.append((exchange_id, market_type)) or FallbackSource()
+            )
+        ),
+    )
+
+    rows = source.get_kline("BTC/USDT", "1m", 10)
+
+    assert rows == expected
+    assert attempts == [("bitget", "swap")]
+
+
+def test_public_kline_reuses_successful_fallback_without_retrying_failed_primary(monkeypatch):
+    source = object.__new__(CryptoDataSource)
+    source._allow_public_fallback = True
+    source._scoped_market_type = "swap"
+    source._preferred_public_exchange_id = ""
+    source.exchange = SimpleNamespace(id="binanceusdm", timeframes={})
+    source._symbol_for_scoped_market = lambda _symbol: "BTC/USDT:USDT"
+    source._is_invalid_symbol_cached = lambda _symbol: False
+    primary_attempts = []
+    source._fetch_ohlcv = lambda *_args, **_kwargs: primary_attempts.append(True) or []
+
+    expected = [{
+        "time": 1,
+        "open": 2.0,
+        "high": 3.0,
+        "low": 1.0,
+        "close": 2.5,
+        "volume": 4.0,
+    }]
+    fallback_attempts = []
+
+    class FallbackSource:
+        def get_kline(self, *_args, **_kwargs):
+            return expected
+
+    monkeypatch.setattr(
+        CryptoDataSource,
+        "for_exchange",
+        classmethod(
+            lambda _cls, exchange_id, market_type: (
+                fallback_attempts.append((exchange_id, market_type)) or FallbackSource()
+            )
+        ),
+    )
+
+    assert source.get_kline("BTC/USDT", "4H", 10) == expected
+    assert source.get_kline("BTC/USDT", "4H", 10) == expected
+    assert primary_attempts == [True]
+    assert fallback_attempts == [("bitget", "swap"), ("bitget", "swap")]
+
+
+def test_public_ticker_reuses_kline_promoted_provider(monkeypatch):
+    source = object.__new__(CryptoDataSource)
+    source._allow_public_fallback = True
+    source._scoped_market_type = "swap"
+    source._preferred_public_exchange_id = "bitget"
+    primary_calls = []
+    source.exchange = SimpleNamespace(
+        id="binanceusdm",
+        fetch_ticker=lambda _symbol: primary_calls.append(True) or {"last": 0},
+    )
+    source._symbol_for_scoped_market = lambda _symbol: "BTC/USDT:USDT"
+    source._is_invalid_symbol_cached = lambda _symbol: False
+
+    fallback_calls = []
+
+    class FallbackSource:
+        def get_ticker(self, symbol):
+            fallback_calls.append(symbol)
+            return {"last": 123.45, "symbol": symbol}
+
+    monkeypatch.setattr(
+        CryptoDataSource,
+        "for_exchange",
+        classmethod(lambda _cls, exchange_id, market_type: FallbackSource()),
+    )
+
+    ticker = source.get_ticker("BTC/USDT")
+
+    assert ticker["last"] == pytest.approx(123.45)
+    assert fallback_calls == ["BTC/USDT"]
+    assert primary_calls == []
+
+
+def test_backtest_swap_source_allows_public_failover_but_live_source_stays_scoped(monkeypatch):
+    public_source = object()
+    live_source = object()
+    monkeypatch.setattr(
+        CryptoDataSource,
+        "for_public_market",
+        classmethod(lambda _cls, market_type: public_source),
+    )
+    monkeypatch.setattr(
+        CryptoDataSource,
+        "for_exchange",
+        classmethod(lambda _cls, exchange_id, market_type: live_source),
+    )
+
+    assert DataSourceFactory._resolve_source("Crypto", market_type="swap") is public_source
+    assert DataSourceFactory._resolve_source(
+        "Crypto",
+        exchange_id="gate",
+        market_type="swap",
+    ) is live_source
+
+
+def test_scoped_crypto_kline_does_not_cross_exchange(monkeypatch):
+    source = object.__new__(CryptoDataSource)
+    source._allow_public_fallback = False
+    source.exchange = SimpleNamespace(id="binance", timeframes={})
+    source._symbol_for_scoped_market = lambda _symbol: "BTC/USDT"
+    source._is_invalid_symbol_cached = lambda _symbol: False
+    source._fetch_ohlcv = lambda *_args, **_kwargs: []
+
+    attempts = []
+    monkeypatch.setattr(
+        CryptoDataSource,
+        "for_exchange",
+        classmethod(
+            lambda _cls, exchange_id, market_type: attempts.append((exchange_id, market_type))
+        ),
+    )
+
+    rows = source.get_kline("BTC/USDT", "1H", 10)
+
+    assert rows == []
+    assert attempts == []

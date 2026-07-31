@@ -1,10 +1,81 @@
 import copy
 import unittest
+from unittest.mock import patch
 
-from app.services.strategy_v2.storage import _normalize_backtest_result
+from app.services.strategy_v2.storage import StrategyBacktestRepository, _normalize_backtest_result
+from app.utils.db_postgres import PostgresCursor
+
+
+class _BulkCursor:
+    def __init__(self):
+        self.calls = []
+
+    def executemany(self, query, rows):
+        self.calls.append((query, list(rows)))
+
+
+class _RawCursor:
+    def __init__(self):
+        self.calls = []
+
+    def executemany(self, query, rows):
+        self.calls.append((query, list(rows)))
+        return "bulk-ok"
 
 
 class StrategyV2StorageCompatibilityTests(unittest.TestCase):
+    def test_backtest_details_are_persisted_in_complete_batches(self):
+        cursor = _BulkCursor()
+        result = {
+            "closedTrades": [{
+                "exit_time": "2026-01-02T00:00:00Z",
+                "side": "long",
+                "exit_price": 102,
+                "quantity": 2,
+                "profit": 4,
+                "balance": 10004,
+                "close_reason": "grid_exit",
+            }],
+            "equityCurve": [
+                {"time": "2026-01-01T00:00:00Z", "value": 10000},
+                {"time": "2026-01-02T00:00:00Z", "value": 10004},
+            ],
+        }
+
+        StrategyBacktestRepository._persist_details(cursor, 8, 7, 6, result)
+
+        self.assertEqual(len(cursor.calls), 2)
+        self.assertEqual(len(cursor.calls[0][1]), 1)
+        self.assertEqual(len(cursor.calls[1][1]), 2)
+        self.assertEqual(cursor.calls[1][1][-1], (8, 2, "2026-01-02T00:00:00Z", 10004.0))
+
+    def test_postgres_cursor_bulk_path_converts_placeholders_without_returning_ids(self):
+        raw = _RawCursor()
+        cursor = PostgresCursor(raw)
+        rows = [(1, 2), (3, 4)]
+
+        with (
+            patch("app.utils.db_postgres.HAS_PSYCOPG2", True),
+            patch(
+                "app.utils.db_postgres.execute_batch",
+                return_value="bulk-ok",
+                create=True,
+            ) as bulk,
+        ):
+            result = cursor.executemany(
+                "INSERT INTO sample (a, b) VALUES (?, ?)",
+                rows,
+            )
+
+        self.assertEqual(result, "bulk-ok")
+        bulk.assert_called_once_with(
+            raw,
+            "INSERT INTO sample (a, b) VALUES (%s, %s)",
+            rows,
+            page_size=1000,
+        )
+        self.assertEqual(raw.calls, [])
+
     def test_legacy_backtest_result_restores_overview_fields_from_executions(self):
         legacy = {
             "equityCurve": [

@@ -25,6 +25,13 @@ GRID_WATERFALL_CLOSE = "grid_waterfall_close"
 # never by the entry_price-based server SL/TP path (which is a no-op for grids).
 GRID_EQUITY_STOP_LOSS = "grid_equity_stop_loss"
 GRID_EQUITY_TAKE_PROFIT = "grid_equity_take_profit"
+GRID_EQUITY_TRAILING_STOP = "grid_equity_trailing_stop"
+DCA_EQUITY_STOP_LOSS = "dca_equity_stop_loss"
+DCA_EQUITY_TAKE_PROFIT = "dca_equity_take_profit"
+DCA_EQUITY_TRAILING_STOP = "dca_equity_trailing_stop"
+ROBOT_EQUITY_STOP_LOSS = "robot_equity_stop_loss"
+ROBOT_EQUITY_TAKE_PROFIT = "robot_equity_take_profit"
+ROBOT_EQUITY_TRAILING_STOP = "robot_equity_trailing_stop"
 GRID_OUT_OF_BOUNDS_UP = "grid_out_of_bounds_up"
 GRID_OUT_OF_BOUNDS_DOWN = "grid_out_of_bounds_down"
 
@@ -52,6 +59,13 @@ _LABELS_ZH: Dict[str, str] = {
     GRID_WATERFALL_CLOSE: "防瀑布平仓",
     GRID_EQUITY_STOP_LOSS: "网格净值止损",
     GRID_EQUITY_TAKE_PROFIT: "网格净值止盈",
+    GRID_EQUITY_TRAILING_STOP: "网格净值追踪止盈",
+    DCA_EQUITY_STOP_LOSS: "定投总权益止损",
+    DCA_EQUITY_TAKE_PROFIT: "定投总权益止盈",
+    DCA_EQUITY_TRAILING_STOP: "定投总权益追踪止盈",
+    ROBOT_EQUITY_STOP_LOSS: "机器人总权益止损",
+    ROBOT_EQUITY_TAKE_PROFIT: "机器人总权益止盈",
+    ROBOT_EQUITY_TRAILING_STOP: "机器人总权益追踪止盈",
     GRID_OUT_OF_BOUNDS_UP: "网格上轨突破平仓",
     GRID_OUT_OF_BOUNDS_DOWN: "网格下轨突破平仓",
     SERVER_STOP_LOSS: "止损平仓",
@@ -74,6 +88,13 @@ _LABELS_EN: Dict[str, str] = {
     GRID_WATERFALL_CLOSE: "Waterfall protection close",
     GRID_EQUITY_STOP_LOSS: "Grid equity stop-loss",
     GRID_EQUITY_TAKE_PROFIT: "Grid equity take-profit",
+    GRID_EQUITY_TRAILING_STOP: "Grid equity trailing take-profit",
+    DCA_EQUITY_STOP_LOSS: "DCA total-equity stop-loss",
+    DCA_EQUITY_TAKE_PROFIT: "DCA total-equity take-profit",
+    DCA_EQUITY_TRAILING_STOP: "DCA total-equity trailing take-profit",
+    ROBOT_EQUITY_STOP_LOSS: "Robot total-equity stop-loss",
+    ROBOT_EQUITY_TAKE_PROFIT: "Robot total-equity take-profit",
+    ROBOT_EQUITY_TRAILING_STOP: "Robot total-equity trailing take-profit",
     GRID_OUT_OF_BOUNDS_UP: "Grid upper-bound breakout",
     GRID_OUT_OF_BOUNDS_DOWN: "Grid lower-bound breakdown",
     SERVER_STOP_LOSS: "Stop-loss close",

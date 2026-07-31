@@ -250,7 +250,7 @@ services:
       # IBKR needs local TWS or IB Gateway; set false on SaaS cloud (see env.example).
       - ALLOW_LOCAL_DESKTOP_BROKERS=${ALLOW_LOCAL_DESKTOP_BROKERS:-true}
       # Spot full close / open fee buffer (Admin → Settings → Live Trading, or backend_api_python/.env)
-      - SPOT_CLOSE_SAFETY_RATIO=${SPOT_CLOSE_SAFETY_RATIO:-0.998}
+      - SPOT_CLOSE_SAFETY_RATIO=${SPOT_CLOSE_SAFETY_RATIO:-1.0}
       - SPOT_OPEN_QUOTE_BUFFER=${SPOT_OPEN_QUOTE_BUFFER:-0.995}
       # Takes precedence over mounted .env (run.py load_dotenv override=False).
       # Include :8000 when using Vite dev server alongside this stack.
@@ -262,6 +262,38 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # Optional network MCP gateway. It is disabled unless the `mcp` profile is
+  # selected and requires separate upstream/inbound tokens.
+  # Example:
+  #   QUANTDINGER_AGENT_TOKEN=qd_agent_xxx \
+  #   QUANTDINGER_MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+  #   docker compose --profile mcp up -d --build mcp
+  mcp:
+    profiles: ["mcp"]
+    build:
+      context: ./mcp_server
+      dockerfile: Dockerfile
+    image: ${MCP_LOCAL_IMAGE:-quantdinger-mcp:local}
+    container_name: quantdinger-mcp
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${MCP_HOST_BIND:-127.0.0.1}:${MCP_PORT:-7800}:7800"
+    environment:
+      QUANTDINGER_BASE_URL: http://backend:5000
+      QUANTDINGER_AGENT_TOKEN: ${QUANTDINGER_AGENT_TOKEN:-}
+      QUANTDINGER_MCP_TRANSPORT: streamable-http
+      QUANTDINGER_MCP_HOST: 0.0.0.0
+      QUANTDINGER_MCP_PORT: 7800
+      QUANTDINGER_MCP_PUBLIC_URL: ${QUANTDINGER_MCP_PUBLIC_URL:-http://localhost:7800}
+      QUANTDINGER_MCP_AUTH_TOKEN: ${QUANTDINGER_MCP_AUTH_TOKEN:-}
+      # The default port mapping is loopback-only; TLS may terminate upstream.
+      QUANTDINGER_MCP_ALLOW_HTTP: ${QUANTDINGER_MCP_ALLOW_HTTP:-true}
+    networks:
+      - quantdinger-network
 
   trading-worker:
     <<: *backend-runtime

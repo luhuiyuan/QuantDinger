@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Dict, List, Mapping, Tuple
 
 from app.services.live_trading.base import LiveTradingError
@@ -153,8 +154,9 @@ def _place_okx(client: Any, request: NativeProtectionRequest) -> List[Dict[str, 
         "posSide": pos_side,
         "ordType": "conditional",
         "sz": client._dec_str(size, strict_precision=precision),
-        "reduceOnly": "true",
     }
+    if pos_side == "net":
+        base["reduceOnly"] = "true"
     if client.broker_code:
         base["tag"] = str(client.broker_code)
     responses: List[Dict[str, Any]] = []
@@ -264,13 +266,23 @@ def _place_gate(client: Any, request: NativeProtectionRequest) -> List[Dict[str,
     size, extra_headers = client._resolve_order_size(
         contract=contract, side=close_side, base_size=request.quantity
     )
-    initial = {
+    initial: Dict[str, Any] = {
         "contract": contract,
-        "size": size,
         "price": "0",
         "tif": "ioc",
         "reduce_only": True,
     }
+    # Gate's price-order schema is stricter than the regular futures-order
+    # schema: ``initial.size`` is int64. Fractional-contract orders use the
+    # string-typed ``initial.amount`` field instead.
+    decimal_size = bool(extra_headers and extra_headers.get("X-Gate-Size-Decimal") == "1")
+    if decimal_size:
+        initial["amount"] = str(size)
+    else:
+        try:
+            initial["size"] = int(Decimal(str(size)))
+        except (ArithmeticError, TypeError, ValueError) as exc:
+            raise LiveTradingError(f"Gate native protection resolved an invalid size: {size}") from exc
     responses: List[Dict[str, Any]] = []
     for price in (request.stop_loss_price, request.take_profit_price):
         if price <= 0:

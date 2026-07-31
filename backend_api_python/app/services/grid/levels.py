@@ -14,6 +14,12 @@ class GridCellSpec:
 
 
 def generate_levels(lower: float, upper: float, grid_count: int, mode: str) -> List[float]:
+    """Generate ``grid_count`` boundary lines.
+
+    The long-standing live-grid storage contract treats ``grid_count`` as a
+    boundary-line count.  New robot templates that expose a cell count convert
+    it through :attr:`GridBotConfig.grid_line_count` before calling here.
+    """
     n = max(2, int(grid_count or 2))
     lo, hi = float(lower), float(upper)
     if hi <= lo:

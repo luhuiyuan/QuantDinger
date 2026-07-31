@@ -10,7 +10,7 @@ We convert them into exchange-specific identifiers.
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Tuple
 
 
 def _split_base_quote(symbol: str) -> Tuple[str, str]:
@@ -67,63 +67,11 @@ def to_bitget_um_symbol(symbol: str) -> str:
     return f"{base}{quote}"
 
 
-_KRAKEN_BASE_MAP: Dict[str, str] = {
-    # Common spot naming differences
-    "BTC": "XBT",
-}
-
 def to_bybit_symbol(symbol: str) -> str:
     """
     Bybit symbol format (v5): typically concatenated, e.g. BTCUSDT.
     """
     return to_binance_futures_symbol(symbol)
-
-
-def to_coinbase_product_id(symbol: str) -> str:
-    """
-    Coinbase Exchange product id format: BASE-QUOTE, e.g. BTC-USDT.
-    """
-    base, quote = _split_base_quote(symbol)
-    if not base or not quote:
-        return symbol
-    return f"{base}-{quote}"
-
-
-def to_kraken_pair(symbol: str) -> str:
-    """
-    Kraken spot pair format is exchange-specific (e.g. XBTUSDT).
-    We use a best-effort mapping for common assets; callers can override by passing
-    already-normalized Kraken pair strings.
-    """
-    base, quote = _split_base_quote(symbol)
-    if not base or not quote:
-        return symbol
-    b = _KRAKEN_BASE_MAP.get(base, base)
-    return f"{b}{quote}"
-
-
-def to_kraken_futures_symbol(symbol: str) -> str:
-    """
-    Kraken Futures instruments are exchange-specific (e.g. PF_XBTUSD, PI_XBTUSD).
-    This helper is best-effort:
-    - If caller already passes an exchange-native instrument (contains '_' or starts with PF_/PI_), return as-is.
-    - Otherwise, map BTC->XBT and assume USD quote for futures (most Kraken Futures perps are USD margined).
-    """
-    s = (symbol or "").strip()
-    if not s:
-        return s
-    up = s.upper()
-    if "_" in up or up.startswith("PF_") or up.startswith("PI_"):
-        return s
-    base, quote = _split_base_quote(symbol)
-    if not base:
-        return s
-    b = _KRAKEN_BASE_MAP.get(base, base)
-    q = "USD"
-    # Keep USDT as USD best-effort (platform-dependent)
-    if quote and quote.upper() == "USD":
-        q = "USD"
-    return f"PF_{b}{q}"
 
 
 def to_gate_currency_pair(symbol: str) -> str:
@@ -159,4 +107,3 @@ def to_htx_contract_code(symbol: str) -> str:
     if not base or not quote:
         return s.replace("/", "-").replace(":", "-").upper()
     return f"{base}-{quote}"
-

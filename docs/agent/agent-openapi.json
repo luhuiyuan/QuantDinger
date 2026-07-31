@@ -65,6 +65,8 @@
           "instruments":          { "type": "array", "items": { "type": "string" } },
           "paper_only":           { "type": "boolean" },
           "rate_limit_per_min":   { "type": "integer" },
+          "max_order_notional":   { "type": "number" },
+          "max_daily_notional":   { "type": "number" },
           "expires_at":           { "type": "string", "format": "date-time", "nullable": true }
         }
       },
@@ -264,6 +266,7 @@
       "post": {
         "summary": "Create a strategy (status defaults to 'stopped')",
         "x-scope-class": "W",
+        "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StrategyDeploymentRequest" } } } },
         "responses": { "200": { "description": "Created" } }
       }
@@ -279,7 +282,10 @@
       "patch": {
         "summary": "Update canonical strategy deployment settings",
         "x-scope-class": "W",
-        "parameters": [{ "in": "path", "name": "strategy_id", "required": true, "schema": { "type": "integer" } }],
+        "parameters": [
+          { "in": "path", "name": "strategy_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StrategyDeploymentPatch" } } } },
         "responses": { "200": { "description": "OK" }, "400": { "description": "Unsupported or invalid deployment field" } }
       }
@@ -289,7 +295,10 @@
         "summary": "Stop a tenant-owned strategy",
         "description": "Persists status='stopped', attempts to stop the runtime executor, and verifies the final persisted status. Does not delete the strategy and does not place orders.",
         "x-scope-class": "T",
-        "parameters": [{ "in": "path", "name": "strategy_id", "required": true, "schema": { "type": "integer" } }],
+        "parameters": [
+          { "in": "path", "name": "strategy_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
         "responses": { "200": { "description": "Stopped" }, "404": { "description": "Strategy not found" } }
       }
     },
@@ -343,6 +352,7 @@
       "post": {
         "summary": "Compile and save a private Strategy API V2 source",
         "x-scope-class": "W",
+        "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StrategySourceWriteRequest" } } } },
         "responses": { "200": { "description": "Created" }, "400": { "description": "Compile or validation failure" } }
       }
@@ -357,7 +367,10 @@
       "patch": {
         "summary": "Compile and update a tenant-owned Strategy API V2 source",
         "x-scope-class": "W",
-        "parameters": [{ "in": "path", "name": "source_id", "required": true, "schema": { "type": "integer" } }],
+        "parameters": [
+          { "in": "path", "name": "source_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StrategySourcePatchRequest" } } } },
         "responses": { "200": { "description": "Updated" }, "403": { "description": "Hidden marketplace source" }, "404": { "description": "Not found" } }
       }
@@ -376,7 +389,8 @@
         "x-scope-class": "W",
         "parameters": [
           { "in": "path", "name": "source_id", "required": true, "schema": { "type": "integer" } },
-          { "in": "path", "name": "version_id", "required": true, "schema": { "type": "integer" } }
+          { "in": "path", "name": "version_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
         ],
         "requestBody": {
           "required": true,
@@ -398,7 +412,7 @@
         "summary": "Submit a backtest job",
         "x-scope-class": "B",
         "parameters": [
-          { "in": "header", "name": "Idempotency-Key", "required": false, "schema": { "type": "string" } }
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
         ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BacktestRequest" } } } },
         "responses": { "202": { "description": "Queued" } }
@@ -423,6 +437,7 @@
       "post": {
         "summary": "Save indicator into private library (qd_indicator_codes)",
         "x-scope-class": "W",
+        "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
         "requestBody": {
           "required": true,
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IndicatorSaveRequest" } } }
@@ -445,6 +460,7 @@
       "post": {
         "summary": "Normalize chart-indicator config for the indicator library; not an executable strategy path",
         "x-scope-class": "W",
+        "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
         "responses": { "200": { "description": "Linked config" } }
       }
@@ -495,6 +511,215 @@
         }
       }
     },
+    "/api/agent/v1/jobs/{job_id}/cancel": {
+      "post": {
+        "summary": "Cancel a queued or running job",
+        "x-scope-class": "B",
+        "parameters": [
+          { "in": "path", "name": "job_id", "required": true, "schema": { "type": "string" } },
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
+        "responses": { "200": { "description": "Cancelled" }, "409": { "description": "Job already terminal" } }
+      }
+    },
+    "/api/agent/v1/research/universes": {
+      "get": {
+        "summary": "List visible point-in-time universes",
+        "x-scope-class": "R",
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/research/universes/{universe_id}": {
+      "get": {
+        "summary": "Get universe metadata",
+        "x-scope-class": "R",
+        "parameters": [{ "in": "path", "name": "universe_id", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/agent/v1/research/universes/{universe_id}/members": {
+      "get": {
+        "summary": "Resolve universe members at a point in time",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "path", "name": "universe_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "query", "name": "as_of", "required": false, "schema": { "type": "string", "format": "date" } },
+          { "in": "query", "name": "limit", "required": false, "schema": { "type": "integer", "maximum": 500 } },
+          { "in": "query", "name": "cursor", "required": false, "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/research/factors": {
+      "get": {
+        "summary": "List factor registry definitions",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "query", "name": "category", "required": false, "schema": { "type": "string" } },
+          { "in": "query", "name": "factor_type", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/research/factors/{factor_id}": {
+      "get": {
+        "summary": "Get one factor definition",
+        "x-scope-class": "R",
+        "parameters": [{ "in": "path", "name": "factor_id", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/agent/v1/research/watchlist": {
+      "get": {
+        "summary": "List tenant watchlist",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "query", "name": "limit", "required": false, "schema": { "type": "integer", "maximum": 500 } },
+          { "in": "query", "name": "cursor", "required": false, "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      },
+      "post": {
+        "summary": "Add a validated watchlist item",
+        "x-scope-class": "W",
+        "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
+        "responses": { "200": { "description": "Added" } }
+      },
+      "delete": {
+        "summary": "Remove a watchlist item",
+        "x-scope-class": "W",
+        "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
+        "responses": { "200": { "description": "Removed" } }
+      }
+    },
+    "/api/agent/v1/trading/accounts": {
+      "get": {
+        "summary": "List safe broker credential metadata",
+        "description": "Returns identifiers, exchange, environment, market scope, and API-key hint only. Secrets are never returned.",
+        "x-scope-class": "R",
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/trading/accounts/{credential_id}/snapshot": {
+      "get": {
+        "summary": "Fetch live account positions and open orders",
+        "x-scope-class": "R",
+        "parameters": [{ "in": "path", "name": "credential_id", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK" }, "404": { "description": "Credential not found" } }
+      }
+    },
+    "/api/agent/v1/trading/accounts/{credential_id}/positions": {
+      "get": {
+        "summary": "Read mirrored account positions",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "path", "name": "credential_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "query", "name": "market_type", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/trading/strategies/{strategy_id}/positions": {
+      "get": {
+        "summary": "Read strategy positions",
+        "x-scope-class": "R",
+        "parameters": [{ "in": "path", "name": "strategy_id", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/trading/strategies/{strategy_id}/trades": {
+      "get": {
+        "summary": "Read cursor-paginated strategy trades",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "path", "name": "strategy_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "query", "name": "limit", "required": false, "schema": { "type": "integer", "maximum": 200 } },
+          { "in": "query", "name": "cursor", "required": false, "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/trading/strategies/{strategy_id}/pending-orders": {
+      "get": {
+        "summary": "Read cursor-paginated strategy pending orders",
+        "x-scope-class": "R",
+        "parameters": [
+          { "in": "path", "name": "strategy_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "query", "name": "limit", "required": false, "schema": { "type": "integer", "maximum": 200 } },
+          { "in": "query", "name": "cursor", "required": false, "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/trading/quick-trades": {
+      "get": {
+        "summary": "Read cursor-paginated Agent Gateway quick trades",
+        "x-scope-class": "R",
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/agent/v1/notifications/signal-alerts": {
+      "get": {
+        "summary": "List signal-alert tasks",
+        "x-scope-class": "N",
+        "parameters": [
+          { "in": "query", "name": "limit", "required": false, "schema": { "type": "integer", "maximum": 200 } },
+          { "in": "query", "name": "cursor", "required": false, "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      },
+      "post": {
+        "summary": "Create a signal-alert task",
+        "x-scope-class": "N",
+        "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
+        "responses": { "200": { "description": "Created" } }
+      }
+    },
+    "/api/agent/v1/notifications/signal-alerts/{task_id}": {
+      "patch": {
+        "summary": "Update a signal-alert task",
+        "x-scope-class": "N",
+        "parameters": [
+          { "in": "path", "name": "task_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
+        "responses": { "200": { "description": "Updated" } }
+      },
+      "delete": {
+        "summary": "Delete a signal-alert task",
+        "x-scope-class": "N",
+        "parameters": [
+          { "in": "path", "name": "task_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/api/agent/v1/notifications/signal-alerts/{task_id}/status": {
+      "post": {
+        "summary": "Pause or resume a signal-alert task",
+        "x-scope-class": "N",
+        "parameters": [
+          { "in": "path", "name": "task_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
+        "responses": { "200": { "description": "Updated" } }
+      }
+    },
+    "/api/agent/v1/notifications/signal-alerts/{task_id}/run": {
+      "post": {
+        "summary": "Evaluate an alert immediately and optionally deliver notifications",
+        "x-scope-class": "N",
+        "parameters": [
+          { "in": "path", "name": "task_id", "required": true, "schema": { "type": "integer" } },
+          { "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }
+        ],
+        "responses": { "200": { "description": "Evaluated" } }
+      }
+    },
     "/api/agent/v1/portfolio/positions": {
       "get": {
         "summary": "Manual portfolio positions",
@@ -514,15 +739,18 @@
         "summary": "Place a quick order (paper by default; live only when fully unlocked)",
         "description": "Requires T scope. Paper-only tokens record qd_agent_paper_orders. Live execution requires token paper_only=false, AGENT_LIVE_TRADING_ENABLED=true, and credential_id. Live orders reuse the same execution path as human Quick Trade.",
         "x-scope-class": "T",
-        "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": false, "schema": { "type": "string" } }],
+        "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderRequest" } } } },
         "responses": { "200": { "description": "OK (paper fill or live order)" }, "400": { "description": "Invalid order payload" }, "403": { "description": "Scope/instrument denied" }, "501": { "description": "Live-capable token used while AGENT_LIVE_TRADING_ENABLED is disabled" } }
       }
     },
     "/api/agent/v1/quick-trade/kill-switch": {
       "post": {
-        "summary": "Cancel all open paper orders for the calling tenant",
+        "summary": "Emergency stop agent trading for the calling tenant",
+        "description": "Best-effort cancels open agent-originated exchange orders, cancels open paper orders, and revokes all active T-scope tokens. The response reports any live cancellation failures for mandatory human review.",
         "x-scope-class": "T",
+        "parameters": [{ "in": "header", "name": "Idempotency-Key", "required": true, "schema": { "type": "string", "maxLength": 120 } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["confirm"], "properties": { "confirm": { "type": "boolean", "enum": [true] } } } } } },
         "responses": { "200": { "description": "OK" } }
       }
     },

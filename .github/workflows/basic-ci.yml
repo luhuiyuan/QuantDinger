@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -28,7 +28,7 @@ jobs:
 
       - name: Install lint dependency
         working-directory: ./backend_api_python
-        run: python -m pip install --disable-pip-version-check "ruff>=0.12.0,<0.15" "packaging>=24,<27"
+        run: python -m pip install --disable-pip-version-check "ruff>=0.16.0,<0.17" "packaging>=24,<27"
 
       - name: Python syntax check
         working-directory: ./backend_api_python
@@ -98,7 +98,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -108,7 +108,7 @@ jobs:
 
       - name: Install development dependencies
         working-directory: ./backend_api_python
-        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+        run: python -m pip install --disable-pip-version-check -r requirements.lock -r requirements-dev.txt
 
       - name: Python import check
         if: matrix.shard_index == 0
@@ -173,7 +173,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 

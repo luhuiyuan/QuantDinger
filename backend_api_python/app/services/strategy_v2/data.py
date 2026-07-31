@@ -27,6 +27,14 @@ class MultiAssetDataPortal:
         self.aliases: dict[str, str] = {}
         self.current_dt: pd.Timestamp | None = None
         self._visible_dt: pd.Timestamp | None = None
+        # A grid can inspect dozens of resting orders for the same instrument
+        # on every bar.  Keep the current timestamp's normalized OHLC rows in
+        # memory so those checks do not repeatedly perform pandas index lookup
+        # and Series construction.  The cache is deliberately scoped to one
+        # timestamp: it cannot expose future data and remains bounded by the
+        # number of instruments in the universe.
+        self._bar_cache_timestamp: pd.Timestamp | None = None
+        self._bar_cache: dict[str, dict[str, Any] | None] = {}
         self.universe_resolver = universe_resolver
         for raw_key, raw_frame in frames.items():
             instrument = parse_instrument(raw_key)
@@ -109,34 +117,27 @@ class MultiAssetDataPortal:
             return float(default)
 
     def open_at(self, symbol: object, timestamp: Any) -> float | None:
-        key = self.resolve_key(symbol)
-        frame = self.frames[key]
-        ts = pd.Timestamp(timestamp)
-        if ts not in frame.index:
-            return None
-        try:
-            value = float(frame.loc[ts, "open"])
-            return value if value > 0 else None
-        except Exception:
-            return None
+        bar = self.bar_at(symbol, timestamp)
+        value = float((bar or {}).get("open") or 0.0)
+        return value if value > 0 else None
 
     def close_at(self, symbol: object, timestamp: Any) -> float | None:
-        key = self.resolve_key(symbol)
-        frame = self.frames[key]
-        ts = pd.Timestamp(timestamp)
-        if ts not in frame.index:
-            return None
-        try:
-            value = float(frame.loc[ts, "close"])
-            return value if value > 0 else None
-        except Exception:
-            return None
+        bar = self.bar_at(symbol, timestamp)
+        value = float((bar or {}).get("close") or 0.0)
+        return value if value > 0 else None
 
     def bar_at(self, symbol: object, timestamp: Any) -> dict[str, Any] | None:
         key = self.resolve_key(symbol)
-        frame = self.frames[key]
         ts = pd.Timestamp(timestamp)
+        if self._bar_cache_timestamp != ts:
+            self._bar_cache_timestamp = ts
+            self._bar_cache.clear()
+        if key in self._bar_cache:
+            return self._bar_cache[key]
+
+        frame = self.frames[key]
         if ts not in frame.index:
+            self._bar_cache[key] = None
             return None
         row = frame.loc[ts]
         try:
@@ -163,8 +164,10 @@ class MultiAssetDataPortal:
             ):
                 if name in row.index:
                     bar[name] = row.get(name)
+            self._bar_cache[key] = bar
             return bar
         except (KeyError, TypeError, ValueError):
+            self._bar_cache[key] = None
             return None
 
     def panel(self, symbols: Iterable[object] | None = None, *, count: int | None = None) -> dict[str, pd.DataFrame]:

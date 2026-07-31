@@ -1,8 +1,8 @@
 # Release quantdinger-mcp to PyPI
 
-## This release: 0.4.0
+## This release: 0.5.0
 
-This is the v5 contract release. It replaces the 0.3 legacy strategy and experiment surface with Strategy API V2 source management, manifest compilation, version history, native order protection, runtime controls, and authenticated network transports.
+This release expands MCP to complete research, strategy authoring, backtest, broker observation, notification, and safety-gated trading workflows. It adds atomic idempotency, distributed quotas, job cancellation, notional caps, and an emergency stop.
 
 Before uploading:
 
@@ -29,10 +29,10 @@ py -3.13 -m build
 # 5. Upload (you run this -- needs your PyPI token)
 $env:TWINE_USERNAME = "__token__"
 $env:TWINE_PASSWORD = "pypi-Ag..."   # your API token
-py -3.13 -m twine upload dist/quantdinger_mcp-0.4.0*
+py -3.13 -m twine upload dist/quantdinger_mcp-0.5.0*
 
 # 6. Verify
-pip install --upgrade "quantdinger-mcp==0.4.0"
+pip install --upgrade "quantdinger-mcp==0.5.0"
 quantdinger-mcp
 ```
 
@@ -44,11 +44,11 @@ pip install -e ".[dev]"
 python -m pytest tests/ -q
 rm -rf dist build src/*.egg-info
 python -m build
-TWINE_USERNAME=__token__ TWINE_PASSWORD=pypi-... python -m twine upload dist/quantdinger_mcp-0.4.0*
+TWINE_USERNAME=__token__ TWINE_PASSWORD=pypi-... python -m twine upload dist/quantdinger_mcp-0.5.0*
 ```
 
 ## Notes
 
-- Upload **only** the `0.4.0` files from `dist/` -- do not upload older versions again.
+- Upload **only** the `0.5.0` files from `dist/` -- do not upload older versions again.
 - PyPI token: Account settings -> API tokens -> scope `quantdinger-mcp` or entire account.
 - After publish: restart Cursor MCP or `pip install --upgrade quantdinger-mcp`.

@@ -378,9 +378,15 @@ def ensure_position_ledger_schema() -> None:
         "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS symbol_canonical VARCHAR(50) DEFAULT ''",
         "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS fill_source VARCHAR(32) DEFAULT ''",
         "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS pending_order_id INTEGER DEFAULT 0",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS grid_order_id INTEGER DEFAULT 0",
         "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS strategy_run_id INTEGER DEFAULT 0",
         "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS order_intent_id INTEGER DEFAULT 0",
         "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS commission_quote DECIMAL(24,8)",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS execution_event_id BIGINT DEFAULT 0",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS exchange_fill_id VARCHAR(160) DEFAULT ''",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS fee_status VARCHAR(24) DEFAULT 'pending'",
+        "ALTER TABLE qd_strategy_trades ADD COLUMN IF NOT EXISTS fee_source VARCHAR(24) DEFAULT ''",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_trades_execution_event ON qd_strategy_trades(execution_event_id) WHERE execution_event_id > 0",
         "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS market_type VARCHAR(20) DEFAULT 'swap'",
         "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS credential_id INTEGER DEFAULT 0",
         "ALTER TABLE qd_strategy_positions ADD COLUMN IF NOT EXISTS inst_id VARCHAR(80) DEFAULT ''",
@@ -412,6 +418,7 @@ def ensure_position_ledger_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_account_pos_user ON qd_account_positions(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_account_pos_cred ON qd_account_positions(credential_id, market_type)",
         "CREATE INDEX IF NOT EXISTS idx_trades_strategy_symbol_canon ON qd_strategy_trades (strategy_id, market_type, symbol_canonical)",
+        "CREATE INDEX IF NOT EXISTS idx_strategy_trades_grid_order ON qd_strategy_trades (grid_order_id) WHERE grid_order_id > 0",
         "CREATE INDEX IF NOT EXISTS idx_positions_strategy_leg ON qd_strategy_positions (strategy_id, market_type, symbol_canonical, side)",
     )
     for sql in statements:
@@ -446,9 +453,14 @@ def record_trade(
     inst_id: str = "",
     fill_source: str = "",
     pending_order_id: int = 0,
+    grid_order_id: int = 0,
     strategy_run_id: int = 0,
     order_intent_id: int = 0,
-) -> None:
+    execution_event_id: int = 0,
+    exchange_fill_id: str = "",
+    fee_status: str = "pending",
+    fee_source: str = "",
+) -> int:
     value = float(amount or 0.0) * float(price or 0.0)
     if user_id is None:
         user_id = _get_user_id_from_strategy(strategy_id)
@@ -478,10 +490,13 @@ def record_trade(
             (user_id, strategy_id, symbol, symbol_canonical, type, price, amount, value, commission,
              commission_ccy, commission_quote, profit, close_reason,
              matched_entry_price, grid_matched_profit,
-             market_type, credential_id, inst_id, fill_source, pending_order_id,
-             strategy_run_id, order_intent_id, created_at)
+             market_type, credential_id, inst_id, fill_source, pending_order_id, grid_order_id,
+             strategy_run_id, order_intent_id, execution_event_id, exchange_fill_id,
+             fee_status, fee_source, created_at)
             VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (execution_event_id) WHERE execution_event_id > 0 DO NOTHING
+            RETURNING id
             """,
             (
                 int(user_id),
@@ -504,12 +519,19 @@ def record_trade(
                 iid,
                 fsrc,
                 poid,
+                int(grid_order_id or 0),
                 int(strategy_run_id or 0),
                 int(order_intent_id or 0),
+                int(execution_event_id or 0),
+                str(exchange_fill_id or ""),
+                str(fee_status or "pending"),
+                str(fee_source or ""),
             ),
         )
+        row = cur.fetchone()
         db.commit()
         cur.close()
+    return int((row or {}).get("id") or 0)
 
 
 def _fetch_position(strategy_id: int, symbol: str, side: str) -> Dict[str, Any]:
@@ -772,5 +794,3 @@ def apply_fill_to_local_position(
         return profit, _fetch_position(sid, sym_key, side), matched_entry
 
     return None, None, None
-
-

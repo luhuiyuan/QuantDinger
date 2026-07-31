@@ -33,10 +33,65 @@ class LiveOrderRequest:
     maker_offset_bps: float = 0.0
     protection: dict[str, Any] | None = None
     sizing: dict[str, Any] | None = None
+    client_order_id: str = ""
 
 
 class StrategyV2OrderGateway:
     """Persist idempotent orders for the existing asynchronous dispatcher."""
+
+    _ACTIVE_PENDING_STATUSES = ("pending", "processing", "sent", "syncing")
+
+    @staticmethod
+    def _position_lane(action: str) -> str:
+        signal = str(action or "").strip().lower()
+        if signal.endswith("_long"):
+            return "long"
+        if signal.endswith("_short"):
+            return "short"
+        return ""
+
+    def has_inflight(self, request: LiveOrderRequest) -> bool:
+        """Return whether the same strategy position leg already has live work.
+
+        Timestamp-based idempotency only deduplicates the same signal event. A
+        target-position strategy can emit an equivalent order on the next poll
+        while the first order is still waiting for the exchange. Serializing
+        each symbol/position leg prevents those semantic duplicates without
+        blocking the opposite leg of a true hedge strategy.
+        """
+        lane = self._position_lane(request.action)
+        if not lane:
+            return False
+        lane_actions = (
+            ("open_long", "add_long", "reduce_long", "close_long")
+            if lane == "long"
+            else ("open_short", "add_short", "reduce_short", "close_short")
+        )
+        with get_db_connection() as db:
+            cur = db.cursor()
+            cur.execute(
+                """
+                SELECT id
+                FROM pending_orders
+                WHERE strategy_id = %s
+                  AND strategy_run_id = %s
+                  AND symbol = %s
+                  AND signal_type IN (%s, %s, %s, %s)
+                  AND status IN (%s, %s, %s, %s)
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (
+                    int(request.strategy_id),
+                    int(request.strategy_run_id),
+                    str(request.symbol or ""),
+                    *lane_actions,
+                    *self._ACTIVE_PENDING_STATUSES,
+                ),
+            )
+            row = cur.fetchone() or {}
+            cur.close()
+        return int(row.get("id") or 0) > 0
 
     def submit(self, request: LiveOrderRequest) -> int | None:
         request = self._validate(request)
@@ -44,13 +99,18 @@ class StrategyV2OrderGateway:
             strategy_id=request.strategy_id,
             strategy_run_id=request.strategy_run_id,
         )
-        key = service.build_signal_idempotency_key(
-            strategy_run_id=request.strategy_run_id,
-            strategy_id=request.strategy_id,
-            symbol=request.symbol,
-            signal_type=request.action,
-            signal_ts=request.signal_timestamp,
-        )
+        client_order_id = str(request.client_order_id or "").strip()[:100]
+        key = (
+            f"run:{request.strategy_run_id}:strategy:{request.strategy_id}:client:{client_order_id}"
+            if client_order_id
+            else service.build_signal_idempotency_key(
+                strategy_run_id=request.strategy_run_id,
+                strategy_id=request.strategy_id,
+                symbol=request.symbol,
+                signal_type=request.action,
+                signal_ts=request.signal_timestamp,
+            )
+        )[:180]
         signal = StrategySignal(
             timestamp=request.signal_timestamp,
             strategy_id=request.strategy_id,
@@ -63,7 +123,17 @@ class StrategyV2OrderGateway:
             reason=request.reason,
             source="strategy_v2",
         )
-        intent = service.create_from_signal(signal, idempotency_key=key, leverage=request.leverage)
+        intent = service.create_intent(
+            idempotency_key=key,
+            client_order_id=client_order_id,
+            portfolio_id=signal.portfolio_id,
+            universe_id=signal.universe_id,
+            rebalance_group_id=signal.rebalance_group_id,
+            target_weight=signal.target_weight,
+            target_notional=signal.target_notional,
+            target_position_qty=signal.target_position_qty,
+            **signal.to_order_intent_kwargs(leverage=request.leverage),
+        )
         if intent.existing and intent.status not in {"failed", "cancelled", "rejected"}:
             pending_id = self._pending_id(key)
             if pending_id:
@@ -94,6 +164,7 @@ class StrategyV2OrderGateway:
             "maker_offset_bps": request.maker_offset_bps,
             "protection": request.protection or {},
             "sizing": request.sizing or {},
+            "client_order_id": client_order_id,
         }
         with get_db_connection() as db:
             cur = db.cursor()

@@ -537,8 +537,22 @@ class BinanceFuturesClient(BaseRestClient):
         if lev < 1:
             lev = 1
         if lev > 125:
-            lev = 125
-        return self._signed_request("POST", "/fapi/v1/leverage", params={"symbol": sym, "leverage": lev})
+            raise LiveTradingError(f"Binance leverage {lev}x exceeds the API maximum 125x")
+        response = self._signed_request(
+            "POST", "/fapi/v1/leverage", params={"symbol": sym, "leverage": lev}
+        )
+        if isinstance(response, dict) and response.get("leverage") not in (None, ""):
+            try:
+                effective = int(float(response.get("leverage")))
+            except (TypeError, ValueError) as exc:
+                raise LiveTradingError(
+                    f"Binance returned an invalid effective leverage: {response.get('leverage')}"
+                ) from exc
+            if effective != lev:
+                raise LiveTradingError(
+                    f"Binance applied {effective}x instead of requested {lev}x leverage"
+                )
+        return response
 
     def get_dual_side_position(self) -> Optional[bool]:
         """

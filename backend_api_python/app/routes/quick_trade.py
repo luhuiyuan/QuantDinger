@@ -47,6 +47,10 @@ from app.services.quick_trade.symbols import (
     is_supported_crypto_exchange,
     symbols_match as quick_trade_symbols_match,
 )
+from app.services.live_trading.position_row_parse import (
+    extract_signed_position_qty,
+    infer_position_side_from_row,
+)
 from app.utils.request_guard import RequestGuardError, cache_key, guarded_cached
 
 logger = get_logger(__name__)
@@ -259,6 +263,7 @@ def _record_quick_trade(
     commission: float = 0.0,
     commission_ccy: str = "",
     commission_quote: Optional[float] = None,
+    client_order_id: str = "",
 ):
     """Insert a quick trade record into the database."""
     from app.services.live_trading.partner_attribution import redact_partner_attribution
@@ -290,7 +295,24 @@ def _record_quick_trade(
             row = cur.fetchone()
             db.commit()
             cur.close()
-            return (row or {}).get("id")
+            trade_id = int((row or {}).get("id") or 0)
+            if trade_id > 0 and exchange_order_id:
+                from app.services.execution_streams.repository import ExecutionEventRepository
+
+                ExecutionEventRepository().register_binding(
+                    credential_id=int(credential_id or 0),
+                    exchange_id=str(exchange_id or ""),
+                    market_type=str(market_type or "swap"),
+                    owner_type="quick_trade",
+                    owner_id=trade_id,
+                    user_id=int(user_id or 1),
+                    symbol=str(symbol or ""),
+                    signal_type=str(side or ""),
+                    client_order_id=str(client_order_id or ""),
+                    exchange_order_id=str(exchange_order_id or ""),
+                    observed_filled=float(filled or 0.0),
+                )
+            return trade_id
     except Exception as e:
         logger.error(f"Failed to record quick trade: {e}")
         return None
@@ -650,6 +672,7 @@ def place_order(body):
             commission=commission,
             commission_ccy=commission_ccy,
             commission_quote=commission_quote,
+            client_order_id=client_order_id,
         )
 
         return jsonify({
@@ -1069,7 +1092,7 @@ def _fetch_exchange_positions_raw(
                     q["positionAmt"] = base_amt
                     # Preserve direction for _parse_positions. Gate encodes short as
                     # negative contract size but positionAmt is always positive.
-                    q["positionSide"] = "LONG" if ct_sz > 0 else "SHORT"
+                    q["positionSide"] = infer_position_side_from_row(q).upper()
             out.append(q)
         logger.info("Gate filtered positions for %s: %d items, sizes=%s", c, len(out),
                      [(p.get("size"), p.get("positionAmt")) for p in out])
@@ -1229,14 +1252,10 @@ def _normalize_okx_positions_raw(raw: Any) -> Any:
 
 
 def _extract_signed_position_qty(item: dict) -> float:
-    from app.services.live_trading.position_row_parse import extract_signed_position_qty
-
     return extract_signed_position_qty(item)
 
 
 def _infer_position_side_from_row(item: dict) -> str:
-    from app.services.live_trading.position_row_parse import infer_position_side_from_row
-
     return infer_position_side_from_row(item)
 
 
@@ -1774,4 +1793,3 @@ def get_history():
 
 # openapi-compat: legacy import name
 quick_trade_bp = quick_trade_blp
-

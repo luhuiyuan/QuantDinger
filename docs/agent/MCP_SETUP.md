@@ -5,7 +5,7 @@ QuantDinger's MCP server wraps the Agent Gateway and keeps the REST API as the s
 ## Install
 
 ```bash
-pip install "quantdinger-mcp==0.4.0"
+pip install "quantdinger-mcp==0.5.0"
 ```
 
 For repository development, use `pip install -e ./mcp_server` instead.
@@ -44,12 +44,16 @@ Keep the configuration private. Prefer an environment-secret facility when the c
 ## Expected workflow
 
 - Use market tools for discovery and OHLCV reads.
+- Use universe, factor, and watchlist tools for research workspace inputs.
 - Use indicator tools only for chart artifacts.
 - Compile Strategy API V2 code before saving it.
 - Save private Strategy API V2 sources and inspect version history.
 - Create stopped deployments from saved V2 source IDs.
 - Use bounded job polling or SSE streaming for backtest results.
-- Require explicit confirmation before restoring source versions, cancelling paper orders, stopping runtime state, or placing any order.
+- Use broker and execution observation tools only for reads; credential secrets are never exposed.
+- Use N-scope signal-alert tools for notification automation.
+- Supply a unique `idempotency_key` to every mutating W/B/N/T tool.
+- Require explicit confirmation before restoring source versions, cancelling jobs, deleting alerts, delivering notifications, stopping runtime state, emergency-stopping trading, or placing any order.
 
 The strategy manifest owns market, instrument, frequency, warmup, dependency, and leverage scope. Do not pass those as alternate backtest fields.
 

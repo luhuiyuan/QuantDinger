@@ -142,38 +142,52 @@ class StrategyBacktestRepository:
 
     @staticmethod
     def _persist_details(cur, run_id: int, user_id: int, strategy_id: int | None, result: dict[str, Any]) -> None:
-        for index, trade in enumerate(result.get("closedTrades") or [], start=1):
-            cur.execute(
+        trade_rows = [
+            (
+                run_id,
+                int(user_id),
+                int(strategy_id) if strategy_id is not None else None,
+                index,
+                str(trade.get("exit_time") or ""),
+                "close",
+                str(trade.get("side") or ""),
+                float(trade.get("exit_price") or 0),
+                float(trade.get("quantity") or 0),
+                float(trade.get("profit") or 0),
+                float(trade.get("balance") or 0),
+                str(trade.get("close_reason") or ""),
+                json.dumps(trade, ensure_ascii=False),
+            )
+            for index, trade in enumerate(result.get("closedTrades") or [], start=1)
+        ]
+        if trade_rows:
+            cur.executemany(
                 """
                 INSERT INTO qd_backtest_trades
                 (run_id, user_id, strategy_id, trade_index, trade_time, trade_type, side,
                  price, amount, profit, balance, reason, payload_json, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
                 """,
-                (
-                    run_id,
-                    int(user_id),
-                    int(strategy_id) if strategy_id is not None else None,
-                    index,
-                    str(trade.get("exit_time") or ""),
-                    "close",
-                    str(trade.get("side") or ""),
-                    float(trade.get("exit_price") or 0),
-                    float(trade.get("quantity") or 0),
-                    float(trade.get("profit") or 0),
-                    float(trade.get("balance") or 0),
-                    str(trade.get("close_reason") or ""),
-                    json.dumps(trade, ensure_ascii=False),
-                ),
+                trade_rows,
             )
-        for index, point in enumerate(result.get("equityCurve") or [], start=1):
-            cur.execute(
+
+        equity_rows = [
+            (
+                run_id,
+                index,
+                str(point.get("time") or ""),
+                float(point.get("value") or 0),
+            )
+            for index, point in enumerate(result.get("equityCurve") or [], start=1)
+        ]
+        if equity_rows:
+            cur.executemany(
                 """
                 INSERT INTO qd_backtest_equity_points
                 (run_id, point_index, point_time, point_value, created_at)
                 VALUES (?, ?, ?, ?, NOW())
                 """,
-                (run_id, index, str(point.get("time") or ""), float(point.get("value") or 0)),
+                equity_rows,
             )
 
     @staticmethod

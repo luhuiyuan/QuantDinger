@@ -74,6 +74,87 @@ def test_bitget_hedge_allows_neutral_startup():
     assert msg == ""
 
 
+def test_gate_dual_mode_allows_neutral_startup():
+    class FakeGate:
+        def is_hedge_position_mode(self, *, symbol=""):
+            return True
+
+    cfg = _neutral_cfg()
+    ok, msg = validate_neutral_grid_exchange_support(
+        cfg,
+        FakeGate(),
+        symbol="BTC/USDT",
+        exchange_config={"exchange_id": "gate"},
+    )
+    assert ok is True
+    assert msg == ""
+
+
+def test_gate_unknown_mode_fails_closed_instead_of_assuming_one_way():
+    class FakeGate:
+        def is_hedge_position_mode(self, *, symbol=""):
+            return None
+
+    detected, label = detect_hedge_position_mode(
+        FakeGate(),
+        symbol="BTC/USDT",
+        market_type="swap",
+        exchange_config={"exchange_id": "gate"},
+    )
+    assert detected is None
+    assert label == "gate_unknown"
+
+
+def test_gate_split_position_mode_is_not_treated_as_standard_hedge():
+    class FakeGate:
+        def get_position_mode(self):
+            return "dual_plus"
+
+    cfg = _neutral_cfg()
+    ok, msg = validate_neutral_grid_exchange_support(
+        cfg,
+        FakeGate(),
+        symbol="BTC/USDT",
+        exchange_config={"exchange_id": "gate"},
+    )
+    assert ok is False
+    assert "gate_split_position_mode_unsupported" in msg
+
+
+def test_unknown_exchange_mode_blocks_neutral_startup():
+    class FakeBybit:
+        def is_hedge_position_mode(self, *, symbol=""):
+            return None
+
+    cfg = _neutral_cfg()
+    ok, msg = validate_neutral_grid_exchange_support(
+        cfg,
+        FakeBybit(),
+        symbol="BTC/USDT",
+        exchange_config={"exchange_id": "bybit"},
+    )
+    assert ok is False
+    assert "verified hedge" in msg
+
+
+def test_htx_authoritative_unknown_is_preserved():
+    class FakeHtx:
+        def detect_swap_hedge_mode(self, *, symbol=""):
+            return None
+
+        def get_swap_hedge_mode(self, *, symbol=""):
+            return False
+
+    detected, label = detect_hedge_position_mode(
+        FakeHtx(),
+        symbol="BTC/USDT",
+        market_type="swap",
+        exchange_config={"exchange_id": "htx"},
+    )
+    assert detected is None
+    assert label == "htx_unknown"
+
+
 def test_runner_startup_rejects_bitget_one_way(monkeypatch):
     class FakeBitgetClient:
         def get_account_pos_mode(self, **kwargs):

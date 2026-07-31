@@ -57,6 +57,10 @@ def record_runtime_heartbeat(
     loop_latency_ms: int = 0,
     status: str = "healthy",
     last_error: str = "",
+    price_source: str = "",
+    price_age_ms: int = 0,
+    trigger_mode: str = "",
+    fill_transport: str = "",
 ) -> None:
     if int(strategy_id or 0) <= 0:
         return
@@ -76,6 +80,10 @@ def record_runtime_heartbeat(
         "latency_ms": max(0, int(loop_latency_ms or 0)),
         "status": str(status or "healthy"),
         "last_error": str(last_error or "")[:1000],
+        "price_source": str(price_source or ""),
+        "price_age_ms": max(0, int(price_age_ms or 0)),
+        "trigger_mode": str(trigger_mode or ""),
+        "fill_transport": str(fill_transport or ""),
     })
     # Keep a low-frequency equity mark so tomorrow's P&L can use a real
     # midnight baseline even when nobody has the monitoring page open.
@@ -95,6 +103,10 @@ def _empty_snapshot() -> Dict[str, Any]:
         "latency_ms": 0,
         "last_price": 0.0,
         "last_error": "",
+        "price_source": "",
+        "price_age_ms": 0,
+        "trigger_mode": "",
+        "fill_transport": "",
         "last_event_at": None,
         "last_event_type": "",
         "last_event_severity": "",
@@ -181,6 +193,10 @@ def _load_health_state(snapshots, placeholders, ids):
             "pending_signals": int(state.get("pending_signal_count") or 0),
             "loop_latency_ms": max(0, int(state.get("loop_latency_ms") or 0)),
             "latency_ms": max(0, int(state.get("latency_ms") or state.get("loop_latency_ms") or 0)),
+            "price_source": str(state.get("price_source") or ""),
+            "price_age_ms": max(0, int(state.get("price_age_ms") or 0)),
+            "trigger_mode": str(state.get("trigger_mode") or ""),
+            "fill_transport": str(state.get("fill_transport") or ""),
         })
 
 
@@ -212,7 +228,10 @@ def _load_pending_orders(snapshots, placeholders, ids):
     rows = _query(
         f"""
         SELECT strategy_id, strategy_run_id,
-               SUM(CASE WHEN status IN ('pending', 'processing') THEN 1 ELSE 0 END) AS pending_orders,
+               SUM(CASE
+                       WHEN status IN ('pending', 'processing', 'sent', 'syncing')
+                       THEN 1 ELSE 0
+                   END) AS pending_orders,
                SUM(CASE
                        WHEN status IN ('failed', 'error', 'rejected')
                         AND updated_at >= NOW() - (%s * INTERVAL '1 second')

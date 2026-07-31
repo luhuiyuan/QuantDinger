@@ -69,6 +69,36 @@ def _position_key(symbol: object, position_side: object = "") -> str:
     side = _normalize_position_side(position_side)
     return f"{base}::{side}" if side else base
 
+
+def _snapshot_state_value(value: Any) -> Any:
+    if isinstance(value, pd.Timestamp):
+        return {
+            "__strategy_v2_type__": "timestamp",
+            "value": value.isoformat(),
+        }
+    if isinstance(value, Mapping):
+        return {
+            str(key): _snapshot_state_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_snapshot_state_value(item) for item in value]
+    return value
+
+
+def _restore_state_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        if value.get("__strategy_v2_type__") == "timestamp":
+            return pd.Timestamp(value.get("value"))
+        return {
+            str(key): _restore_state_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_restore_state_value(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True)
 class OrderIntent:
     symbol: str
@@ -85,6 +115,7 @@ class OrderIntent:
     maker_wait_sec: float = 0.0
     maker_offset_bps: float = 0.0
     position_side: str = ""
+    client_order_id: str = ""
 
 
 class StrategyDataView:
@@ -144,25 +175,88 @@ class StrategyRuntimeContext:
         self._logs: list[str] = []
         self._default_protection: ProtectionSpec | None = None
         self._indicator_cache: dict[tuple[Any, ...], pd.Series | pd.DataFrame] = {}
+        self._order_sequence = 0
+        self._order_statuses: dict[str, dict[str, Any]] = {}
+        self._cancelled_order_ids: set[str] = set()
+        self._last_exit_reasons: dict[str, str] = {}
         self.logger = StrategyRuntimeLogger(self.log)
 
     def set_default_protection(self, **values: Any) -> None:
         self._default_protection = ProtectionSpec.from_value(values)
 
-    def order(self, symbol: object, amount: object, **kwargs: Any) -> None:
-        self._queue(symbol, "quantity", amount, kwargs)
+    def order(self, symbol: object, amount: object, **kwargs: Any) -> str | None:
+        return self._queue(symbol, "quantity", amount, kwargs)
 
-    def order_value(self, symbol: object, value: object, **kwargs: Any) -> None:
-        self._queue(symbol, "value", value, kwargs)
+    def order_value(self, symbol: object, value: object, **kwargs: Any) -> str | None:
+        return self._queue(symbol, "value", value, kwargs)
 
-    def order_target(self, symbol: object, amount: object, **kwargs: Any) -> None:
-        self._queue(symbol, "target_quantity", amount, kwargs)
+    def order_target(self, symbol: object, amount: object, **kwargs: Any) -> str | None:
+        return self._queue(symbol, "target_quantity", amount, kwargs)
 
-    def order_target_value(self, symbol: object, value: object, **kwargs: Any) -> None:
-        self._queue(symbol, "target_value", value, kwargs)
+    def order_target_value(self, symbol: object, value: object, **kwargs: Any) -> str | None:
+        return self._queue(symbol, "target_value", value, kwargs)
 
-    def order_target_percent(self, symbol: object, percent: object, **kwargs: Any) -> None:
-        self._queue(symbol, "target_percent", percent, kwargs)
+    def order_target_percent(self, symbol: object, percent: object, **kwargs: Any) -> str | None:
+        return self._queue(symbol, "target_percent", percent, kwargs)
+
+    def get_order_status(self, client_order_id: object) -> dict[str, Any]:
+        reference = str(client_order_id or "").strip()
+        return dict(self._order_statuses.get(reference) or {
+            "client_order_id": reference,
+            "status": "unknown",
+            "filled_quantity": 0.0,
+            "filled_notional": 0.0,
+            "fee": 0.0,
+        })
+
+    def cancel_order(self, client_order_id: object) -> bool:
+        reference = str(client_order_id or "").strip()
+        if not reference:
+            return False
+        current = dict(self._order_statuses.get(reference) or {})
+        if str(current.get("status") or "").strip().lower() == "filled":
+            return False
+        current.update({
+            "client_order_id": reference,
+            "status": "cancelled",
+            "reason": "cancelled_by_strategy",
+        })
+        self._order_statuses[reference] = current
+        self._cancelled_order_ids.add(reference)
+        return True
+
+    def flush_cancelled_order_ids(self) -> set[str]:
+        references = set(self._cancelled_order_ids)
+        self._cancelled_order_ids.clear()
+        return references
+
+    def update_order_statuses(self, values: Mapping[str, Mapping[str, Any]] | None) -> None:
+        for reference, raw in (values or {}).items():
+            key = str(reference or "").strip()
+            if not key or not isinstance(raw, Mapping):
+                continue
+            self._order_statuses[key] = dict(raw)
+
+    def order_references(self) -> set[str]:
+        return set(self._order_statuses)
+
+    def order_status_snapshot(self) -> dict[str, dict[str, Any]]:
+        return {key: dict(value) for key, value in self._order_statuses.items()}
+
+    def set_last_exit_reason(self, symbol: object, reason: object) -> None:
+        self._last_exit_reasons[str(symbol or "")] = str(reason or "")
+
+    def consume_last_exit_reason(self, symbol: object) -> str:
+        return self._last_exit_reasons.pop(str(symbol or ""), "")
+
+    def exit_reason_snapshot(self) -> dict[str, str]:
+        return dict(self._last_exit_reasons)
+
+    def restore_exit_reasons(self, values: Mapping[str, object] | None) -> None:
+        self._last_exit_reasons = {
+            str(key): str(value or "")
+            for key, value in (values or {}).items()
+        }
 
     def get_position(
         self,
@@ -351,7 +445,13 @@ class StrategyRuntimeContext:
         self._logs.clear()
         return logs
 
-    def _queue(self, symbol: object, kind: str, value: object, kwargs: Mapping[str, Any]) -> None:
+    def _queue(
+        self,
+        symbol: object,
+        kind: str,
+        value: object,
+        kwargs: Mapping[str, Any],
+    ) -> str | None:
         key = self.portal.resolve_key(symbol)
         try:
             number = float(value)
@@ -368,6 +468,7 @@ class StrategyRuntimeContext:
                 "trailing_stop_pct",
                 "trailing_activation_pct",
                 "time_limit_seconds",
+                "trailing_rebase_on_scale_in",
             )
             if kwargs.get(name) is not None
         }
@@ -395,6 +496,24 @@ class StrategyRuntimeContext:
             raise StrategyV2ContractError("strategyV2.invalidOrderPrice") from exc
         if execution_algo == "limit" and limit_price_number <= 0:
             raise StrategyV2ContractError("strategyV2.limitPriceRequired")
+        self._order_sequence += 1
+        client_order_id = str(kwargs.get("client_order_id") or "").strip()
+        return_reference = bool(client_order_id)
+        if not client_order_id:
+            timestamp = (
+                pd.Timestamp(self.current_dt).isoformat()
+                if self.current_dt is not None
+                else "discovery"
+            )
+            client_order_id = f"strategy-v2:{timestamp}:{self._order_sequence}"
+        client_order_id = client_order_id[:100]
+        self._order_statuses.setdefault(client_order_id, {
+            "client_order_id": client_order_id,
+            "status": "queued",
+            "filled_quantity": 0.0,
+            "filled_notional": 0.0,
+            "fee": 0.0,
+        })
         self._orders.append(OrderIntent(
             key,
             kind,
@@ -408,7 +527,12 @@ class StrategyRuntimeContext:
             maker_wait_sec=maker_wait_sec,
             maker_offset_bps=maker_offset_bps,
             position_side=_normalize_position_side(kwargs.get("position_side")),
+            client_order_id=client_order_id,
         ))
+        # Strategy API V2 historically returned None from order helpers.
+        # Preserve that contract for existing user code; callers that opt into
+        # a stable client_order_id receive the reference for status tracking.
+        return client_order_id if return_reference else None
 
     def _default_symbol(self) -> str:
         if len(self.portal.frames) != 1:
@@ -481,6 +605,7 @@ class MultiAssetSimulationBroker:
         self._protections: dict[str, ProtectionState] = {}
         self.protection_events: list[dict[str, Any]] = []
         self.order_ledger: list[dict[str, Any]] = []
+        self._resting_deferred_events: dict[str, int] = {}
         self.rebalance_records: list[dict[str, Any]] = []
         self.holding_snapshots: list[dict[str, Any]] = []
         self.protection_engine = ProtectionEngine()
@@ -528,7 +653,13 @@ class MultiAssetSimulationBroker:
                 delta = 0.0
                 blocked_reason = "no_price"
             else:
-                target_qty = self._target_quantity(order, current, open_price, equity)
+                is_limit_order = order.order_type == "limit" or order.execution_algo == "limit"
+                sizing_price = (
+                    float(order.limit_price)
+                    if is_limit_order and float(order.limit_price or 0.0) > 0
+                    else open_price
+                )
+                target_qty = self._target_quantity(order, current, sizing_price, equity)
                 target_reason = policy.validate_target(current.amount, target_qty)
                 delta = target_qty - current.amount
                 side = "buy" if delta > 0 else "sell" if delta < 0 else ""
@@ -544,33 +675,74 @@ class MultiAssetSimulationBroker:
             if blocked_reason:
                 status = "rejected" if order.attempts >= 4 else "deferred"
                 event = self._order_event(order_id, order, timestamp, status, blocked_reason)
-                self.order_ledger.append(event)
-                batch_event_indexes.append(len(self.order_ledger) - 1)
+                batch_event_indexes.append(self._append_order_event(event))
                 if status == "deferred":
                     deferred.append(replace(order, attempts=order.attempts + 1))
                 continue
-            target_weights[position_key] = target_qty * open_price / equity if equity else 0.0
+            target_weights[position_key] = target_qty * sizing_price / equity if equity else 0.0
             direction = 1 if delta > 0 else -1 if delta < 0 else 0
             if order.pending_direction and direction != order.pending_direction:
-                self.order_ledger.append(self._order_event(
+                batch_event_indexes.append(self._append_order_event(self._order_event(
                     order_id, order, timestamp, "rejected", "target_already_met",
                     requested_quantity=0.0,
-                ))
-                batch_event_indexes.append(len(self.order_ledger) - 1)
+                )))
                 continue
             closes_position = (
                 order.kind in {"target_quantity", "target_value", "target_percent"}
                 and abs(target_qty) <= 1e-12
                 and abs(current.amount) > 1e-12
             )
-            if abs(delta) <= 1e-12 or (abs(delta * open_price) < 0.01 and not closes_position):
-                self.order_ledger.append(self._order_event(
+            if abs(delta) <= 1e-12 or (abs(delta * sizing_price) < 0.01 and not closes_position):
+                batch_event_indexes.append(self._append_order_event(self._order_event(
                     order_id, order, timestamp, "rejected", "target_already_met",
                     requested_quantity=0.0,
-                ))
-                batch_event_indexes.append(len(self.order_ledger) - 1)
+                )))
                 continue
-            fill_price = open_price * (1.0 + self.slippage if delta > 0 else 1.0 - self.slippage)
+            fill_reference = "bar_open"
+            if is_limit_order:
+                limit_price = float(order.limit_price or 0.0)
+                high_price = float((bar or {}).get("high") or open_price)
+                low_price = float((bar or {}).get("low") or open_price)
+                if limit_price <= 0:
+                    batch_event_indexes.append(self._append_order_event(self._order_event(
+                        order_id,
+                        order,
+                        timestamp,
+                        "rejected",
+                        "limit_price_required",
+                        requested_quantity=abs(delta),
+                    )))
+                    continue
+                if delta > 0 and open_price <= limit_price:
+                    fill_price = open_price
+                    fill_reference = "gap_open"
+                elif delta > 0 and low_price <= limit_price:
+                    fill_price = limit_price
+                    fill_reference = "limit"
+                elif delta < 0 and open_price >= limit_price:
+                    fill_price = open_price
+                    fill_reference = "gap_open"
+                elif delta < 0 and high_price >= limit_price:
+                    fill_price = limit_price
+                    fill_reference = "limit"
+                else:
+                    batch_event_indexes.append(self._append_order_event(self._order_event(
+                        order_id,
+                        order,
+                        timestamp,
+                        "deferred",
+                        "limit_not_reached",
+                        requested_quantity=abs(delta),
+                        price=limit_price,
+                    ), coalesce_resting=True))
+                    # Resting limits remain active until filled; unlike missing
+                    # market data they must not expire after four bars.
+                    deferred.append(order)
+                    continue
+            else:
+                fill_price = open_price * (
+                    1.0 + self.slippage if delta > 0 else 1.0 - self.slippage
+                )
             requested_delta = delta
             lot_size = policy.lot_size(order.symbol, bar)
             delta = policy.normalize_delta(
@@ -580,11 +752,10 @@ class MultiAssetSimulationBroker:
                 lot_size=lot_size,
             )
             if abs(delta) < lot_size - 1e-12:
-                self.order_ledger.append(self._order_event(
+                batch_event_indexes.append(self._append_order_event(self._order_event(
                     order_id, order, timestamp, "rejected", "minimum_trade_unit",
                     requested_quantity=abs(requested_delta),
-                ))
-                batch_event_indexes.append(len(self.order_ledger) - 1)
+                )))
                 continue
             liquidity_cap = None if forced_liquidation else self._liquidity_cap(bar, lot_size)
             if liquidity_cap is not None and abs(delta) > liquidity_cap:
@@ -604,22 +775,21 @@ class MultiAssetSimulationBroker:
                     timestamp=timestamp,
                 )
             if abs(feasible_delta) < lot_size - 1e-12:
-                self.order_ledger.append(self._order_event(
+                batch_event_indexes.append(self._append_order_event(self._order_event(
                     order_id,
                     order,
                     timestamp,
                     "rejected",
                     constraint_reason or "position_limit",
                     requested_quantity=abs(requested_delta),
-                ))
-                batch_event_indexes.append(len(self.order_ledger) - 1)
+                )))
                 continue
             delta = feasible_delta
             target_qty = current.amount + delta
             remaining_quantity = max(0.0, abs(requested_delta) - abs(delta))
             has_tradable_remainder = (
                 remaining_quantity + 1e-12 >= lot_size
-                and remaining_quantity * open_price + 1e-12 >= 0.01
+                and remaining_quantity * fill_price + 1e-12 >= 0.01
             )
             execution_status = "partial" if has_tradable_remainder else "filled"
             notional = abs(delta * fill_price)
@@ -652,13 +822,21 @@ class MultiAssetSimulationBroker:
                 if order.protection is not None or side_changed:
                     spec = order.protection or (existing.spec if existing else None)
                     if spec is not None:
-                        self._protections[position_key] = ProtectionState.open(
-                            symbol=order.symbol,
-                            side=new_side,
-                            entry_price=current.avg_cost,
-                            spec=spec,
-                            opened_at=timestamp,
-                        )
+                        if existing is not None and not side_changed:
+                            existing.apply_scale_in(
+                                entry_price=current.avg_cost,
+                                fill_price=fill_price,
+                                spec=spec,
+                                scaled_at=timestamp,
+                            )
+                        else:
+                            self._protections[position_key] = ProtectionState.open(
+                                symbol=order.symbol,
+                                side=new_side,
+                                entry_price=current.avg_cost,
+                                spec=spec,
+                                opened_at=timestamp,
+                            )
             self.portfolio.total_value = self.portfolio.available_cash + sum(
                 position.market_value for position in self.portfolio.positions.values()
             )
@@ -680,8 +858,10 @@ class MultiAssetSimulationBroker:
                 "balance": self.portfolio.total_value,
                 "reason": order.reason,
                 "signal_time": _backtest_time_iso(order.signal_time if order.signal_time is not None else timestamp),
-                "fill_reference": "bar_open",
+                "fill_reference": fill_reference,
                 "reference_price": open_price,
+                "order_type": "limit" if is_limit_order else "market",
+                "limit_price": float(order.limit_price or 0.0) if is_limit_order else 0.0,
                 "status": execution_status,
                 "requested_quantity": abs(requested_delta),
             }
@@ -693,7 +873,7 @@ class MultiAssetSimulationBroker:
                     if liquidity_cap is not None and abs(requested_delta) > liquidity_cap
                     else "partial_fill"
                 )
-            self.order_ledger.append(self._order_event(
+            batch_event_indexes.append(self._append_order_event(self._order_event(
                 order_id,
                 order,
                 timestamp,
@@ -704,15 +884,15 @@ class MultiAssetSimulationBroker:
                 price=fill_price,
                 commission=fee,
                 fee_breakdown=fee_breakdown,
-            ))
-            batch_event_indexes.append(len(self.order_ledger) - 1)
+            )))
             self._record_closed_trade(
                 execution=execution,
                 old_amount=old_amount,
                 old_cost=old_cost,
                 target_amount=target_qty,
             )
-            if execution["status"] == "partial" and order.attempts < 4:
+            if execution["status"] == "partial" and (is_limit_order or order.attempts < 4):
+                next_attempts = order.attempts if is_limit_order else order.attempts + 1
                 if order.kind == "quantity":
                     remaining_value = math.copysign(
                         max(0.0, abs(requested_delta) - abs(delta)),
@@ -721,13 +901,24 @@ class MultiAssetSimulationBroker:
                     deferred.append(replace(
                         order,
                         value=remaining_value,
-                        attempts=order.attempts + 1,
+                        attempts=next_attempts,
+                        pending_direction=1 if requested_delta > 0 else -1,
+                    ))
+                elif order.kind == "value":
+                    remaining_value = math.copysign(
+                        max(0.0, abs(requested_delta) - abs(delta)) * sizing_price,
+                        requested_delta,
+                    )
+                    deferred.append(replace(
+                        order,
+                        value=remaining_value,
+                        attempts=next_attempts,
                         pending_direction=1 if requested_delta > 0 else -1,
                     ))
                 else:
                     deferred.append(replace(
                         order,
-                        attempts=order.attempts + 1,
+                        attempts=next_attempts,
                         pending_direction=1 if requested_delta > 0 else -1,
                     ))
         self._record_rebalance(
@@ -798,10 +989,17 @@ class MultiAssetSimulationBroker:
         equity: float,
         lot_size: float,
         position_key: str,
-        policy: MarketExecutionPolicy,
-        symbol: str,
-        timestamp: Any,
+        policy: MarketExecutionPolicy | None = None,
+        symbol: str | None = None,
+        timestamp: Any | None = None,
     ) -> tuple[float, str]:
+        policy = policy or self._execution_policy(symbol or current.symbol)
+        trade_date = (
+            pd.Timestamp(timestamp).date()
+            if timestamp is not None
+            else pd.Timestamp("1970-01-01").date()
+        )
+        requested_direction = 1 if delta > 0 else -1 if delta < 0 else 0
         feasible = delta
         reason = ""
         if feasible > 0:
@@ -812,7 +1010,7 @@ class MultiAssetSimulationBroker:
                 price=fill_price,
                 cash=spendable,
                 lot_size=lot_size,
-                trade_date=pd.Timestamp(timestamp).date(),
+                trade_date=trade_date,
             )
             if feasible > affordable + 1e-12:
                 feasible = affordable
@@ -828,6 +1026,13 @@ class MultiAssetSimulationBroker:
             capped_target = math.copysign(max_target_abs, desired_target)
             feasible = capped_target - current.amount
             reason = "position_limit"
+        # A risk cap may reduce the admissible target below the current
+        # position after fees/slippage are applied. It must never turn an
+        # incremental buy into a sell (or vice versa); forced deleveraging is
+        # handled by the explicit liquidation path.
+        feasible_direction = 1 if feasible > 0 else -1 if feasible < 0 else 0
+        if requested_direction and feasible_direction not in {0, requested_direction}:
+            return 0.0, reason or "position_limit"
         return policy.normalize_delta(
             feasible,
             current_amount=current.amount,
@@ -874,6 +1079,7 @@ class MultiAssetSimulationBroker:
     ) -> dict[str, Any]:
         return {
             "orderId": order_id,
+            "clientOrderId": str(order.client_order_id or ""),
             "symbol": order.symbol,
             "positionSide": _normalize_position_side(order.position_side),
             "kind": order.kind,
@@ -902,6 +1108,64 @@ class MultiAssetSimulationBroker:
             "CNStock": self._cn_execution_policy.assumptions(),
             "slippage": self.slippage,
         }
+
+    def _append_order_event(
+        self,
+        event: dict[str, Any],
+        *,
+        coalesce_resting: bool = False,
+    ) -> int:
+        """Append an economic order event, compacting repeated resting polls.
+
+        A limit order that remains outside the bar range has not changed
+        economically.  Persist one audit row for that continuous resting
+        period and retain its first/last timestamps plus exact poll count.
+        Filled, partial, rejected, and other deferred transitions always get
+        their own rows and terminate the previous resting period.
+        """
+        reference = str(event.get("clientOrderId") or "").strip()
+        if coalesce_resting and reference:
+            existing_index = self._resting_deferred_events.get(reference)
+            if existing_index is not None and 0 <= existing_index < len(self.order_ledger):
+                existing = self.order_ledger[existing_index]
+                if (
+                    existing.get("status") == "deferred"
+                    and existing.get("statusReason") == "limit_not_reached"
+                ):
+                    requested = float(event.get("requestedQuantity") or 0.0)
+                    existing["lastEventTime"] = event.get("eventTime")
+                    existing["lastOrderId"] = event.get("orderId")
+                    existing["occurrenceCount"] = int(existing.get("occurrenceCount") or 1) + 1
+                    existing["requestedQuantity"] = requested
+                    existing["minRequestedQuantity"] = min(
+                        float(existing.get("minRequestedQuantity") or requested),
+                        requested,
+                    )
+                    existing["maxRequestedQuantity"] = max(
+                        float(existing.get("maxRequestedQuantity") or requested),
+                        requested,
+                    )
+                    return existing_index
+
+            requested = float(event.get("requestedQuantity") or 0.0)
+            event["firstEventTime"] = event.get("eventTime")
+            event["lastEventTime"] = event.get("eventTime")
+            event["occurrenceCount"] = 1
+            event["minRequestedQuantity"] = requested
+            event["maxRequestedQuantity"] = requested
+        elif reference:
+            self._resting_deferred_events.pop(reference, None)
+
+        self.order_ledger.append(event)
+        index = len(self.order_ledger) - 1
+        if coalesce_resting and reference:
+            self._resting_deferred_events[reference] = index
+        return index
+
+    def release_resting_order_references(self, references: Iterable[str]) -> None:
+        """End deferred-ledger compaction windows for strategy cancellations."""
+        for reference in references:
+            self._resting_deferred_events.pop(str(reference or "").strip(), None)
 
     def _record_rebalance(
         self,
@@ -1152,8 +1416,17 @@ class StrategyV2BacktestRunner:
             commission=commission,
             slippage=slippage,
         )
-        self.context = StrategyRuntimeContext(portal=self.portal, portfolio=self.broker.portfolio, params=params)
+        runtime_params = dict(params or {})
+        runtime_params.setdefault("commission", self.broker.commission)
+        runtime_params.setdefault("slippage", self.broker.slippage)
+        self.context = StrategyRuntimeContext(
+            portal=self.portal,
+            portfolio=self.broker.portfolio,
+            params=runtime_params,
+        )
         self.logs: list[str] = []
+        self._order_status_cursor = 0
+        self._order_status_summaries: dict[str, dict[str, Any]] = {}
         self._bind_runtime_api()
 
     def run(self, *, start_date: Any = None, end_date: Any = None) -> dict[str, Any]:
@@ -1178,9 +1451,13 @@ class StrategyV2BacktestRunner:
             self.portal.set_clock(timestamp, include_current=False)
             if pending_orders:
                 pending_orders = self.broker.execute(pending_orders, self.portal, timestamp)
-            self.broker.process_protections(self.portal, timestamp)
+                self._sync_order_statuses()
+            protection_decisions = self.broker.process_protections(self.portal, timestamp)
+            for decision in protection_decisions:
+                self.context.set_last_exit_reason(decision.symbol, decision.reason)
 
             self._invoke("before_trading_start", self.context, self.context.data)
+            pending_orders = self._remove_cancelled_orders(pending_orders)
             opening_orders = self.context.flush_orders()
             for schedule in self.program.manifest.schedules:
                 if self._schedule_due(
@@ -1190,15 +1467,18 @@ class StrategyV2BacktestRunner:
                     self.program.manifest.primary_frequency,
                 ):
                     self._invoke(schedule.callback, self.context, self.context.data)
+                    pending_orders = self._remove_cancelled_orders(pending_orders)
                     opening_orders.extend(self.context.flush_orders())
             if self.program.manifest.strategy_type == "portfolio" and not self.program.manifest.schedules:
                 self._invoke("on_rebalance", self.context, self.portal.panel())
+                pending_orders = self._remove_cancelled_orders(pending_orders)
                 opening_orders.extend(self.context.flush_orders())
             if opening_orders:
                 pending_orders = _merge_pending(
                     pending_orders,
                     self.broker.execute(opening_orders, self.portal, timestamp),
                 )
+                self._sync_order_statuses()
 
             self.portal.set_clock(timestamp, include_current=True)
             if self.broker.liquidate_if_insolvent(self.portal, timestamp):
@@ -1209,14 +1489,52 @@ class StrategyV2BacktestRunner:
                 previous = pd.Timestamp(timestamp)
                 continue
             self._invoke("handle_data", self.context, self.context.data)
+            pending_orders = self._remove_cancelled_orders(pending_orders)
             pending_orders = _merge_pending(pending_orders, self.context.flush_orders())
             self._invoke("after_trading_end", self.context, self.context.data)
+            pending_orders = self._remove_cancelled_orders(pending_orders)
             pending_orders = _merge_pending(pending_orders, self.context.flush_orders())
             self.logs.extend(self.context.flush_logs())
             self.broker.record_equity(self.portal, timestamp)
             previous = pd.Timestamp(timestamp)
 
         return self._result()
+
+    def _remove_cancelled_orders(self, orders: list[OrderIntent]) -> list[OrderIntent]:
+        cancelled = self.context.flush_cancelled_order_ids()
+        if not cancelled:
+            return orders
+        self.broker.release_resting_order_references(cancelled)
+        return [
+            order
+            for order in orders
+            if str(order.client_order_id or "") not in cancelled
+        ]
+
+    def _sync_order_statuses(self) -> None:
+        changed: dict[str, dict[str, Any]] = {}
+        for event in self.broker.order_ledger[self._order_status_cursor:]:
+            reference = str(event.get("clientOrderId") or "").strip()
+            if not reference:
+                continue
+            current = self._order_status_summaries.setdefault(reference, {
+                "client_order_id": reference,
+                "status": "unknown",
+                "filled_quantity": 0.0,
+                "filled_notional": 0.0,
+                "fee": 0.0,
+                "reason": "",
+            })
+            quantity = max(0.0, float(event.get("filledQuantity") or 0.0))
+            price = max(0.0, float(event.get("price") or 0.0))
+            current["filled_quantity"] += quantity
+            current["filled_notional"] += quantity * price
+            current["fee"] += max(0.0, float(event.get("commission") or 0.0))
+            current["status"] = str(event.get("status") or "unknown")
+            current["reason"] = str(event.get("statusReason") or "")
+            changed[reference] = current
+        self._order_status_cursor = len(self.broker.order_ledger)
+        self.context.update_order_statuses(changed)
 
     def _bind_runtime_api(self) -> None:
         ctx = self.context
@@ -1229,6 +1547,9 @@ class StrategyV2BacktestRunner:
             "set_default_protection": ctx.set_default_protection,
             "get_position": ctx.get_position,
             "get_positions": ctx.get_positions,
+            "get_order_status": ctx.get_order_status,
+            "cancel_order": ctx.cancel_order,
+            "consume_last_exit_reason": ctx.consume_last_exit_reason,
             "get_history": ctx.get_history,
             "history": ctx.get_history,
             "get_index_stocks": ctx.get_index_stocks,
@@ -1345,12 +1666,21 @@ class StrategyV2BacktestRunner:
             last_time = pd.Timestamp(self.broker.equity_curve[-1]["time"])
             elapsed_days = max(0.0, (last_time - first_time).total_seconds() / 86400.0)
         annualized_return = 0.0
-        if elapsed_days > 0 and initial > 0:
+        annualized_return_available = elapsed_days >= 1.0 and initial > 0
+        annualized_return_capped = False
+        if annualized_return_available:
             annualized_return = (
                 -100.0
                 if final <= 0
-                else ((final / initial) ** (365.25 / elapsed_days) - 1.0) * 100.0
+                else math.expm1(
+                    min(
+                        math.log(max(final / initial, 1e-300)) * (365.25 / elapsed_days),
+                        math.log(10_001.0),
+                    )
+                )
+                * 100.0
             )
+            annualized_return_capped = final > initial and annualized_return >= 1_000_000.0 - 1e-6
         win_rate = len(wins) / len(profits) * 100.0 if profits else 0.0
         average_win = sum(wins) / len(wins) if wins else 0.0
         average_loss = abs(sum(losses) / len(losses)) if losses else 0.0
@@ -1360,6 +1690,10 @@ class StrategyV2BacktestRunner:
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
         average_profit = sum(profits) / len(profits) if profits else 0.0
         attribution = self._attribution(initial)
+        ledger_occurrences = sum(
+            max(1, int(item.get("occurrenceCount") or 1))
+            for item in self.broker.order_ledger
+        )
         return {
             "initialCapital": initial,
             "totalReturn": total_return,
@@ -1377,6 +1711,14 @@ class StrategyV2BacktestRunner:
             "holdingSnapshots": list(self.broker.holding_snapshots),
             "rebalanceRecords": list(self.broker.rebalance_records),
             "orderLedger": list(self.broker.order_ledger),
+            "orderLedgerStats": {
+                "storedEvents": len(self.broker.order_ledger),
+                "eventOccurrences": ledger_occurrences,
+                "compactedOccurrences": max(
+                    0,
+                    ledger_occurrences - len(self.broker.order_ledger),
+                ),
+            },
             "trades": closed_trades,
             "closedTrades": closed_trades,
             "rawTrades": executions,
@@ -1397,6 +1739,8 @@ class StrategyV2BacktestRunner:
             "totalProfit": final - initial,
             "sharpeRatio": sharpe_ratio,
             "annualizedReturn": annualized_return,
+            "annualizedReturnAvailable": annualized_return_available,
+            "annualizedReturnCapped": annualized_return_capped,
             "annualizedVolatility": annualized_volatility,
             "periodsPerYear": periods_per_year,
             "totalCommission": sum(float(item.get("commission") or 0.0) for item in executions),
@@ -1460,7 +1804,14 @@ class StrategyV2BacktestRunner:
                 "commission": fee,
                 "netContribution": (realized + unrealized) / initial if initial else 0.0,
             })
-        statuses = {name: sum(1 for item in self.broker.order_ledger if item.get("status") == name) for name in ("filled", "partial", "deferred", "rejected")}
+        statuses = {
+            name: sum(
+                max(1, int(item.get("occurrenceCount") or 1))
+                for item in self.broker.order_ledger
+                if item.get("status") == name
+            )
+            for name in ("filled", "partial", "deferred", "rejected")
+        }
         total_commission = sum(commission_by_symbol.values())
         return {
             "symbols": rows,
@@ -1500,9 +1851,15 @@ class StrategyV2BacktestRunner:
             quantities[symbol] = quantities.get(symbol, 0.0) + signed_quantity
 
             reference_price = float(execution.get("reference_price") or 0.0)
-            expected_price = reference_price * (
-                1.0 + self.broker.slippage if side == "buy" else 1.0 - self.broker.slippage
-            )
+            fill_reference = str(execution.get("fill_reference") or "bar_open")
+            if fill_reference == "limit":
+                expected_price = float(execution.get("limit_price") or 0.0)
+            elif fill_reference == "gap_open":
+                expected_price = reference_price
+            else:
+                expected_price = reference_price * (
+                    1.0 + self.broker.slippage if side == "buy" else 1.0 - self.broker.slippage
+                )
             actual_price = float(execution.get("price") or 0.0)
             if reference_price <= 0 or abs(actual_price - expected_price) > max(1e-8, abs(expected_price) * 1e-9):
                 fill_mismatches.append(index)
@@ -1563,6 +1920,10 @@ class StrategyV2LiveSession:
         self.portal = MultiAssetDataPortal(frames, universe_resolver=universe_resolver)
         self.portfolio = PortfolioState(initial_capital, initial_capital, total_value=initial_capital)
         self.context = StrategyRuntimeContext(portal=self.portal, portfolio=self.portfolio, params=params)
+        self.persist_strategy_state = (
+            _truthy(self.program.namespace.get("PERSIST_RUNTIME_STATE"))
+            or _truthy(self.context.params.get("persist_runtime_state"))
+        )
         self.last_processed: pd.Timestamp | None = None
         self.schedule_timezone = _resolve_schedule_timezone(schedule_timezone)
         self.last_schedule_check: pd.Timestamp | None = None
@@ -1639,19 +2000,29 @@ class StrategyV2LiveSession:
     ) -> None:
         synced: dict[str, Position] = {}
         for raw_symbol, raw in positions.items():
+            source_key = str(raw_symbol or "")
+            source_symbol, separator, suffix = source_key.rpartition("::")
+            suffix_side = _normalize_position_side(suffix) if separator else ""
+            resolve_symbol = source_symbol if suffix_side else source_key
             try:
-                key = self.portal.resolve_key(raw_symbol)
+                symbol = self.portal.resolve_key(resolve_symbol)
             except Exception:
-                key = str(raw_symbol)
+                symbol = str(resolve_symbol)
             amount = float(raw.get("amount") or 0.0)
             side = str(raw.get("side") or "long").strip().lower()
             if side == "short" and amount > 0:
                 amount = -amount
+            position_side = (
+                suffix_side
+                or _normalize_position_side(raw.get("position_side"))
+            )
+            key = _position_key(symbol, position_side)
             synced[key] = Position(
-                symbol=key,
+                symbol=symbol,
                 amount=amount,
                 avg_cost=float(raw.get("avg_cost") or 0.0),
                 last_price=float(raw.get("last_price") or 0.0),
+                position_side=position_side,
             )
         self.portfolio.positions = synced
         for symbol, position in synced.items():
@@ -1669,7 +2040,14 @@ class StrategyV2LiveSession:
                     opened_at=self.context.current_dt or pd.Timestamp.utcnow(),
                 )
             else:
-                state.entry_price = float(position.avg_cost)
+                new_average = float(position.avg_cost)
+                if abs(new_average - state.entry_price) > max(1e-12, abs(state.entry_price) * 1e-10):
+                    state.apply_scale_in(
+                        entry_price=new_average,
+                        fill_price=float(position.last_price or new_average),
+                        spec=spec,
+                        scaled_at=self.context.current_dt,
+                    )
         for symbol in list(self._protection_exit_pending):
             if symbol not in synced:
                 self._protection_exit_pending.discard(symbol)
@@ -1688,17 +2066,19 @@ class StrategyV2LiveSession:
     ) -> list[OrderIntent]:
         ts = pd.Timestamp(timestamp or pd.Timestamp.utcnow())
         exits: list[OrderIntent] = []
-        for symbol, state in list(self.protection_states.items()):
+        for position_key, state in list(self.protection_states.items()):
             # A protection exit is dispatched asynchronously.  Do not enqueue
             # another close on every risk tick while the first one is still
             # pending; queued spot closes could otherwise consume unrelated
             # wallet inventory after the strategy-owned position is flat.
-            if symbol in self._protection_exit_pending:
+            if position_key in self._protection_exit_pending:
                 continue
-            position = self.portfolio.positions.get(symbol)
+            position = self.portfolio.positions.get(position_key)
             if position is None or abs(position.amount) <= 1e-12:
                 continue
-            price = prices.get(symbol)
+            price = prices.get(position.symbol)
+            if price is None:
+                price = prices.get(position_key)
             if price is None:
                 continue
             decision = self.protection_engine.evaluate_price(
@@ -1708,17 +2088,160 @@ class StrategyV2LiveSession:
             )
             if decision is None:
                 continue
-            exits.append(OrderIntent(symbol, "target_quantity", 0.0, decision.reason))
-            self._protection_exit_pending.add(symbol)
+            exits.append(OrderIntent(
+                position.symbol,
+                "target_quantity",
+                0.0,
+                decision.reason,
+                position_side=position.position_side,
+            ))
+            self.context.set_last_exit_reason(position_key, decision.reason)
+            self.context.set_last_exit_reason(position.symbol, decision.reason)
+            self._protection_exit_pending.add(position_key)
         return exits
+
+    def evaluate_equity_risk(
+        self,
+        *,
+        timestamp: object = None,
+    ) -> tuple[list[OrderIntent], list[str], str]:
+        """Evaluate a generated robot's portfolio-wide risk on every live tick.
+
+        Generated system templates expose ``_equity_risk_exit``.  Keeping this
+        hook outside ``handle_data`` means a 1H robot can still stop immediately
+        when its live account equity crosses a limit instead of waiting for the
+        next hourly candle.  User-authored and previously purchased sources that
+        do not expose the hook retain their existing behaviour.
+        """
+        callback = self.program.namespace.get("_equity_risk_exit")
+        if not callable(callback):
+            return [], [], ""
+        self.context.current_dt = pd.Timestamp(timestamp or pd.Timestamp.utcnow())
+        callback(self.context)
+        orders = self.context.flush_orders()
+        self._capture_protection_intents(orders)
+        logs = self.context.flush_logs()
+        reason = str(
+            getattr(self.program.state, "equity_stop_reason", "") or ""
+        ).strip()
+        if not reason and orders:
+            reason = str(orders[0].reason or "").strip()
+        return orders, logs, reason
+
+    def evaluate_price_tick(
+        self,
+        prices: Mapping[str, float],
+        *,
+        timestamp: object = None,
+    ) -> tuple[list[OrderIntent], list[str]]:
+        """Run the optional live-price hook without advancing the K-line clock.
+
+        System robot templates use this hook for price-level strategies such as
+        martingale.  Indicator strategies deliberately omit it and therefore
+        remain closed-bar driven.  The caller is responsible for freshness
+        checks before invoking the hook so stale REST/stream cache values can
+        never open or scale a position.
+        """
+        callback = self.program.namespace.get("on_price_tick")
+        if not callable(callback):
+            return [], []
+        normalized: dict[str, float] = {}
+        for raw_symbol, raw_price in (prices or {}).items():
+            try:
+                symbol = self.portal.resolve_key(raw_symbol)
+                price = float(raw_price or 0.0)
+            except Exception:
+                continue
+            if price > 0 and math.isfinite(price):
+                normalized[symbol] = price
+        if not normalized:
+            return [], []
+        tick_time = pd.Timestamp(timestamp or pd.Timestamp.utcnow())
+        self.context.current_dt = tick_time
+        callback(self.context, normalized)
+        orders = self.context.flush_orders()
+        self._capture_protection_intents(orders)
+        return orders, self.context.flush_logs()
+
+    def release_equity_risk_exit(self) -> None:
+        """Re-arm a generated equity exit after its async submission failed."""
+        callback = self.program.namespace.get("_release_equity_risk_exit")
+        if callable(callback):
+            callback()
 
     def pending_protection_exit_symbols(self) -> set[str]:
         """Return symbols whose protection close has already been dispatched."""
         return set(self._protection_exit_pending)
 
-    def release_protection_exit(self, symbol: object) -> None:
+    def release_protection_exit(
+        self,
+        symbol: object,
+        *,
+        position_side: object = "",
+    ) -> None:
         """Allow a protection close to be retried after submission was rejected."""
-        self._protection_exit_pending.discard(str(symbol))
+        self._protection_exit_pending.discard(
+            _position_key(symbol, position_side)
+        )
+
+    def session_snapshot(self) -> dict[str, Any]:
+        snapshot = {
+            "version": 3,
+            "protection": self.protection_snapshot(),
+        }
+        if self.persist_strategy_state:
+            snapshot.update({
+                "strategyState": _snapshot_state_value(
+                    dict(vars(self.program.state))
+                ),
+                "lastProcessed": (
+                    pd.Timestamp(self.last_processed).isoformat()
+                    if self.last_processed is not None
+                    else None
+                ),
+                "lastScheduleCheck": (
+                    pd.Timestamp(self.last_schedule_check).isoformat()
+                    if self.last_schedule_check is not None
+                    else None
+                ),
+                "orderStatuses": self.context.order_status_snapshot(),
+                "exitReasons": self.context.exit_reason_snapshot(),
+            })
+        return snapshot
+
+    def restore_session_snapshot(self, values: Mapping[str, Any] | None) -> None:
+        raw = dict(values or {})
+        if not raw:
+            return
+        protection = raw.get("protection")
+        if isinstance(protection, Mapping):
+            self.restore_protection_snapshot(protection)
+        elif "states" in raw or "specs" in raw:
+            # Backward compatibility with the old protection-only snapshot.
+            self.restore_protection_snapshot(raw)
+        if self.persist_strategy_state:
+            strategy_state = raw.get("strategyState")
+            if isinstance(strategy_state, Mapping):
+                for name, value in _restore_state_value(strategy_state).items():
+                    setattr(self.program.state, str(name), value)
+            self.context.update_order_statuses(
+                raw.get("orderStatuses")
+                if isinstance(raw.get("orderStatuses"), Mapping)
+                else {}
+            )
+            self.context.restore_exit_reasons(
+                raw.get("exitReasons")
+                if isinstance(raw.get("exitReasons"), Mapping)
+                else {}
+            )
+            try:
+                if raw.get("lastProcessed"):
+                    self.last_processed = pd.Timestamp(raw["lastProcessed"])
+                if raw.get("lastScheduleCheck"):
+                    self.last_schedule_check = pd.Timestamp(raw["lastScheduleCheck"])
+            except Exception:
+                self.last_processed = None
+                self.last_schedule_check = None
 
     def protection_snapshot(self) -> dict[str, Any]:
         return {
@@ -1747,10 +2270,11 @@ class StrategyV2LiveSession:
 
     def _capture_protection_intents(self, orders: Iterable[OrderIntent]) -> None:
         for order in orders:
+            position_key = _position_key(order.symbol, order.position_side)
             if order.protection is not None:
-                self.protection_specs[order.symbol] = order.protection
+                self.protection_specs[position_key] = order.protection
             if order.kind in {"target_quantity", "target_value", "target_percent"} and abs(order.value) <= 1e-12:
-                self._protection_exit_pending.add(order.symbol)
+                self._protection_exit_pending.add(position_key)
 
     def _bind_runtime_api(self) -> None:
         ctx = self.context
@@ -1763,6 +2287,9 @@ class StrategyV2LiveSession:
             "set_default_protection": ctx.set_default_protection,
             "get_position": ctx.get_position,
             "get_positions": ctx.get_positions,
+            "get_order_status": ctx.get_order_status,
+            "cancel_order": ctx.cancel_order,
+            "consume_last_exit_reason": ctx.consume_last_exit_reason,
             "get_history": ctx.get_history,
             "history": ctx.get_history,
             "get_index_stocks": ctx.get_index_stocks,

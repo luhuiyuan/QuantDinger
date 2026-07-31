@@ -40,13 +40,16 @@ MCP_TOOL_NAMES = (
     "runtime_overview",
     "stop_strategy",
     "place_quick_order",
+    "emergency_stop_trading",
     "list_jobs",
     "get_job",
+    "cancel_job",
     "wait_for_job",
     "stream_job_until_done",
     "get_indicator_authoring_contract",
     "validate_indicator_code",
     "save_indicator",
+    "link_indicator_config",
     "list_indicators",
     "get_indicator",
     "create_strategy",
@@ -63,6 +66,27 @@ MCP_TOOL_NAMES = (
     "list_portfolio_positions",
     "list_paper_orders",
     "cancel_open_paper_orders",
+    "list_universes",
+    "get_universe",
+    "list_universe_members",
+    "list_factors",
+    "get_factor",
+    "list_watchlist",
+    "add_watchlist",
+    "remove_watchlist",
+    "list_trading_accounts",
+    "get_account_snapshot",
+    "list_account_positions",
+    "list_strategy_positions",
+    "list_strategy_trades",
+    "list_strategy_pending_orders",
+    "list_agent_quick_trades",
+    "list_signal_alerts",
+    "create_signal_alert",
+    "update_signal_alert",
+    "set_signal_alert_status",
+    "delete_signal_alert",
+    "run_signal_alert",
 )
 
 
@@ -155,6 +179,23 @@ def _post(path: str, json: dict | None = None, headers: dict | None = None) -> A
 
 def _patch(path: str, json: dict | None = None) -> Any:
     return _request("PATCH", path, json=json or {})
+
+
+def _patch_with_headers(path: str, json: dict | None = None, headers: dict | None = None) -> Any:
+    return _request("PATCH", path, json=json or {}, headers=headers or {})
+
+
+def _delete(path: str, json: dict | None = None, headers: dict | None = None) -> Any:
+    return _request("DELETE", path, json=json or {}, headers=headers or {})
+
+
+def _idempotency_headers(key: str | None) -> dict[str, str]:
+    value = str(key or "").strip()
+    if not value:
+        raise ValueError("idempotency_key is required for mutating tools")
+    if len(value) > 120:
+        raise ValueError("idempotency_key must not exceed 120 characters")
+    return {"Idempotency-Key": value}
 
 
 def _request(method: str, path: str, **kwargs: Any) -> Any:
@@ -314,7 +355,11 @@ def runtime_overview() -> Any:
 
 
 @mcp.tool()
-def stop_strategy(strategy_id: int, confirm_stop: bool = False) -> Any:
+def stop_strategy(
+    strategy_id: int,
+    idempotency_key: str = "",
+    confirm_stop: bool = False,
+) -> Any:
     """Stop one tenant-owned strategy (requires T scope and confirmation)."""
     if not confirm_stop:
         return {
@@ -327,7 +372,10 @@ def stop_strategy(strategy_id: int, confirm_stop: bool = False) -> Any:
                 ),
             },
         }
-    return _post(f"/api/agent/v1/strategies/{int(strategy_id)}/stop")
+    return _post(
+        f"/api/agent/v1/strategies/{int(strategy_id)}/stop",
+        headers=_idempotency_headers(idempotency_key),
+    )
 
 
 @mcp.tool()
@@ -344,7 +392,7 @@ def place_quick_order(
     margin_mode: str | None = None,
     tp_price: float | None = None,
     sl_price: float | None = None,
-    idempotency_key: str | None = None,
+    idempotency_key: str = "",
     confirm_order: bool = False,
     confirm_live_trading: bool = False,
 ) -> Any:
@@ -393,14 +441,57 @@ def place_quick_order(
         payload["tp_price"] = float(tp_price)
     if sl_price is not None:
         payload["sl_price"] = float(sl_price)
-    headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+    headers = _idempotency_headers(idempotency_key)
     return _post("/api/agent/v1/quick-trade/orders", json=payload, headers=headers)
+
+
+@mcp.tool()
+def emergency_stop_trading(
+    idempotency_key: str = "",
+    confirm_emergency_stop: bool = False,
+) -> Any:
+    """Cancel agent orders best-effort and revoke all tenant T tokens."""
+    if not confirm_emergency_stop:
+        return {
+            "error": True,
+            "status": 400,
+            "body": {
+                "message": (
+                    "The emergency stop revokes all tenant T tokens and attempts to cancel "
+                    "agent-originated orders. Re-call with confirm_emergency_stop=true."
+                ),
+            },
+        }
+    return _post(
+        "/api/agent/v1/quick-trade/kill-switch",
+        json={"confirm": True},
+        headers=_idempotency_headers(idempotency_key),
+    )
 
 
 @mcp.tool()
 def get_job(job_id: str) -> Any:
     """Poll a previously submitted backtest job."""
     return _get(f"/api/agent/v1/jobs/{job_id}")
+
+
+@mcp.tool()
+def cancel_job(
+    job_id: str,
+    idempotency_key: str = "",
+    confirm_cancel: bool = False,
+) -> Any:
+    """Cancel a queued/running tenant job (requires B scope and confirmation)."""
+    if not confirm_cancel:
+        return {
+            "error": True,
+            "status": 400,
+            "body": {"message": "Re-call with confirm_cancel=true after explicit user approval."},
+        }
+    return _post(
+        f"/api/agent/v1/jobs/{job_id}/cancel",
+        headers=_idempotency_headers(idempotency_key),
+    )
 
 
 @mcp.tool()
@@ -484,6 +575,7 @@ def save_indicator(
     description: str | None = None,
     indicator_id: int | None = None,
     validate: bool = True,
+    idempotency_key: str = "",
 ) -> Any:
     """Save chart-only indicator code into the user's indicator library."""
     assert_indicator_code_size(code)
@@ -494,7 +586,24 @@ def save_indicator(
         payload["description"] = description
     if indicator_id:
         payload["indicator_id"] = int(indicator_id)
-    return _post("/api/agent/v1/indicators", json=payload)
+    return _post(
+        "/api/agent/v1/indicators",
+        json=payload,
+        headers=_idempotency_headers(idempotency_key),
+    )
+
+
+@mcp.tool()
+def link_indicator_config(
+    config: dict,
+    idempotency_key: str = "",
+) -> Any:
+    """Normalize/save an indicator configuration and link its indicator id."""
+    return _post(
+        "/api/agent/v1/indicators/link-config",
+        json={"indicator_config": assert_json_dict("config", config)},
+        headers=_idempotency_headers(idempotency_key),
+    )
 
 
 @mcp.tool()
@@ -525,6 +634,7 @@ def create_strategy(
     params: dict | None = None,
     position_side: str | None = None,
     account_risk: dict | None = None,
+    idempotency_key: str = "",
 ) -> Any:
     """Deploy one saved Strategy API V2 source in stopped state."""
     payload = {
@@ -541,14 +651,22 @@ def create_strategy(
         payload["positionSide"] = str(position_side)
     if account_risk is not None:
         payload["accountRisk"] = assert_json_dict("account_risk", account_risk)
-    return _post("/api/agent/v1/strategies", json=payload)
+    return _post(
+        "/api/agent/v1/strategies",
+        json=payload,
+        headers=_idempotency_headers(idempotency_key),
+    )
 
 
 @mcp.tool()
-def update_strategy(strategy_id: int, patch: dict) -> Any:
+def update_strategy(strategy_id: int, patch: dict, idempotency_key: str = "") -> Any:
     """Patch the canonical deployment configuration for a strategy (scope W)."""
     body = assert_json_dict("patch", patch)
-    return _patch(f"/api/agent/v1/strategies/{int(strategy_id)}", json=body)
+    return _patch_with_headers(
+        f"/api/agent/v1/strategies/{int(strategy_id)}",
+        json=body,
+        headers=_idempotency_headers(idempotency_key),
+    )
 
 
 # Strategy API V2 source workspace
@@ -603,6 +721,7 @@ def save_strategy_source(
     template_key: str | None = None,
     param_schema: dict | None = None,
     metadata: dict | None = None,
+    idempotency_key: str = "",
 ) -> Any:
     """Compile and save a private Strategy API V2 source, creating a version snapshot."""
     assert_code_size(code, label="Strategy code")
@@ -616,8 +735,16 @@ def save_strategy_source(
     if template_key:
         payload["template_key"] = str(template_key)
     if source_id is None:
-        return _post("/api/agent/v1/strategy-sources", json=payload)
-    return _patch(f"/api/agent/v1/strategy-sources/{int(source_id)}", json=payload)
+        return _post(
+            "/api/agent/v1/strategy-sources",
+            json=payload,
+            headers=_idempotency_headers(idempotency_key),
+        )
+    return _patch_with_headers(
+        f"/api/agent/v1/strategy-sources/{int(source_id)}",
+        json=payload,
+        headers=_idempotency_headers(idempotency_key),
+    )
 
 
 @mcp.tool()
@@ -630,6 +757,7 @@ def list_strategy_source_versions(source_id: int) -> Any:
 def restore_strategy_source_version(
     source_id: int,
     version_id: int,
+    idempotency_key: str = "",
     confirm_restore: bool = False,
 ) -> Any:
     """Restore one source version after explicit confirmation; creates a new snapshot."""
@@ -647,6 +775,7 @@ def restore_strategy_source_version(
     return _post(
         f"/api/agent/v1/strategy-sources/{int(source_id)}/versions/{int(version_id)}/restore",
         json={"confirm": True},
+        headers=_idempotency_headers(idempotency_key),
     )
 
 
@@ -664,7 +793,7 @@ def submit_backtest(
     leverage_enabled: bool = False,
     leverage: float = 1.0,
     params: dict | None = None,
-    idempotency_key: str | None = None,
+    idempotency_key: str = "",
 ) -> Any:
     """Submit a Strategy API V2 backtest; its manifest owns market data scope."""
     assert_code_size(code, label="Strategy code")
@@ -680,7 +809,7 @@ def submit_backtest(
     }
     if slippage is not None:
         payload["slippage"] = slippage
-    headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+    headers = _idempotency_headers(idempotency_key)
     return _post("/api/agent/v1/backtest/run", json=payload, headers=headers)
 
 
@@ -700,8 +829,11 @@ def list_paper_orders() -> Any:
 
 
 @mcp.tool()
-def cancel_open_paper_orders(confirm_cancel: bool = False) -> Any:
-    """Cancel all open agent paper orders for this tenant (scope T)."""
+def cancel_open_paper_orders(
+    idempotency_key: str = "",
+    confirm_cancel: bool = False,
+) -> Any:
+    """Compatibility alias for the tenant emergency trading stop."""
     if not confirm_cancel:
         return {
             "error": True,
@@ -713,7 +845,239 @@ def cancel_open_paper_orders(confirm_cancel: bool = False) -> Any:
                 ),
             },
         }
-    return _post("/api/agent/v1/quick-trade/kill-switch")
+    return _post(
+        "/api/agent/v1/quick-trade/kill-switch",
+        json={"confirm": True},
+        headers=_idempotency_headers(idempotency_key),
+    )
+
+
+# Research workspace
+
+
+@mcp.tool()
+def list_universes() -> Any:
+    """List visible point-in-time universes."""
+    return _get("/api/agent/v1/research/universes")
+
+
+@mcp.tool()
+def get_universe(universe_id: int) -> Any:
+    """Get universe metadata."""
+    return _get(f"/api/agent/v1/research/universes/{int(universe_id)}")
+
+
+@mcp.tool()
+def list_universe_members(
+    universe_id: int,
+    as_of: str | None = None,
+    limit: int = 200,
+    cursor: int = 0,
+) -> Any:
+    """Resolve universe members as of an optional YYYY-MM-DD date."""
+    params: dict[str, Any] = {
+        "limit": max(1, min(500, int(limit))),
+        "cursor": max(0, int(cursor)),
+    }
+    if as_of:
+        params["as_of"] = as_of
+    return _get(f"/api/agent/v1/research/universes/{int(universe_id)}/members", params=params)
+
+
+@mcp.tool()
+def list_factors(category: str = "", factor_type: str = "") -> Any:
+    """List registered technical and fundamental factor definitions."""
+    return _get(
+        "/api/agent/v1/research/factors",
+        params={"category": category, "factor_type": factor_type},
+    )
+
+
+@mcp.tool()
+def get_factor(factor_id: str) -> Any:
+    """Get one factor definition and parameter schema."""
+    return _get(f"/api/agent/v1/research/factors/{factor_id}")
+
+
+@mcp.tool()
+def list_watchlist(limit: int = 100, cursor: int = 0) -> Any:
+    """List the tenant watchlist."""
+    return _get(
+        "/api/agent/v1/research/watchlist",
+        params={"limit": max(1, min(500, int(limit))), "cursor": max(0, int(cursor))},
+    )
+
+
+@mcp.tool()
+def add_watchlist(
+    market: str,
+    symbol: str,
+    idempotency_key: str = "",
+    name: str = "",
+    exchange_id: str = "",
+    market_type: str = "",
+) -> Any:
+    """Add a validated symbol to the watchlist."""
+    return _post(
+        "/api/agent/v1/research/watchlist",
+        json={
+            "market": market,
+            "symbol": symbol,
+            "name": name,
+            "exchange_id": exchange_id,
+            "market_type": market_type,
+        },
+        headers=_idempotency_headers(idempotency_key),
+    )
+
+
+@mcp.tool()
+def remove_watchlist(
+    market: str,
+    symbol: str,
+    idempotency_key: str = "",
+    confirm_remove: bool = False,
+) -> Any:
+    """Remove a watchlist symbol after confirmation."""
+    if not confirm_remove:
+        return {"error": True, "status": 400, "body": {"message": "confirm_remove=true is required"}}
+    return _delete(
+        "/api/agent/v1/research/watchlist",
+        json={"market": market, "symbol": symbol},
+        headers=_idempotency_headers(idempotency_key),
+    )
+
+
+# Broker and execution observations
+
+
+@mcp.tool()
+def list_trading_accounts() -> Any:
+    """List safe broker credential metadata; never returns secrets."""
+    return _get("/api/agent/v1/trading/accounts")
+
+
+@mcp.tool()
+def get_account_snapshot(credential_id: int) -> Any:
+    """Fetch live positions and open orders for an owned credential."""
+    return _get(f"/api/agent/v1/trading/accounts/{int(credential_id)}/snapshot")
+
+
+@mcp.tool()
+def list_account_positions(credential_id: int, market_type: str = "") -> Any:
+    """Read the locally mirrored broker-account positions."""
+    params = {"market_type": market_type} if market_type else None
+    return _get(f"/api/agent/v1/trading/accounts/{int(credential_id)}/positions", params=params)
+
+
+@mcp.tool()
+def list_strategy_positions(strategy_id: int) -> Any:
+    """Read positions for one tenant strategy."""
+    return _get(f"/api/agent/v1/trading/strategies/{int(strategy_id)}/positions")
+
+
+@mcp.tool()
+def list_strategy_trades(strategy_id: int, limit: int = 50, cursor: int = 0) -> Any:
+    """Read cursor-paginated strategy fills."""
+    return _get(
+        f"/api/agent/v1/trading/strategies/{int(strategy_id)}/trades",
+        params={"limit": max(1, min(200, int(limit))), "cursor": max(0, int(cursor))},
+    )
+
+
+@mcp.tool()
+def list_strategy_pending_orders(strategy_id: int, limit: int = 50, cursor: int = 0) -> Any:
+    """Read cursor-paginated pending orders for one strategy."""
+    return _get(
+        f"/api/agent/v1/trading/strategies/{int(strategy_id)}/pending-orders",
+        params={"limit": max(1, min(200, int(limit))), "cursor": max(0, int(cursor))},
+    )
+
+
+@mcp.tool()
+def list_agent_quick_trades(limit: int = 50, cursor: int = 0) -> Any:
+    """Read quick trades created by Agent Gateway."""
+    return _get(
+        "/api/agent/v1/trading/quick-trades",
+        params={"limit": max(1, min(200, int(limit))), "cursor": max(0, int(cursor))},
+    )
+
+
+# Notification automation
+
+
+@mcp.tool()
+def list_signal_alerts(limit: int = 50, cursor: int = 0) -> Any:
+    """List indicator signal-alert tasks (scope N)."""
+    return _get(
+        "/api/agent/v1/notifications/signal-alerts",
+        params={"limit": max(1, min(200, int(limit))), "cursor": max(0, int(cursor))},
+    )
+
+
+@mcp.tool()
+def create_signal_alert(payload: dict, idempotency_key: str = "") -> Any:
+    """Create an indicator signal-alert task."""
+    return _post(
+        "/api/agent/v1/notifications/signal-alerts",
+        json=assert_json_dict("payload", payload),
+        headers=_idempotency_headers(idempotency_key),
+    )
+
+
+@mcp.tool()
+def update_signal_alert(task_id: int, payload: dict, idempotency_key: str = "") -> Any:
+    """Update an owned signal-alert task."""
+    return _patch_with_headers(
+        f"/api/agent/v1/notifications/signal-alerts/{int(task_id)}",
+        json=assert_json_dict("payload", payload),
+        headers=_idempotency_headers(idempotency_key),
+    )
+
+
+@mcp.tool()
+def set_signal_alert_status(
+    task_id: int,
+    status: str,
+    idempotency_key: str = "",
+) -> Any:
+    """Pause or resume a signal-alert task."""
+    return _post(
+        f"/api/agent/v1/notifications/signal-alerts/{int(task_id)}/status",
+        json={"status": status},
+        headers=_idempotency_headers(idempotency_key),
+    )
+
+
+@mcp.tool()
+def delete_signal_alert(
+    task_id: int,
+    idempotency_key: str = "",
+    confirm_delete: bool = False,
+) -> Any:
+    """Delete a signal-alert task after confirmation."""
+    if not confirm_delete:
+        return {"error": True, "status": 400, "body": {"message": "confirm_delete=true is required"}}
+    return _delete(
+        f"/api/agent/v1/notifications/signal-alerts/{int(task_id)}",
+        headers=_idempotency_headers(idempotency_key),
+    )
+
+
+@mcp.tool()
+def run_signal_alert(
+    task_id: int,
+    idempotency_key: str = "",
+    confirm_delivery: bool = False,
+) -> Any:
+    """Evaluate an alert immediately; may deliver notifications."""
+    if not confirm_delivery:
+        return {"error": True, "status": 400, "body": {"message": "confirm_delivery=true is required"}}
+    return _post(
+        f"/api/agent/v1/notifications/signal-alerts/{int(task_id)}/run",
+        json={"confirm": True},
+        headers=_idempotency_headers(idempotency_key),
+    )
 
 
 _TRANSPORTS = {"stdio", "sse", "streamable-http"}
@@ -772,6 +1136,17 @@ def _validate_network_security(transport: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
+        if not loopback:
+            if not MCP_PUBLIC_URL.lower().startswith("https://") and not _truthy_env(
+                "QUANTDINGER_MCP_ALLOW_HTTP"
+            ):
+                print(
+                    "[quantdinger-mcp] non-loopback authenticated MCP requires an HTTPS "
+                    "QUANTDINGER_MCP_PUBLIC_URL. Set QUANTDINGER_MCP_ALLOW_HTTP=true only "
+                    "behind a trusted TLS-terminating private proxy.",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
         return
     if loopback:
         return

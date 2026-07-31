@@ -26,11 +26,8 @@ from app.services.live_trading.binance_spot import BinanceSpotClient
 from app.services.live_trading.bitget import BitgetMixClient
 from app.services.live_trading.bitget_spot import BitgetSpotClient
 from app.services.live_trading.bybit import BybitClient
-from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient, to_gate_currency_pair
 from app.services.live_trading.htx import HtxClient
-from app.services.live_trading.kraken import KrakenClient
-from app.services.live_trading.kraken_futures import KrakenFuturesClient
 from app.services.live_trading.okx import OkxClient
 from app.services.live_trading.symbols import to_okx_spot_inst_id, to_okx_swap_inst_id
 from app.utils.logger import get_logger
@@ -178,12 +175,6 @@ def extract_grid_fill_base_qty(
     if isinstance(client, GateSpotClient):
         return _float(data.get("filled_amount") or data.get("filledAmount"))
 
-    if isinstance(client, CoinbaseExchangeClient):
-        return _float(data.get("filled_size") or data.get("filledSize"))
-
-    if isinstance(client, KrakenClient):
-        return _float(data.get("vol_exec") or data.get("filled"))
-
     if isinstance(client, HtxClient):
         if mt == "spot":
             return _float(data.get("field-amount") or data.get("filled-amount") or data.get("filled_amount"))
@@ -195,9 +186,6 @@ def extract_grid_fill_base_qty(
         if contracts <= 0:
             return 0.0
         return abs(contracts) * _htx_contract_size(client, symbol)
-
-    if isinstance(client, KrakenFuturesClient):
-        return _float(data.get("filledSize") or data.get("filled_size"))
 
     if client is None and data.get("filled_total") and data.get("filled_amount"):
         filled_amt = _float(data.get("filled_amount"))
@@ -250,20 +238,6 @@ def extract_grid_fill_avg_price(
     if isinstance(client, (GateUsdtFuturesClient,)):
         return _float(data.get("fill_price") or data.get("fillPrice") or data.get("price"))
 
-    if isinstance(client, CoinbaseExchangeClient):
-        filled = _float(data.get("filled_size") or data.get("filledSize"))
-        executed_value = _float(data.get("executed_value") or data.get("executedValue"))
-        if filled > 0 and executed_value > 0:
-            return executed_value / filled
-        return _float(data.get("price"))
-
-    if isinstance(client, KrakenClient):
-        filled = _float(data.get("vol_exec") or data.get("filled"))
-        cost = _float(data.get("cost"))
-        if filled > 0 and cost > 0:
-            return cost / filled
-        return _float(data.get("price"))
-
     if isinstance(client, HtxClient):
         avg = _float(data.get("trade_avg_price") or data.get("tradeAvgPrice"))
         if avg > 0:
@@ -273,9 +247,6 @@ def extract_grid_fill_avg_price(
         if turnover > 0 and vol > 0:
             return turnover / vol
         return _float(data.get("price"))
-
-    if isinstance(client, KrakenFuturesClient):
-        return _float(data.get("avgFillPrice") or data.get("avg_fill_price"))
 
     avg = _float(
         data.get("avgPx")

@@ -97,6 +97,16 @@ def handle_data(context, data):
 
 <code>initialize</code> 在编译/清单发现阶段执行，用于声明配置和初始化 <code>g</code>。不要在这里请求行情、读取真实仓位或下单。
 
+与编译器直接相关的重要 API 规则：
+
+- <code>initialize</code> 内不能读取 <code>context.params</code>；应在处理器或定时回调中读取。
+- <code>get_history</code> 以数量为第一个参数，并使用 <code>field</code>：<code>get_history(count, frequency, field, symbol)</code>。不要向它传 <code>fields=</code>。
+- <code>data.history</code> 是另一套接口：<code>data.history(symbols, count, fields)</code>。
+- 单标的历史返回 DataFrame，多标的历史返回 DataFrame 字典。
+- <code>get_position</code> 返回 Position 对象，不是字典。
+- pandas DataFrame 或 Series 不能直接作为布尔条件；应使用 <code>len(...)</code>、<code>.empty</code>、<code>.any()</code> 或 <code>.all()</code>。
+- 未定义的平台 API 和不支持的参数会在验证阶段直接拒绝，避免到实盘才失败。
+
 ---
 
 ## 3. 源码拥有的策略清单
@@ -141,10 +151,13 @@ Content-Type: application/json
 | 指定交易所 Crypto 现货 | <code>Crypto:BTC/USDT@okx:spot</code> |
 | Crypto 永续 | <code>Crypto:BTC/USDT@swap</code> |
 | 指定交易所 Crypto 永续 | <code>Crypto:BTC/USDT@okx:swap</code> |
+| 外汇 | <code>Forex:EUR/USD</code> |
+| 期货 | <code>Futures:ES</code> |
+| 莫斯科交易所 | <code>MOEX:SBER</code> |
 
 系统也会规范化部分别名，例如 <code>600519.XSHG</code> → <code>CNStock:600519.SH</code>、<code>BTCUSDT</code> → <code>BTC/USDT</code>。
 
-为避免歧义，生产策略应写完整市场前缀。Crypto 未写市场类型时默认为 spot。只有 swap 可以启用合约杠杆。
+为避免歧义，生产策略应写完整市场前缀。Crypto 未写市场类型时默认为 spot。只有 swap 可以启用合约杠杆。能够解析市场名称并不代表一定有数据或支持实盘，实盘支持范围见第 18 节。
 
 ---
 
@@ -247,7 +260,9 @@ def initialize(context):
 - 日线及更低频率下，具体 <code>time</code> 不用于制造不存在的盘中 bar。
 - 回调推荐签名为 <code>callback(context, data)</code>；运行时也会适配只接收 context 的函数。
 - portfolio 策略如果没有定时任务，会调用 <code>on_rebalance</code>。
-- 当前引擎在每个事件时间戳调用 <code>before_trading_start</code> 和 <code>after_trading_end</code>；不要假设它们在分钟策略中每天只调用一次。
+- 回测会在每个事件时间戳调用 <code>before_trading_start</code> 和 <code>after_trading_end</code>。实盘只会在新处理的 bar 进入新日历日期时调用 <code>before_trading_start</code>；当前实盘运行时不会调用 <code>after_trading_end</code>。实盘关键收盘逻辑应放在 <code>handle_data</code> 或定时任务中。
+
+实盘定时任务按用户配置的时区解释。如果用户没有设置时区，则依次回退到服务器 <code>TZ</code> 和 UTC。应明确设置用户时区，并按交易所交易时段验证调度。回测时间来自行情数据时钟，依赖精确盘中时间前必须确认回测与实盘时区一致。
 
 ---
 
@@ -263,7 +278,7 @@ def initialize(context):
 
 因此，“收盘确认、下一开盘成交”是默认的无未来执行模型。不要用负 shift 或未来行把成交提前。
 
-实盘会对每根已收盘 bar 只处理一次，并保留 <code>g</code> 状态。重复收到同一根 bar 不应重复触发策略。
+实盘会对每根已收盘 bar 只处理一次，并在当前会话存活期间保留 <code>g</code> 状态。重复收到同一根 bar 不应重复触发策略。跨重启状态需要显式开启，见第 9 节。
 
 ---
 
@@ -293,6 +308,16 @@ def initialize(context):
 ~~~
 
 不要把用户状态放在文件、数据库或模块外部全局服务中。<code>g</code> 是单次运行的策略状态空间。
+
+### 跨重启状态
+
+默认情况下，<code>g</code> 只在当前进程的多个回调之间保留；会话重启后会重新执行 <code>initialize</code>。如果策略无法仅根据仓位和订单状态重建运行周期，应显式开启状态快照：
+
+~~~python
+PERSIST_RUNTIME_STATE = True
+~~~
+
+等效部署参数是 <code>persist_runtime_state=true</code>。开启后，运行时会保存可支持的 <code>g</code> 值、最后处理的 bar、调度时钟、客户端订单状态和最近离场原因。保护引擎状态会独立恢复。持久化值应保持为类似 JSON 的结构，并在重启后继续与交易所真实仓位核对；快照不能替代交易所账本。
 
 ---
 
@@ -382,6 +407,16 @@ Position 常用字段：
 - <code>avg_cost</code>
 - <code>last_price</code>
 - <code>market_value</code>
+- <code>position_side</code>
+
+swap 双向持仓策略必须显式读取每一条腿：
+
+~~~python
+long_position = get_position(g.symbol, position_side="long")
+short_position = get_position(g.symbol, position_side="short")
+~~~
+
+在 hedge mode 下，不要把 <code>get_position(symbol)</code> 当成自动合成的净仓位。<code>get_positions()</code> 可能包含 <code>symbol::long</code>、<code>symbol::short</code> 这样的分腿键。判断某条腿是否有仓时建议使用 <code>abs(position.amount)</code>。
 
 订单函数：
 
@@ -403,9 +438,48 @@ order_target_percent(
 )
 ~~~
 
+常用订单参数：
+
+| 参数 | 含义 |
+| --- | --- |
+| <code>reason</code> | 稳定、可审计的原因 |
+| <code>position_side</code> | swap 双向持仓的 <code>long</code> 或 <code>short</code> 腿 |
+| <code>client_order_id</code> | 幂等与状态查询引用，最多 100 个字符 |
+| <code>order_type</code> | <code>market</code> 或 <code>limit</code> |
+| <code>limit_price</code> | 限价单必需的正数价格 |
+| <code>execution_algo</code> | <code>market</code>、<code>limit</code> 或 <code>maker_then_market</code> |
+| <code>maker_wait_sec</code> | maker 等待多久后回退为市价 |
+| <code>maker_offset_bps</code> | maker 价格偏移，单位为基点 |
+
+使用稳定客户端引用的示例：
+
+~~~python
+def submit_entry():
+    g.entry_ref = order(
+        g.symbol,
+        1,
+        position_side="long",
+        order_type="limit",
+        limit_price=100.0,
+        client_order_id="breakout-long-20250102",
+        reason="breakout_long_entry",
+    )
+
+
+def monitor_entry(cancel_requested):
+    status = get_order_status(g.entry_ref)
+    working = ("queued", "deferred", "submitted", "open", "partial")
+    if cancel_requested and status["status"] in working:
+        cancel_order(g.entry_ref)
+~~~
+
+未显式传 <code>client_order_id</code> 时，订单函数为了兼容旧代码仍返回 <code>None</code>；传入后会返回该 ID，用于状态跟踪。常见状态包括 <code>unknown</code>、<code>queued</code>、<code>deferred</code>、<code>submitted</code>、<code>open</code>、<code>partial</code>、<code>filled</code>、<code>cancelled</code> 和 <code>rejected</code>。实盘撤单是异步过程，必须等待对账后的终态才能复用资金或推进状态。<code>consume_last_exit_reason(symbol)</code> 会返回并清除最近一次保护离场原因。
+
 现货和所有非 Crypto 市场当前按 long-only 编写。多头离场条件与空头入场条件必须独立；不要把 <code>target=0</code> 的离场自动改成负仓位。
 
 引擎会处理手续费、滑点、最小交易单位、成交量上限、涨跌停和停牌。被延迟或拒绝的订单会出现在订单审计账本中，不应从“没有成交”直接推断策略没有发单。
+
+实盘中，同一持仓腿存在活动订单时会抑制重复请求，直到订单对账完成。目标仓位跨越零点时采用“先平后开”：先平掉当前腿，等待成交和仓位同步确认，再开反向腿。策略状态必须根据确认后的订单状态或同步仓位推进，不能仅因为调用了订单函数就假定成交。
 
 ---
 
@@ -479,6 +553,64 @@ context.set_metadata(direction_mode="both")
 支持 `long_only`（仅做多）、`short_only`（仅做空）、`both`（多空双向）和 `neutral`（中性双腿）。这个声明不会下单，也不会覆盖策略信号；它用于在部署时分配正确的双向持仓腿，并拒绝超出声明能力的新开仓信号。`both` 和 `neutral` 在实盘中要求交易所账户开启双向持仓模式。
 
 编译器仍会兼容识别旧策略顶层的 `DIRECTION = 1/-1` 常量，以及订单中的字面量 `position_side="long"/"short"`。如果无法安全推断旧版合约策略，部署页面才会要求选择兼容模式。现货策略会自动视为 `long_only`。
+
+### 双向持仓示例
+
+下面示例持续保留一张多头核心仓，并在价格跌破均线时独立开启一张空头对冲仓：
+
+~~~python
+"""BTC Long Core With Short Hedge
+Maintains independent long and short swap legs in exchange hedge mode.
+"""
+
+
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@okx:swap"
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1h")
+    context.set_warmup(60)
+    context.allow_leverage(max_leverage=5)
+    context.set_metadata(direction_mode="both")
+
+
+def handle_data(context, data):
+    bars = get_history(51, "1h", "close", g.symbol)
+    if len(bars) < 51:
+        return
+
+    price = float(bars["close"].iloc[-1])
+    average = float(bars["close"].tail(50).mean())
+    long_position = get_position(g.symbol, position_side="long")
+    short_position = get_position(g.symbol, position_side="short")
+
+    if abs(float(long_position.amount or 0.0)) < 0.5:
+        order_target(
+            g.symbol,
+            1,
+            position_side="long",
+            reason="core_long",
+        )
+
+    hedge_required = price < average
+    if hedge_required and abs(float(short_position.amount or 0.0)) < 0.5:
+        order_target(
+            g.symbol,
+            -1,
+            position_side="short",
+            reason="open_short_hedge",
+        )
+    elif not hedge_required and abs(float(short_position.amount or 0.0)) >= 0.5:
+        order_target(
+            g.symbol,
+            0,
+            position_side="short",
+            reason="close_short_hedge",
+        )
+~~~
+
+数量单位取决于交易所合约规格，不能假定一张合约一定等于一个基础币。实盘启动前，平台会确认账户持仓模式；无法确认 hedge mode 时，`both` 和 `neutral` 会按安全原则拒绝启动。运行中的策略会占用账户/交易所/市场/标的/持仓腿；重复占用会返回 <code>strategyV2.liveLegConflict</code>。确认处于 hedge mode 时，两个独立的 long-only 与 short-only 策略可以分别占用相反方向，但声明 <code>both</code> 或 <code>neutral</code> 的策略会同时占用两条腿。
+
+不要只用 <code>g.long_qty</code>/<code>g.short_qty</code> 维护权威仓位。订单可能被拒绝、延迟、部分成交或按交易所规则取整。推进策略周期前必须读取同步后的分腿仓位和订单状态。
 
 ---
 
@@ -636,6 +768,16 @@ def rebalance(context, data):
 - <code>equityCurve</code>、回撤、胜率、Profit Factor 和 benchmark/excess return。
 - <code>dataProvenance</code> 和 <code>executionAssumptions</code>：数据来源与执行假设。
 
+### 成本与执行假设
+
+- 每次成交都会收取手续费。完整往返交易的已实现利润会同时扣除分摊后的开仓手续费和平仓手续费。
+- 滑点按照结果中的执行假设应用。
+- Strategy API V2 回测当前**不模拟 Crypto 资金费用**。应确认 <code>executionAssumptions.fundingMode == "not_modeled"</code>；杠杆 swap 回测不能不估算资金费就直接与实盘净利润比较。
+- 实盘使用交易所返回的成交手续费，并在可用时同步资金费/账户账单。手续费可能以报价币、基础币或平台折扣币收取，因此换算与对账可能晚于成交。
+- 应测试多组手续费和滑点假设。成本轻微上升就失去优势的策略不够稳健。
+
+回测中心还支持因子研究和参数调优。调优可使用网格或随机参数空间，单次最多 500 个组合，并为选中结果报告样本外验证。回测可按系统设置扣除积分；执行失败会自动退款。前端请求超时不等于服务端任务失败，重复提交前应先检查回测历史。
+
 零成交不一定是系统错误：可能是数据不足、条件从未触发、参数不合理、标的无数据或订单被拒绝。先看日志和 orderLedger。
 
 ---
@@ -654,10 +796,22 @@ def rebalance(context, data):
 
 当前 live 账户边界：
 
-- Crypto live 需要受支持交易所凭证。
-- USStock live 需要 Alpaca 或 IBKR 凭证。
-- 混合市场 live 不支持。
-- 其他市场不能强行用不匹配的凭证部署。
+| 市场 | 支持的实盘通道 | 产品边界 |
+| --- | --- | --- |
+| Crypto | Binance、Bitget、Bybit、OKX、Gate、HTX | 按交易所和账户能力支持 spot 与 swap |
+| USStock | Alpaca、IBKR | 当前券商策略按 long-only |
+| 其他可解析市场 | 暂无 | 可回测或有数据不等于支持实盘 |
+
+混合市场 live 不支持，其他市场不能强行用不匹配的凭证部署。
+
+### 仓位归属、对账与账户风控
+
+- 实盘策略只能管理分配给自己的策略仓位。用户手工持仓和其他策略拥有的仓位不能被该策略平掉。
+- 平仓或反手前，运行时会核对策略分配、数据库状态和交易所仓位快照。发现不一致时会阻止订单，避免误平用户无关仓位。
+- 同账户/交易所/市场/标的/持仓腿采用独占归属。确认 hedge mode 后，可以由两个 long-only、short-only 策略分别使用相反腿；<code>both</code>/<code>neutral</code> 会占用两条腿。
+- 策略计算后还会应用最小数量、数量步长、最小名义金额、可用保证金、杠杆和交易所上限，最终提交数量可能与原始请求不同。
+- 可选账户风控会按总名义敞口、预计保证金、总杠杆或单标的敞口拒绝订单。这类结果是需要调整配置或仓位的风控警告，不能绕过保护。
+- 行情、私有 WebSocket 事件与定期 REST 对账共同工作。WebSocket 提供低延迟，REST 仍是断线或漏事件后的恢复来源。
 
 先用 signal 模式验证通知、信号频率和状态恢复，再考虑 live。回测通过不代表连接、余额、最小下单量、交易所规则和网络状态一定满足实盘。
 
@@ -666,6 +820,8 @@ def rebalance(context, data):
 ## 19. 安全限制和常见失败
 
 策略运行在安全执行环境中。禁止文件、网络、数据库、进程、动态执行、反射和不安全导入。不要使用 <code>eval</code>、<code>exec</code>、<code>compile</code>、<code>open</code>、dunder 绕过或外部状态。
+
+允许导入的根模块包括 <code>numpy</code>、<code>pandas</code>、<code>math</code>、<code>json</code>、<code>datetime</code>、<code>time</code>、<code>collections</code>、<code>functools</code>、<code>itertools</code>、<code>statistics</code>、<code>decimal</code>、<code>fractions</code> 和 <code>copy</code>。即使模块允许导入，pandas <code>read_*</code>/<code>to_*</code>、NumPy 文件加载/保存、类似 pickle 的反序列化以及字符串表达式执行方法仍会被禁止。
 
 常见编译错误：
 
@@ -680,11 +836,52 @@ def rebalance(context, data):
 | <code>strategyV2.leverageNotAllowed</code> | 面板开了源码未许可的杠杆 | 源码合法许可或关闭杠杆 |
 | <code>strategyV2.leverageExceedsStrategyLimit</code> | 请求杠杆超过上限 | 降低请求值 |
 | <code>strategyV2.dataUnavailable:...</code> | 标的没有可用数据 | 检查规范标的和数据范围 |
+| <code>strategyV2.noMarketData</code> | 实盘周期没有可用行情帧 | 检查标的、数据源、连接和订阅周期 |
+| <code>strategyV2.initializeParamsUnavailable</code> | 在清单发现阶段读取参数 | 把读取移到处理器 |
+| <code>strategyV2.directionModeViolation:...</code> | 开仓方向超出声明能力 | 修正 metadata 或信号方向；平仓仍允许 |
+| <code>strategyV2.dualDirectionHedgeModeRequired:...</code> | 账户没有开启双向持仓 | 在交易所开启 hedge/双向持仓模式 |
+| <code>strategyV2.hedgeModeUnknown:...</code> | 无法确认账户持仓模式 | 修复凭证/API 权限后重试 |
+| <code>strategyV2.liveLegConflict:...</code> | 另一实盘策略已占用该腿 | 停止或调整冲突策略 |
+| 仓位/账户不一致 | 策略分配仓位与交易所不同 | 对账或停机修复，不能绕过 |
+| 数量无效/低于最小名义金额 | 取整后无法提交 | 增加资金/权重或更换合适标的 |
+| 账户风控拒绝 | 超出账户配置的敞口上限 | 降低仓位/杠杆，或有意调整限制 |
 | <code>strategyV2.runtimeFailed:...</code> | 回调运行异常 | 根据处理器名和原始异常修复 |
 
 ---
 
-## 20. 发布前检查清单
+## 20. 可视化机器人模板
+
+机器人模板会生成可编辑的 Strategy API V2 源码。真正可部署的契约是生成后的源码，不是右侧预览；每次手工修改后都必须重新验证。
+
+| 模板 | 触发与资金分配 | 当前边界 |
+| --- | --- | --- |
+| 网格 | 将区间划分为等差/等比网格，每个入场成交后挂出对应格子的离场 | 实盘使用交易所限价挂单，回测按 OHLC 触碰重放 |
+| DCA | 按固定经过分钟数、固定资金比例持续买入 | 仅 Crypto spot、仅做多 |
+| 马丁 | 价格向不利方向触发层级，并逐层提高分配 | 必须限制层数、总预算和周期风险 |
+| 分仓马丁 | 将马丁层级组织成多个资金分组 | 除总上限外还要限制每组 |
+
+网格规则：
+
+- 每个网格格子都有完整生命周期：等待入场 → 入场挂单/成交 → 对应离场挂单/成交 → 下一周期。不能实现成“逐格买入，最后一次性全部卖出”。
+- <code>max_open_orders</code> 控制同时激活的入场单数量，稳定的 <code>client_order_id</code> 用于避免重复挂单。
+- 实盘网格使用交易所限价单并根据成交通知对账；回测依据 bar 的 high/low 判断触碰。当一根 bar 同时跨越多格时，回测无法知道准确盘中路径，应使用足够细的周期。
+- 中性网格要求 swap hedge mode 并占用多空两条腿；现货网格只能做多。
+
+DCA 规则：
+
+- 定投间隔按实际经过的分钟数计算，不是“K 线根数”。处理器只能在订阅 bar 到达时执行，因此间隔小于源码周期时，实际会在下一根可用 bar 执行。
+- 每次投入同时受单次比例和周期总预算限制。即使启用了价格过滤、止盈、硬止损或追踪保护，也仍需设置最大定投次数。
+
+马丁规则：
+
+- 每一层都需要价格触发、计划分配、最大尝试次数、稳定客户端引用和确认成交后的状态迁移。
+- 系统生成的马丁与分仓马丁源码会开启 <code>PERSIST_RUNTIME_STATE</code>。手工编辑时应保留恢复和最终清仓逻辑。
+- 被拒绝或部分成交的订单不能按完整成交推进层级。重启后，继续加层或平仓前必须用策略归属仓位完成状态对账。
+- 马丁属于尾部风险很高的资金管理方式，必须限制总投入、层数、杠杆、止损和止损后是否重新开始。
+
+---
+
+## 21. 发布前检查清单
 
 - [ ] 文件有英文 docstring，说明名称、universe、信号、调度和风控。
 - [ ] <code>initialize</code> 只声明 universe、订阅、预热、benchmark、调度、杠杆许可和初始 <code>g</code>。
@@ -694,12 +891,16 @@ def rebalance(context, data):
 - [ ] 所有历史窗口都检查长度。
 - [ ] 不使用未来行、负 shift 或居中 rolling。
 - [ ] 多头离场与空头入场独立。
+- [ ] 双向持仓代码显式读取和操作 <code>position_side</code> 分腿。
 - [ ] 仓位有明确上限；网格、DCA、马丁和加仓层数有硬限制。
 - [ ] 订单都有可审计 reason。
+- [ ] 可重试/活动订单使用稳定客户端 ID，并且确认前不推进状态。
 - [ ] 风险百分比使用小数比率。
 - [ ] 只对 Crypto swap 声明杠杆，且不重复乘杠杆。
+- [ ] 已明确调度时区和跨重启状态要求。
 - [ ] 已验证 manifest。
 - [ ] 已检查 orderLedger，而不只看收益曲线。
+- [ ] 已计入开仓和平仓手续费，并在当前回测之外单独评估 swap 资金费。
 - [ ] 已用不同时间区间和成本假设做稳健性测试。
 - [ ] 已有至少一次成功回测后再发布。
 - [ ] live 前先确认凭证、市场、余额、最小交易单位和通知。

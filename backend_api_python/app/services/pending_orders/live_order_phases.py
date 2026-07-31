@@ -14,11 +14,8 @@ from app.services.live_trading.binance_spot import BinanceSpotClient
 from app.services.live_trading.bitget import BitgetMixClient
 from app.services.live_trading.bitget_spot import BitgetSpotClient
 from app.services.live_trading.bybit import BybitClient
-from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
 from app.services.live_trading.htx import HtxClient
-from app.services.live_trading.kraken import KrakenClient
-from app.services.live_trading.kraken_futures import KrakenFuturesClient
 from app.services.live_trading.okx import OkxClient
 from app.services.live_trading.symbols import to_gate_currency_pair, to_okx_swap_inst_id
 from app.services.pending_orders.live_order_support import FillAccumulator
@@ -140,20 +137,6 @@ def place_live_limit_order(
             pos_side=pos_side,
             client_order_id=client_order_id,
         )
-    if isinstance(client, CoinbaseExchangeClient):
-        return client.place_limit_order(symbol=str(symbol), side=side, size=amount, price=price, client_order_id=client_order_id)
-    if isinstance(client, KrakenClient):
-        return client.place_limit_order(symbol=str(symbol), side=side, size=amount, price=price, client_order_id=client_order_id)
-    if isinstance(client, KrakenFuturesClient):
-        return client.place_limit_order(
-            symbol=str(symbol),
-            side=side,
-            size=amount,
-            price=price,
-            reduce_only=reduce_only,
-            post_only=(order_mode in ("maker", "maker_then_market", "limit_first", "limit")),
-            client_order_id=client_order_id,
-        )
     if isinstance(client, GateSpotClient):
         return client.place_limit_order(symbol=str(symbol), side=side, size=amount, price=price, client_order_id=client_order_id)
     if isinstance(client, GateUsdtFuturesClient):
@@ -221,12 +204,6 @@ def wait_live_order_fill(
         return client.wait_for_fill(symbol=str(symbol), order_id=order_id, client_order_id=client_order_id, max_wait_sec=wait_sec)
     if isinstance(client, BybitClient):
         return client.wait_for_fill(symbol=str(symbol), order_id=order_id, client_order_id=client_order_id, max_wait_sec=wait_sec)
-    if isinstance(client, CoinbaseExchangeClient):
-        return client.wait_for_fill(order_id=order_id, client_order_id=client_order_id, max_wait_sec=wait_sec)
-    if isinstance(client, KrakenClient):
-        return client.wait_for_fill(order_id=order_id, max_wait_sec=wait_sec)
-    if isinstance(client, KrakenFuturesClient):
-        return client.wait_for_fill(order_id=order_id, client_order_id=client_order_id, max_wait_sec=wait_sec)
     if isinstance(client, GateSpotClient):
         return client.wait_for_fill(order_id=order_id, max_wait_sec=wait_sec)
     if isinstance(client, GateUsdtFuturesClient):
@@ -259,12 +236,6 @@ def cancel_live_limit_order(
         return client.cancel_order(symbol=str(symbol), client_order_id=client_order_id)
     if isinstance(client, BybitClient):
         return client.cancel_order(symbol=str(symbol), order_id=order_id, client_order_id=client_order_id)
-    if isinstance(client, CoinbaseExchangeClient):
-        return client.cancel_order(order_id=order_id, client_order_id=client_order_id)
-    if isinstance(client, KrakenClient):
-        return client.cancel_order(order_id=order_id)
-    if isinstance(client, KrakenFuturesClient):
-        return client.cancel_order(order_id=order_id, client_order_id=client_order_id)
     if isinstance(client, GateSpotClient):
         return client.cancel_order(order_id=order_id)
     if isinstance(client, GateUsdtFuturesClient):
@@ -402,12 +373,6 @@ def place_live_market_order(
             pos_side=pos_side,
             client_order_id=client_order_id,
         )
-    if isinstance(client, CoinbaseExchangeClient):
-        return client.place_market_order(symbol=str(symbol), side=side, size=amount, client_order_id=client_order_id)
-    if isinstance(client, KrakenClient):
-        return client.place_market_order(symbol=str(symbol), side=side, size=amount, client_order_id=client_order_id)
-    if isinstance(client, KrakenFuturesClient):
-        return client.place_market_order(symbol=str(symbol), side=side, size=amount, reduce_only=reduce_only, client_order_id=client_order_id)
     if isinstance(client, GateSpotClient):
         mkt_size = spot_quote_amt if (side == "buy" and spot_market_buy_uses_quote and spot_quote_amt > 0) else amount
         if side == "buy" and mkt_size <= 0 and ref_price > 0:

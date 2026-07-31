@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import requests
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -43,7 +44,7 @@ from app.services.ai_copilot_store import (
 )
 from app.services.ai_report_pdf import build_ai_report_pdf
 from app.services.kline import KlineService
-from app.services.llm import LLMService
+from app.services.llm import LLMAPIError, LLMService
 from app.services.search import get_search_service
 from app.config.data_sources import AkshareConfig, TradingEconomicsConfig
 from app.data.market_symbols_seed import search_symbols as seed_search_symbols
@@ -2361,6 +2362,69 @@ def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {_json_dumps(payload)}\n\n"
 
 
+def _stream_llm_with_recovery(llm_messages: list[dict], temperature: float = 0.35):
+    """Recover transient provider failures once without retrying business errors."""
+    service = LLMService()
+    has_partial = False
+    try:
+        for delta in service.stream_llm_api(llm_messages, temperature=temperature):
+            has_partial = has_partial or bool(delta)
+            yield "delta", {"text": delta}
+    except Exception as stream_error:
+        finish_reason = str(getattr(stream_error, "finish_reason", "") or "").lower()
+        if finish_reason == "length" and has_partial:
+            yield "warning", {
+                "code": "output_limit",
+                "msg": "The response reached the configured output limit and may be incomplete.",
+                "finish_reason": "length",
+                "truncated": True,
+            }
+            return
+
+        retryable = bool(getattr(stream_error, "retryable", False)) or isinstance(
+            stream_error,
+            requests.exceptions.RequestException,
+        )
+        if not retryable:
+            raise
+
+        logger.warning(
+            "LLM stream interrupted; regenerating once through the reliable path "
+            "(error_type=%s, finish_reason=%s, request_id=%s, generation_id=%s): %s",
+            getattr(stream_error, "error_type", "") or type(stream_error).__name__,
+            finish_reason,
+            getattr(stream_error, "request_id", ""),
+            getattr(stream_error, "generation_id", ""),
+            stream_error,
+            exc_info=True,
+        )
+        try:
+            recovered = service.call_llm_api(
+                llm_messages,
+                temperature=temperature,
+                use_json_mode=False,
+            )
+        except Exception as recovery_error:
+            logger.error(
+                "LLM stream recovery failed after %s: %s",
+                getattr(stream_error, "error_type", "") or type(stream_error).__name__,
+                recovery_error,
+                exc_info=True,
+            )
+            raise LLMAPIError(
+                f"LLM stream recovery failed: {recovery_error}",
+                status_code=int(getattr(recovery_error, "status_code", 502) or 502),
+                request_id=str(getattr(recovery_error, "request_id", "") or ""),
+                generation_id=str(getattr(recovery_error, "generation_id", "") or ""),
+                error_type=str(getattr(recovery_error, "error_type", "") or "recovery_failed"),
+                retryable=False,
+            ) from recovery_error
+        recovered = str(recovered or "").strip()
+        if not recovered:
+            raise ValueError("LLM recovery returned empty content") from stream_error
+        yield "replace", {"text": recovered, "recovered": True}
+
+
 @ai_chat_blp.route("/chat/message/stream", methods=["POST"])
 @login_required
 def chat_message_stream():
@@ -2392,6 +2456,11 @@ def chat_message_stream():
         sid = None
         costs = {}
         chunks: list[str] = []
+        stream_result = {
+            "recovered": False,
+            "truncated": False,
+            "finish_reason": "stop",
+        }
         usage_action = _agent_usage_action(agent_plan, context, language)
         try:
             with get_db_connection() as db:
@@ -2413,6 +2482,13 @@ def chat_message_stream():
                 )
                 cur.execute("UPDATE qd_ai_copilot_sessions SET updated_at = NOW() WHERE id = ?", (sid,))
                 db.commit()
+
+                # Mark the request as accepted before billing/provider work so clients
+                # never submit the same user message again after an SSE disconnect.
+                yield _sse("accepted", {
+                    "session_id": sid,
+                    "user_message_id": user_message_id,
+                })
 
                 charged, charge_msg, costs = _charge(user_id, bool(attachments), f"copilot:{sid}:{user_message_id}")
                 if not charged:
@@ -2439,9 +2515,22 @@ def chat_message_stream():
                     "actions": [usage_action] if usage_action else [],
                     "costs": costs,
                 })
-                for delta in LLMService().stream_llm_api(llm_messages, temperature=0.35):
-                    chunks.append(delta)
-                    yield _sse("delta", {"text": delta})
+                for stream_event, stream_payload in _stream_llm_with_recovery(llm_messages, temperature=0.35):
+                    if stream_event == "replace":
+                        text = str(stream_payload.get("text") or "")
+                        chunks = [text]
+                        stream_result["recovered"] = True
+                        yield _sse("replace", stream_payload)
+                    elif stream_event == "warning":
+                        stream_result["truncated"] = bool(stream_payload.get("truncated"))
+                        stream_result["finish_reason"] = str(
+                            stream_payload.get("finish_reason") or "length"
+                        )
+                        yield _sse("warning", stream_payload)
+                    else:
+                        text = str(stream_payload.get("text") or "")
+                        chunks.append(text)
+                        yield _sse("delta", stream_payload)
 
                 answer = "".join(chunks).strip() or "The model did not return a usable answer."
                 assistant_id = _insert_message(
@@ -2469,10 +2558,20 @@ def chat_message_stream():
                     "actions": [usage_action] if usage_action else [],
                     "costs": costs,
                     "memory_candidates": _detect_memory_candidates(message, language),
+                    **stream_result,
                 })
         except Exception as e:
             logger.error(f"chat_message_stream failed: {e}", exc_info=True)
-            yield _sse("error", {"msg": str(e), "session_id": sid, "costs": costs})
+            yield _sse("error", {
+                "msg": str(e),
+                "session_id": sid,
+                "costs": costs,
+                "error_type": str(getattr(e, "error_type", "") or "stream_failed"),
+                "finish_reason": str(getattr(e, "finish_reason", "") or ""),
+                "retryable": bool(getattr(e, "retryable", False)),
+                "request_id": str(getattr(e, "request_id", "") or ""),
+                "generation_id": str(getattr(e, "generation_id", "") or ""),
+            })
 
     return Response(generate(), mimetype="text/event-stream", headers={
         "Cache-Control": "no-cache, no-transform",
@@ -2721,5 +2820,3 @@ def save_chat_history():
 
 # openapi-compat: legacy import name
 ai_chat_bp = ai_chat_blp
-
-

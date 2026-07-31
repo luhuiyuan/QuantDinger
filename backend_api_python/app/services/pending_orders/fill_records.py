@@ -17,6 +17,55 @@ from app.utils.trade_close_reason import is_exit_trade_type
 logger = get_logger(__name__)
 
 
+def spot_position_fill_quantity(
+    *,
+    market_type: str,
+    symbol: str,
+    signal_type: str,
+    gross_quantity: float,
+    fees_by_ccy: Dict[str, float],
+) -> float:
+    """Return the quantity that actually changes strategy-owned spot inventory."""
+    gross = max(0.0, float(gross_quantity or 0.0))
+    if str(market_type or "").strip().lower() != "spot":
+        return gross
+    from app.services.live_trading.fee_quote import symbol_currencies
+
+    base, _quote = symbol_currencies(symbol)
+    base_fee = max(0.0, float((fees_by_ccy or {}).get(base, 0.0) or 0.0))
+    signal = str(signal_type or "").strip().lower()
+    if signal in {"open_long", "add_long"}:
+        return max(0.0, gross - base_fee)
+    if signal in {"close_long", "reduce_long"}:
+        return gross + base_fee
+    return gross
+
+
+def proportional_spot_position_fill_quantity(
+    market_type: str,
+    symbol: str,
+    signal_type: str,
+    recorded_quantity: float,
+    cumulative_quantity: float,
+    cumulative_fees_by_ccy: Dict[str, float],
+) -> float:
+    """Apply only the recorded fill's proportional share of cumulative fees."""
+    recorded = max(0.0, float(recorded_quantity or 0.0))
+    cumulative = max(0.0, float(cumulative_quantity or 0.0))
+    share = min(1.0, recorded / cumulative) if cumulative > 0 else 1.0
+    fees = {
+        currency: float(amount or 0.0) * share
+        for currency, amount in (cumulative_fees_by_ccy or {}).items()
+    }
+    return spot_position_fill_quantity(
+        market_type=market_type,
+        symbol=symbol,
+        signal_type=signal_type,
+        gross_quantity=recorded,
+        fees_by_ccy=fees,
+    )
+
+
 def persist_strategy_fill(
     *,
     strategy_id: int,
@@ -41,6 +90,11 @@ def persist_strategy_fill(
     exchange_id: str = "",
     exchange_order_id: str = "",
     raw_fill: Optional[Dict[str, Any]] = None,
+    position_filled: Optional[float] = None,
+    exchange_fill_id: str = "",
+    execution_event_id: int = 0,
+    fee_status: str = "pending",
+    fee_source: str = "",
 ) -> Tuple[Optional[float], Optional[float]]:
     """Apply a fill to local positions and append a trade row."""
     filled_qty = float(filled or 0.0)
@@ -65,11 +119,12 @@ def persist_strategy_fill(
         fill_source=str(fill_source or "worker"),
         pending_order_id=int(order_id or 0),
     )
+    position_qty = float(position_filled) if position_filled is not None else filled_qty
     profit_out, _pos, matched_entry = apply_fill_to_local_position(
         strategy_id=int(strategy_id),
         symbol=str(symbol or ""),
         signal_type=str(signal_type or ""),
-        filled=filled_qty,
+        filled=position_qty,
         avg_price=avg_px,
         leg=leg,
     )
@@ -94,6 +149,10 @@ def persist_strategy_fill(
         leg=leg,
         strategy_run_id=int(strategy_run_id or 0),
         order_intent_id=int(order_intent_id or 0),
+        execution_event_id=int(execution_event_id or 0),
+        exchange_fill_id=str(exchange_fill_id or ""),
+        fee_status=str(fee_status or "pending"),
+        fee_source=str(fee_source or ""),
     )
 
     _record_runtime_fill(
@@ -108,6 +167,10 @@ def persist_strategy_fill(
         exchange_id=str(exchange_id or (exchange_config or {}).get("exchange_id") or ""),
         exchange_order_id=str(exchange_order_id or ""),
         raw_fill=raw_fill or {},
+        credential_id=int(leg.credential_id or 0),
+        exchange_fill_id=str(exchange_fill_id or ""),
+        fee_status=str(fee_status or "pending"),
+        commission_quote=commission_quote,
     )
 
     try:
@@ -137,6 +200,10 @@ def _record_runtime_fill(
     exchange_id: str,
     exchange_order_id: str,
     raw_fill: Dict[str, Any],
+    credential_id: int = 0,
+    exchange_fill_id: str = "",
+    fee_status: str = "pending",
+    commission_quote: Optional[float] = None,
 ) -> None:
     if strategy_run_id <= 0 and order_intent_id <= 0:
         return
@@ -160,9 +227,11 @@ def _record_runtime_fill(
                 (order_intent_id, strategy_run_id, strategy_id,
                  exchange_id, exchange_order_id, exchange_fill_id,
                  side, position_side, price, quantity, notional, fee, fee_ccy,
-                 filled_at, raw_json)
+                 credential_id, commission_quote, fee_status, filled_at, raw_json)
                 VALUES
-                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+                ON CONFLICT (exchange_id, credential_id, exchange_fill_id)
+                WHERE exchange_fill_id <> '' DO NOTHING
                 """,
                 (
                     int(order_intent_id or 0),
@@ -170,7 +239,7 @@ def _record_runtime_fill(
                     int(strategy_id or 0),
                     str(exchange_id or ""),
                     str(exchange_order_id or ""),
-                    str(safe_raw.get("fill_id") or safe_raw.get("trade_id") or ""),
+                    str(exchange_fill_id or safe_raw.get("fill_id") or safe_raw.get("trade_id") or ""),
                     side,
                     pos_side,
                     float(price or 0.0),
@@ -178,6 +247,9 @@ def _record_runtime_fill(
                     float(price or 0.0) * float(quantity or 0.0),
                     float(fee or 0.0),
                     str(fee_ccy or ""),
+                    int(credential_id or 0),
+                    float(commission_quote) if commission_quote is not None else None,
+                    str(fee_status or "pending"),
                     json.dumps(safe_raw, ensure_ascii=False),
                 ),
             )

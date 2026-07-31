@@ -217,7 +217,7 @@ def test_build_live_order_context_rejects_policy_violation():
                 "market_category": "Crypto",
                 "market_type": "swap",
                 "trading_config": {"trade_direction": "long", "bot_type": "trend"},
-                "exchange_config": {"exchange_id": "coinbaseexchange"},
+                "exchange_config": {"exchange_id": "retiredexchange"},
             },
             resolve_exchange_config=lambda cfg, user_id: cfg,
             safe_exchange_config_for_log=lambda cfg: cfg,

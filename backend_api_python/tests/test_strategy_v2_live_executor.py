@@ -110,6 +110,21 @@ def test_explicit_quantity_is_not_scaled_by_leverage():
     assert target == 2.5
 
 
+def test_direction_constraints_convert_opposite_targets_to_flat():
+    assert TradingExecutor._direction_constrained_target(
+        -2.0,
+        direction_mode="long_only",
+    ) == 0.0
+    assert TradingExecutor._direction_constrained_target(
+        2.0,
+        direction_mode="short_only",
+    ) == 0.0
+    assert TradingExecutor._direction_constrained_target(
+        -2.0,
+        direction_mode="both",
+    ) == -2.0
+
+
 def test_target_zero_closes_existing_long_position():
     executor = TradingExecutor.__new__(TradingExecutor)
     executor._get_current_positions = lambda *_args: [{"side": "long", "size": 3.0}]
@@ -178,6 +193,94 @@ def test_hedged_target_updates_only_the_requested_leg():
     assert calls[0]["script_base_qty"] == 2.0
 
 
+def test_live_reversal_waits_for_close_fill_before_opening_opposite_side():
+    executor = TradingExecutor.__new__(TradingExecutor)
+    executor._get_current_positions = lambda *_args: [{"side": "long", "size": 3.0}]
+    calls = []
+    executor._execute_signal = lambda **kwargs: calls.append(kwargs) or True
+    intent = OrderIntent(symbol=_member()["key"], kind="target_quantity", value=-2.0)
+
+    result = executor._execute_strategy_v2_intent(
+        strategy_id=8,
+        strategy_name="V2 CTA",
+        intent=intent,
+        frames={_member()["key"]: _frame()},
+        candidates=[_member()],
+        initial_capital=10_000.0,
+        leverage=1.0,
+        execution_mode="live",
+        notification_config={},
+        trading_config={},
+        exchange_config={},
+        signal_ts=2,
+        strategy_run_id=42,
+        direction_mode="both",
+    )
+
+    assert result is True
+    assert [(call["signal_type"], call["script_base_qty"]) for call in calls] == [
+        ("close_long", 3.0),
+    ]
+
+
+def test_long_only_negative_target_closes_long_without_short_entry():
+    executor = TradingExecutor.__new__(TradingExecutor)
+    executor._get_current_positions = lambda *_args: [{"side": "long", "size": 3.0}]
+    calls = []
+    executor._execute_signal = lambda **kwargs: calls.append(kwargs) or True
+    intent = OrderIntent(symbol=_member()["key"], kind="target_quantity", value=-2.0)
+
+    result = executor._execute_strategy_v2_intent(
+        strategy_id=8,
+        strategy_name="V2 Long Only",
+        intent=intent,
+        frames={_member()["key"]: _frame()},
+        candidates=[_member()],
+        initial_capital=10_000.0,
+        leverage=1.0,
+        execution_mode="live",
+        notification_config={},
+        trading_config={},
+        exchange_config={},
+        signal_ts=2,
+        strategy_run_id=42,
+        direction_mode="long_only",
+    )
+
+    assert result is True
+    assert [(call["signal_type"], call["script_base_qty"]) for call in calls] == [
+        ("close_long", 3.0),
+    ]
+
+
+def test_long_only_negative_target_is_noop_after_position_is_flat():
+    executor = TradingExecutor.__new__(TradingExecutor)
+    executor._get_current_positions = lambda *_args: []
+    calls = []
+    executor._execute_signal = lambda **kwargs: calls.append(kwargs) or True
+    intent = OrderIntent(symbol=_member()["key"], kind="target_quantity", value=-2.0)
+
+    result = executor._execute_strategy_v2_intent(
+        strategy_id=8,
+        strategy_name="V2 Long Only",
+        intent=intent,
+        frames={_member()["key"]: _frame()},
+        candidates=[_member()],
+        initial_capital=10_000.0,
+        leverage=1.0,
+        execution_mode="live",
+        notification_config={},
+        trading_config={},
+        exchange_config={},
+        signal_ts=2,
+        strategy_run_id=42,
+        direction_mode="long_only",
+    )
+
+    assert result is False
+    assert calls == []
+
+
 def test_target_rebalance_skips_sub_dollar_dust_order():
     executor = TradingExecutor.__new__(TradingExecutor)
     executor._get_current_positions = lambda *_args: [{"side": "long", "size": 10.0}]
@@ -244,6 +347,42 @@ def test_live_order_carries_run_sizing_diagnostics():
         "leverage": 2.0,
         "source": "strategy_v2",
     }
+
+
+def test_live_order_is_not_submitted_when_position_leg_has_inflight_work():
+    executor = TradingExecutor.__new__(TradingExecutor)
+    executor._load_strategy = lambda _strategy_id: {
+        "user_id": 12,
+        "direction_mode": "both",
+        "trading_config": {},
+    }
+
+    class Gateway:
+        @staticmethod
+        def has_inflight(request):
+            return request.symbol == "BTC/USDT" and request.action == "open_long"
+
+        @staticmethod
+        def submit(_request):
+            raise AssertionError("in-flight semantic duplicate must not be submitted")
+
+    executor.order_gateway = Gateway()
+
+    result = executor._execute_signal(
+        strategy_id=7,
+        strategy_run_id=42,
+        symbol="BTC/USDT",
+        signal_type="open_long",
+        script_base_qty=0.006,
+        current_price=10_000.0,
+        market_type="swap",
+        execution_mode="live",
+        leverage=2.0,
+        initial_capital=100.0,
+        signal_ts=5,
+    )
+
+    assert result is False
 
 
 def test_demo_account_price_overrides_public_market_price(monkeypatch):

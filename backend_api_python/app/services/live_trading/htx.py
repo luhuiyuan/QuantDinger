@@ -343,17 +343,20 @@ class HtxClient(BaseRestClient):
     def _default_margin_mode(self) -> str:
         return self.margin_mode
 
-    def get_swap_hedge_mode(self, *, symbol: str) -> bool:
+    def detect_swap_hedge_mode(self, *, symbol: str) -> Optional[bool]:
         """
-        True when account uses HTX dual_side (hedge) position mode for ``symbol``.
+        Return the authoritative HTX position mode for ``symbol``.
 
-        GET /v5/position/mode — defaults to one-way when the API call fails.
+        ``True`` is ``dual_side``, ``False`` is ``single_side`` and ``None``
+        means the exchange could not be queried. Deployment checks must retain
+        the distinction between a verified single-side account and an unknown
+        response.
         """
         if self.market_type != "swap":
             return False
         contract_code = to_htx_contract_code(symbol)
         if not contract_code:
-            return False
+            return None
         key = contract_code.upper()
         now = time.time()
         cached = self._pos_mode_cache.get(key)
@@ -417,19 +420,20 @@ class HtxClient(BaseRestClient):
                         "HTX V1 position_mode probe %s for %s: %s", json_body, contract_code, e2
                     )
         if hedge is None:
-            hedge = False
-            logger.info(
-                "HTX position mode unknown for %s; assuming one-way (single_side)",
-                contract_code,
-            )
-        else:
-            logger.info(
-                "HTX position mode for %s: %s",
-                contract_code,
-                "dual_side" if hedge else "single_side",
-            )
+            logger.warning("HTX position mode unknown for %s", contract_code)
+            return None
+        logger.info(
+            "HTX position mode for %s: %s",
+            contract_code,
+            "dual_side" if hedge else "single_side",
+        )
         self._pos_mode_cache[key] = (now, bool(hedge))
         return bool(hedge)
+
+    def get_swap_hedge_mode(self, *, symbol: str) -> bool:
+        """Order-routing compatibility wrapper; unknown mode uses one-way first."""
+        detected = self.detect_swap_hedge_mode(symbol=symbol)
+        return bool(detected) if detected is not None else False
 
     def _get_spot_account_id(self) -> str:
         if self._spot_account_id:
@@ -536,7 +540,7 @@ class HtxClient(BaseRestClient):
             contract_size = Decimal("1")
         contracts = req / contract_size
         val = self._floor_to_int(contracts)
-        return val if val > 0 else 1
+        return val if val > 0 else 0
 
     def set_leverage(self, *, symbol: str, leverage: float, margin_mode: str = "") -> bool:
         if self.market_type == "spot":
@@ -548,6 +552,23 @@ class HtxClient(BaseRestClient):
             lv = 1
         if lv < 1:
             lv = 1
+        try:
+            contract = self.get_contract_info(symbol=symbol) or {}
+        except Exception:
+            contract = {}
+        max_raw = (
+            contract.get("max_leverage")
+            or contract.get("maxLever")
+            or contract.get("max_lever_rate")
+        )
+        try:
+            max_leverage = int(float(max_raw or 0))
+        except (TypeError, ValueError):
+            max_leverage = 0
+        if max_leverage > 0 and lv > max_leverage:
+            raise LiveTradingError(
+                f"HTX leverage {lv}x exceeds the current {contract_code} maximum {max_leverage}x"
+            )
         mode = str(margin_mode or self._default_margin_mode()).strip().lower()
         if mode not in ("cross", "isolated"):
             return False
@@ -557,7 +578,23 @@ class HtxClient(BaseRestClient):
             lever_rate=lv,
             margin_mode=mode,
         )
-        self._swap_v5_request("POST", "/v5/position/lever", json_body=body)
+        response = self._swap_v5_request(
+            "POST", "/v5/position/lever", json_body=body
+        )
+        data = response.get("data") if isinstance(response, dict) else None
+        if isinstance(data, dict):
+            effective_raw = data.get("lever_rate") or data.get("leverRate")
+            if effective_raw not in (None, ""):
+                try:
+                    effective = int(float(effective_raw))
+                except (TypeError, ValueError) as exc:
+                    raise LiveTradingError(
+                        f"HTX returned an invalid effective leverage: {effective_raw}"
+                    ) from exc
+                if effective != lv:
+                    raise LiveTradingError(
+                        f"HTX applied {effective}x instead of requested {lv}x leverage"
+                    )
         self._lever_cache[contract_code] = lv
         return True
 

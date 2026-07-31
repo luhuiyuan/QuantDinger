@@ -156,6 +156,180 @@ def handle_data(context, data):
     assert result["rawTrades"][0]["price"] == 110
 
 
+def test_buy_limit_remains_resting_and_uses_favorable_gap_open():
+    code = """
+def initialize(context):
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+    g.sent = False
+
+def handle_data(context, data):
+    if not g.sent:
+        order_value("AAPL", 95.0, order_type="limit", limit_price=95.0)
+        g.sent = True
+"""
+    index = pd.date_range("2026-01-01", periods=3, freq="D")
+    frame = pd.DataFrame({
+        "open": [100.0, 100.0, 94.0],
+        "high": [101.0, 101.0, 96.0],
+        "low": [99.0, 99.0, 93.0],
+        "close": [100.0, 100.0, 95.0],
+        "volume": [100000.0] * 3,
+    }, index=index)
+
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"USStock:AAPL": frame},
+        initial_capital=1000,
+        commission=0,
+        slippage=0,
+    ).run()
+
+    assert result["totalExecutions"] == 1
+    assert result["executions"][0]["price"] == pytest.approx(94.0)
+    assert result["executions"][0]["fill_reference"] == "gap_open"
+    assert result["audit"]["passed"] is True
+    assert any(
+        row["status"] == "deferred" and row["statusReason"] == "limit_not_reached"
+        for row in result["orderLedger"]
+    )
+
+
+def test_resting_limit_compacts_poll_events_without_changing_fill_or_status():
+    code = """
+def initialize(context):
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+    g.sent = False
+
+def handle_data(context, data):
+    if not g.sent:
+        order_value(
+            "AAPL",
+            95.0,
+            order_type="limit",
+            limit_price=95.0,
+            client_order_id="resting-buy",
+        )
+        g.sent = True
+"""
+    periods = 20
+    index = pd.date_range("2026-01-01", periods=periods, freq="D")
+    frame = pd.DataFrame({
+        "open": [100.0] * (periods - 1) + [94.0],
+        "high": [101.0] * (periods - 1) + [96.0],
+        "low": [99.0] * (periods - 1) + [93.0],
+        "close": [100.0] * (periods - 1) + [95.0],
+        "volume": [100000.0] * periods,
+    }, index=index)
+    runner = StrategyV2BacktestRunner(
+        code=code,
+        frames={"USStock:AAPL": frame},
+        initial_capital=1000,
+        commission=0,
+        slippage=0,
+    )
+
+    result = runner.run()
+
+    resting = [
+        item
+        for item in result["orderLedger"]
+        if item.get("statusReason") == "limit_not_reached"
+    ]
+    assert len(resting) == 1
+    assert resting[0]["occurrenceCount"] == periods - 2
+    assert resting[0]["firstEventTime"] < resting[0]["lastEventTime"]
+    assert result["orderLedgerStats"] == {
+        "storedEvents": 2,
+        "eventOccurrences": periods - 1,
+        "compactedOccurrences": periods - 3,
+    }
+    assert result["totalExecutions"] == 1
+    assert result["executions"][0]["price"] == pytest.approx(94.0)
+    status = runner.context.get_order_status("resting-buy")
+    assert status["status"] == "filled"
+    # Limit-order sizing is fixed at the submitted limit price; a favorable
+    # gap improves cash usage without changing the requested base quantity.
+    assert status["filled_quantity"] == pytest.approx(1.0)
+    assert runner._order_status_cursor == len(runner.broker.order_ledger)
+
+
+def test_buy_limit_fills_at_limit_when_touched_inside_bar():
+    code = """
+def initialize(context):
+    context.set_universe(["USStock:AAPL"])
+    context.subscribe(frequency="1d")
+    g.sent = False
+
+def handle_data(context, data):
+    if not g.sent:
+        order_value("AAPL", 95.0, order_type="limit", limit_price=95.0)
+        g.sent = True
+"""
+    index = pd.date_range("2026-01-01", periods=2, freq="D")
+    frame = pd.DataFrame({
+        "open": [100.0, 100.0],
+        "high": [101.0, 101.0],
+        "low": [99.0, 94.0],
+        "close": [100.0, 96.0],
+        "volume": [100000.0] * 2,
+    }, index=index)
+
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"USStock:AAPL": frame},
+        initial_capital=1000,
+        commission=0,
+        slippage=0,
+    ).run()
+
+    assert result["executions"][0]["price"] == pytest.approx(95.0)
+    assert result["executions"][0]["fill_reference"] == "limit"
+    assert result["audit"]["passed"] is True
+
+
+def test_partial_incremental_limit_retries_only_the_remaining_notional():
+    code = """
+def initialize(context):
+    context.set_universe(["Crypto:BTC/USDT@spot"])
+    context.subscribe(frequency="1d")
+    g.sent = False
+
+def handle_data(context, data):
+    if not g.sent:
+        order_value(
+            "Crypto:BTC/USDT@spot",
+            100.0,
+            order_type="limit",
+            limit_price=100.0,
+        )
+        g.sent = True
+"""
+    index = pd.date_range("2026-01-01", periods=15, freq="D")
+    frame = pd.DataFrame({
+        "open": [100.0] * 15,
+        "high": [101.0] * 15,
+        "low": [99.0] * 15,
+        "close": [100.0] * 15,
+        # The simulator allows at most 10% of bar volume per fill.
+        "volume": [1.0] * 15,
+    }, index=index)
+
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@spot": frame},
+        initial_capital=1000,
+        commission=0,
+        slippage=0,
+    ).run()
+
+    position = result["positions"]["Crypto:BTC/USDT@spot"]
+    assert position["amount"] == pytest.approx(1.0)
+    assert sum(row["notional"] for row in result["executions"]) == pytest.approx(100.0)
+    assert result["audit"]["passed"] is True
+
+
 def test_full_target_percent_reserves_commission_instead_of_rejecting_order():
     code = """
 def initialize(context):
@@ -660,6 +834,35 @@ def handle_data(context, data):
     assert result["attribution"]["orderStatus"]["rejected"] == 0
 
 
+def test_position_cap_never_reverses_an_incremental_order_direction():
+    broker = MultiAssetSimulationBroker(
+        initial_capital=1000,
+        commission=0.0005,
+        slippage=0.0005,
+    )
+    position = Position(
+        "Crypto:BTC/USDT@spot",
+        amount=10,
+        avg_cost=100,
+        last_price=100,
+    )
+    broker.portfolio.positions[position.symbol] = position
+    broker.portfolio.available_cash = 0.0001
+    broker.portfolio.total_value = 1000.0001
+
+    feasible, reason = broker._feasible_delta(
+        delta=1,
+        current=position,
+        fill_price=100.05,
+        equity=1000.0001,
+        lot_size=1e-8,
+        position_key=position.symbol,
+    )
+
+    assert feasible == 0
+    assert reason == "position_limit"
+
+
 def test_closed_trade_breaks_out_open_and_close_commission():
     frame = _frame([100, 100, 110, 110, 110])
     code = """
@@ -688,3 +891,148 @@ def handle_data(context, data):
         trade["entry_commission"] + trade["exit_commission"]
     )
     assert trade["profit"] == pytest.approx(trade["gross_profit"] - trade["commission"])
+
+
+def test_live_session_snapshot_round_trips_strategy_timestamps_and_order_statuses():
+    frame = _frame([100, 101])
+    code = """
+PERSIST_RUNTIME_STATE = True
+
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@spot"
+    g.last_order_at = None
+    g.sent = False
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1d")
+
+def handle_data(context, data):
+    if not g.sent:
+        g.last_order_at = context.current_dt
+        g.reference = order_value(
+            g.symbol,
+            10,
+            client_order_id="state-test-order",
+        )
+        g.sent = True
+"""
+    first = StrategyV2LiveSession(
+        code=code,
+        frames={"Crypto:BTC/USDT@spot": frame},
+        initial_capital=100,
+    )
+    intents, _, _ = first.process(
+        {"Crypto:BTC/USDT@spot": frame},
+        schedule_time=frame.index[-1],
+    )
+    reference = intents[0].client_order_id
+    first.context.update_order_statuses({
+        reference: {
+            "client_order_id": reference,
+            "status": "submitted",
+        }
+    })
+
+    restored = StrategyV2LiveSession(
+        code=code,
+        frames={"Crypto:BTC/USDT@spot": frame},
+        initial_capital=100,
+    )
+    restored.restore_session_snapshot(first.session_snapshot())
+
+    assert isinstance(restored.program.state.last_order_at, pd.Timestamp)
+    assert restored.program.state.last_order_at == frame.index[-1]
+    assert restored.program.state.reference == reference
+    assert restored.context.get_order_status(reference)["status"] == "submitted"
+    duplicate, _, _ = restored.process(
+        {"Crypto:BTC/USDT@spot": frame},
+        schedule_time=frame.index[-1],
+    )
+    assert duplicate == []
+
+
+def test_custom_strategy_keeps_legacy_order_return_and_does_not_persist_g_by_default():
+    frame = _frame([100, 101])
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@spot"
+    g.counter = 0
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1d")
+
+def handle_data(context, data):
+    g.counter += 1
+    g.legacy_result = order_value(g.symbol, 5)
+    g.explicit_reference = order_value(
+        g.symbol,
+        5,
+        client_order_id="custom-explicit-order",
+    )
+"""
+    session = StrategyV2LiveSession(
+        code=code,
+        frames={"Crypto:BTC/USDT@spot": frame},
+        initial_capital=100,
+    )
+    intents, _, _ = session.process(
+        {"Crypto:BTC/USDT@spot": frame},
+        schedule_time=frame.index[-1],
+    )
+
+    assert len(intents) == 2
+    assert session.program.state.legacy_result is None
+    assert session.program.state.explicit_reference == "custom-explicit-order"
+    snapshot = session.session_snapshot()
+    assert set(snapshot) == {"version", "protection"}
+
+    restored = StrategyV2LiveSession(
+        code=code,
+        frames={"Crypto:BTC/USDT@spot": frame},
+        initial_capital=100,
+    )
+    restored.restore_session_snapshot({
+        **snapshot,
+        "strategyState": {"counter": 99},
+    })
+    assert restored.program.state.counter == 0
+
+
+def test_strategy_can_cancel_a_resting_limit_before_a_later_bar_crosses_it():
+    index = pd.date_range("2026-01-01", periods=4, freq="1min")
+    frame = pd.DataFrame({
+        "open": [100, 100, 90, 90],
+        "high": [101, 101, 91, 91],
+        "low": [99, 99, 89, 89],
+        "close": [100, 100, 90, 90],
+        "volume": [1000] * 4,
+    }, index=index)
+    code = """
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@spot"
+    g.reference = ""
+    g.cancelled = False
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1m")
+
+def handle_data(context, data):
+    if not g.reference:
+        g.reference = order_value(
+            g.symbol,
+            50,
+            order_type="limit",
+            limit_price=95,
+            client_order_id="cancel-me",
+        )
+        return
+    if not g.cancelled and get_order_status(g.reference).get("status") == "deferred":
+        g.cancelled = cancel_order(g.reference)
+"""
+
+    result = StrategyV2BacktestRunner(
+        code=code,
+        frames={"Crypto:BTC/USDT@spot": frame},
+        initial_capital=100,
+        commission=0,
+        slippage=0,
+    ).run()
+
+    assert result["totalExecutions"] == 0

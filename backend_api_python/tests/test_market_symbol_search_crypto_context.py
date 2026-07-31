@@ -49,6 +49,6 @@ def test_crypto_search_rejects_removed_exchange():
     assert symbol_search.search_market_symbols(
         "Crypto",
         "BTC",
-        exchange_id="kraken",
+        exchange_id="retiredexchange",
         market_type="spot",
     ) == []

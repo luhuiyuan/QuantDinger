@@ -13,7 +13,9 @@ curl -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   http://localhost:8888/api/agent/v1/whoami
 ```
 
-Scopes are `R` for reads, `W` for saved artifacts and deployment configuration, `B` for backtests, and `T` for runtime or order mutations. Token permissions never bypass server-side live-trading controls.
+Scopes are `R` for reads, `W` for saved artifacts and deployment configuration, `B` for backtests, `N` for notification side effects, and `T` for runtime or order mutations. `C` is admin-only. Token permissions never bypass server-side live-trading controls.
+
+Every mutating W/B/N/T request requires a unique `Idempotency-Key` header. Reuse the same key only when retrying the exact same method, route, query, and body. The gateway atomically reserves the key, returns a stored completed response on replay, and rejects concurrent or mismatched reuse.
 
 ## Strategy API V2
 
@@ -36,6 +38,7 @@ Create a stopped deployment from a saved source:
 curl -X POST http://localhost:8888/api/agent/v1/strategies \
   -H "Authorization: Bearer $QUANTDINGER_AGENT_TOKEN" \
   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: deploy-spy-trend-v1" \
   -d '{
     "name": "spy-trend",
     "sourceId": 12,
@@ -68,13 +71,24 @@ curl -X POST http://localhost:8888/api/agent/v1/backtest/run \
 ```
 
 Poll `/api/agent/v1/jobs/{job_id}` or consume `/api/agent/v1/jobs/{job_id}/stream`. Reuse an idempotency key when retrying the same submission.
+Cancel a queued or running job with `POST /jobs/{job_id}/cancel` using B scope, confirmation at the MCP layer, and a new idempotency key. A running worker may finish its local computation, but it cannot overwrite the durable cancelled state.
 
 ## Indicators
 
 Indicators are chart-only. Fetch `/indicators/authoring-contract`, validate with `/indicators/validate`, and save through `/indicators`. Indicator code cannot be passed to the backtest endpoint; convert the trading idea to Strategy API V2 first.
 
+## Research, broker observations, and notifications
+
+Research tools expose point-in-time universes, factor metadata, and the tenant watchlist under `/research/*`. Broker observation endpoints under `/trading/*` return safe credential metadata, account snapshots, account/strategy positions, pending orders, and cursor-paginated trade ledgers. They never return decrypted API keys, secrets, passphrases, or encrypted credential blobs.
+
+N-scope signal-alert endpoints under `/notifications/signal-alerts` reuse the existing indicator notification service. Immediate evaluation requires explicit MCP confirmation because it may deliver a notification.
+
 ## Runtime and orders
 
-`GET /runtime/overview` returns compact tenant runtime state. Quick orders require T scope and an `Idempotency-Key`. Live execution additionally requires a live-capable token, server live-trading enablement, a credential reference, and client-side explicit confirmation when using MCP.
+`GET /runtime/overview` returns compact tenant runtime state. Quick orders require T scope and an `Idempotency-Key`. Live execution additionally requires a live-capable token, server live-trading enablement, a credential reference, client-side explicit confirmation, and compliance with the token's `max_order_notional` and `max_daily_notional` caps.
+
+The emergency stop at `/quick-trade/kill-switch` requires `confirm=true`. It attempts to cancel open agent-originated live orders, cancels open paper orders, revokes all active T-scope tokens for the tenant, and returns any exchange cancellation failures for mandatory human review.
+
+Rate limiting is shared through Redis across API workers and enforces both token and tenant quotas. Responses include `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`; `429` responses also include `Retry-After`.
 
 Never log tokens or credential material. Treat redacted values as terminal and do not attempt to reconstruct them.

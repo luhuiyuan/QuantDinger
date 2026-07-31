@@ -76,7 +76,6 @@ def query_exchange_position_size(
         from app.services.live_trading.bybit import BybitClient
         from app.services.live_trading.bitget import BitgetMixClient
         from app.services.live_trading.gate import GateUsdtFuturesClient
-        from app.services.live_trading.kraken_futures import KrakenFuturesClient
         from app.services.live_trading.htx import HtxClient
     except Exception:
         if strict:
@@ -166,24 +165,6 @@ def query_exchange_position_size(
             qty_base = position_base_qty_for_side(p, side, contracts_to_base=qm)
             if qty_base > 0:
                 return float(qty_base)
-        return 0.0
-
-    if isinstance(client, KrakenFuturesClient):
-        resp = client.get_open_positions() or {}
-        positions = (
-            (resp.get("openPositions") if isinstance(resp, dict) else None)
-            or (resp.get("open_positions") if isinstance(resp, dict) else None)
-            or []
-        )
-        for p in positions:
-            if not isinstance(p, dict):
-                continue
-            p_sym = str(p.get("symbol") or p.get("instrument") or "").strip()
-            if sym and p_sym and not symbols_equivalent(p_sym, sym):
-                continue
-            qty = position_base_qty_for_side(p, side)
-            if qty > 0:
-                return qty
         return 0.0
 
     if isinstance(client, HtxClient):

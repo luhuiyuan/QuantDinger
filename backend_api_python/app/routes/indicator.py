@@ -666,6 +666,22 @@ def get_indicator_params():
         return jsonify({"code": 0, "msg": str(e), "data": None}), 500
 
 
+@indicator_blp.route("/chart-preview", methods=["POST"])
+@login_required
+def preview_indicator_chart():
+    """Return candles, indicator plots, and visual signals without creating a task."""
+    try:
+        from app.services.indicator_signal_alerts import IndicatorSignalAlertService
+
+        data = IndicatorSignalAlertService().preview_chart(g.user_id, request.get_json() or {})
+        return jsonify({"code": 1, "msg": "success", "data": data})
+    except ValueError as exc:
+        return jsonify({"code": 0, "msg": str(exc), "data": None}), 400
+    except Exception as exc:
+        logger.error(f"preview_indicator_chart failed: {str(exc)}", exc_info=True)
+        return jsonify({"code": 0, "msg": str(exc), "data": None}), 500
+
+
 @indicator_blp.route("/aiGenerate", methods=["POST"])
 @login_required
 def ai_generate():
@@ -1223,4 +1239,3 @@ def code_quality_hints():
             )
 
     return jsonify({"code": 1, "data": {"hints": hints}})
-

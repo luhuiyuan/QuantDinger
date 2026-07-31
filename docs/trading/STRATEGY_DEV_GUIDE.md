@@ -97,6 +97,16 @@ The project authoring standard additionally requires:
 
 <code>initialize</code> runs during compilation/manifest discovery. Use it for declarations and initial <code>g</code> state. Do not request market data, inspect real positions, or place orders there.
 
+Important compiler-facing API rules:
+
+- <code>context.params</code> is not available inside <code>initialize</code>; read it from handlers or scheduled callbacks.
+- <code>get_history</code> is count-first and uses <code>field</code>: <code>get_history(count, frequency, field, symbol)</code>. Do not pass a <code>fields=</code> keyword to it.
+- <code>data.history</code> is a separate API: <code>data.history(symbols, count, fields)</code>.
+- Single-instrument history returns a DataFrame; multi-instrument history returns a dictionary of DataFrames.
+- <code>get_position</code> returns a Position object, not a dictionary.
+- A pandas DataFrame or Series cannot be used directly as a Boolean condition. Use <code>len(...)</code>, <code>.empty</code>, <code>.any()</code>, or <code>.all()</code>.
+- Undefined platform APIs and unsupported arguments are rejected during verification instead of failing later in a live session.
+
 ---
 
 ## 3. The source-owned manifest
@@ -139,10 +149,13 @@ A valid response contains <code>valid: true</code> and the manifest. Verify the 
 | Venue-specific Crypto spot | <code>Crypto:BTC/USDT@okx:spot</code> |
 | Crypto perpetual | <code>Crypto:BTC/USDT@swap</code> |
 | Venue-specific perpetual | <code>Crypto:BTC/USDT@okx:swap</code> |
+| Forex | <code>Forex:EUR/USD</code> |
+| Futures | <code>Futures:ES</code> |
+| MOEX | <code>MOEX:SBER</code> |
 
 The parser also normalizes selected aliases, such as <code>600519.XSHG</code> to <code>CNStock:600519.SH</code> and <code>BTCUSDT</code> to <code>BTC/USDT</code>.
 
-Production strategies should use the full market prefix. Crypto defaults to spot when no market type is present. Only swap instruments can permit contract leverage.
+Production strategies should use the full market prefix. Crypto defaults to spot when no market type is present. Only swap instruments can permit contract leverage. Parsing a market name does not by itself guarantee data coverage or live-trading support; see the live venue matrix in Section 18.
 
 ---
 
@@ -245,7 +258,9 @@ Rules:
 - On daily or lower-frequency bars, a specific intraday time does not create a nonexistent bar.
 - Prefer <code>callback(context, data)</code>; the runtime also adapts callbacks that accept only context.
 - A portfolio strategy with no registered schedules invokes <code>on_rebalance</code>.
-- The current engine invokes <code>before_trading_start</code> and <code>after_trading_end</code> for every event timestamp. Do not assume they run only once per calendar day in an intraday strategy.
+- Backtests invoke <code>before_trading_start</code> and <code>after_trading_end</code> on every event timestamp. Live sessions invoke <code>before_trading_start</code> only when a newly processed bar enters a new calendar date; the current live runtime does not invoke <code>after_trading_end</code>. Put live-critical close logic in <code>handle_data</code> or a schedule.
+
+Schedule time is interpreted in the live user's configured timezone. If no user timezone is available, the server <code>TZ</code> setting is used, then UTC. Set the user's timezone explicitly and test schedules against exchange sessions. Backtest timestamps follow the supplied market-data clock, so verify timezone alignment before relying on an exact intraday time.
 
 ---
 
@@ -261,7 +276,7 @@ Backtests expose only point-in-time-visible data:
 
 This implements “confirm on close, fill at next open” without future leakage. Never use negative shifts or future rows to move execution earlier.
 
-Live sessions process each closed bar once and preserve <code>g</code> state. Receiving the same bar twice should not duplicate strategy work.
+Live sessions process each closed bar once and preserve <code>g</code> state while the session remains alive. Receiving the same bar twice should not duplicate strategy work. Cross-restart state is opt-in as described in Section 9.
 
 ---
 
@@ -291,6 +306,16 @@ def initialize(context):
 ~~~
 
 Do not store strategy state in files, databases, or external module services. <code>g</code> is the per-run user state namespace.
+
+### State across restarts
+
+By default, <code>g</code> survives callbacks in the current process but is rebuilt by <code>initialize</code> after a session restart. Opt into runtime-state snapshots when the strategy cannot reconstruct its cycle from positions and order status:
+
+~~~python
+PERSIST_RUNTIME_STATE = True
+~~~
+
+The equivalent deployment parameter is <code>persist_runtime_state=true</code>. When enabled, the runtime snapshots supported <code>g</code> values, the last processed bar, schedule clock, client-order statuses, and last exit reasons. Protection-engine state is restored independently. Keep persisted values JSON-like and still reconcile them with real account positions after restart; a snapshot is not an exchange ledger.
 
 ---
 
@@ -380,6 +405,16 @@ Common Position fields:
 - <code>avg_cost</code>
 - <code>last_price</code>
 - <code>market_value</code>
+- <code>position_side</code>
+
+In a hedge-mode swap strategy, read each leg explicitly:
+
+~~~python
+long_position = get_position(g.symbol, position_side="long")
+short_position = get_position(g.symbol, position_side="short")
+~~~
+
+Do not treat <code>get_position(symbol)</code> as a synthetic net position in hedge mode. <code>get_positions()</code> may contain leg-aware keys such as <code>symbol::long</code> and <code>symbol::short</code>. Use <code>abs(position.amount)</code> when checking whether a leg is open.
 
 Order functions:
 
@@ -401,9 +436,48 @@ order_target_percent(
 )
 ~~~
 
+Common order options:
+
+| Option | Meaning |
+| --- | --- |
+| <code>reason</code> | stable audit reason |
+| <code>position_side</code> | <code>long</code> or <code>short</code> leg for swap hedge mode |
+| <code>client_order_id</code> | stable idempotency and status reference, at most 100 characters |
+| <code>order_type</code> | <code>market</code> or <code>limit</code> |
+| <code>limit_price</code> | required positive price for a limit order |
+| <code>execution_algo</code> | <code>market</code>, <code>limit</code>, or <code>maker_then_market</code> |
+| <code>maker_wait_sec</code> | maker wait before market fallback |
+| <code>maker_offset_bps</code> | maker-price offset in basis points |
+
+Example with a stable client reference:
+
+~~~python
+def submit_entry():
+    g.entry_ref = order(
+        g.symbol,
+        1,
+        position_side="long",
+        order_type="limit",
+        limit_price=100.0,
+        client_order_id="breakout-long-20250102",
+        reason="breakout_long_entry",
+    )
+
+
+def monitor_entry(cancel_requested):
+    status = get_order_status(g.entry_ref)
+    working = ("queued", "deferred", "submitted", "open", "partial")
+    if cancel_requested and status["status"] in working:
+        cancel_order(g.entry_ref)
+~~~
+
+Order helpers preserve their historical <code>None</code> return when no explicit <code>client_order_id</code> is supplied. With an explicit ID they return that ID for status tracking. Typical status values include <code>unknown</code>, <code>queued</code>, <code>deferred</code>, <code>submitted</code>, <code>open</code>, <code>partial</code>, <code>filled</code>, <code>cancelled</code>, and <code>rejected</code>. Cancellation is asynchronous in live trading; wait for the reconciled terminal status before reusing capital or advancing state. <code>consume_last_exit_reason(symbol)</code> returns and clears the most recently recorded protection exit reason.
+
 Write spot and all non-Crypto markets as long-only under the current product policy. A long exit and a short entry are independent; do not turn a zero target into a negative position automatically.
 
 The engine accounts for commission, slippage, lot size, liquidity caps, price limits, and suspensions. Deferred and rejected requests appear in the order audit ledger. “No fill” does not necessarily mean “no signal.”
+
+In live execution, an active same-leg request suppresses duplicate requests until reconciliation resolves it. A target that crosses through zero is executed close-first: the runtime closes the current leg, waits for confirmed reconciliation, then opens the opposite leg. Strategy state must advance from confirmed order status or synchronized positions, not merely because an order function was called.
 
 ---
 
@@ -477,6 +551,64 @@ context.set_metadata(direction_mode="both")
 Supported values are `long_only`, `short_only`, `both`, and `neutral`. This declaration does not place orders or override strategy signals. It lets deployment validation reserve the correct hedge-mode leg or legs and reject new entry signals that exceed the declared capability. `both` and `neutral` require hedge mode for live execution.
 
 The compiler still recognizes legacy top-level `DIRECTION = 1/-1` constants and literal `position_side="long"/"short"` order arguments. If a legacy swap strategy cannot be inferred safely, the deployment form asks for a compatibility mode. Spot strategies are treated as `long_only` automatically.
+
+### Hedge-mode example
+
+The following example keeps a one-contract long core and independently enables a one-contract short hedge below the moving average:
+
+~~~python
+"""BTC Long Core With Short Hedge
+Maintains independent long and short swap legs in exchange hedge mode.
+"""
+
+
+def initialize(context):
+    g.symbol = "Crypto:BTC/USDT@okx:swap"
+    context.set_universe([g.symbol])
+    context.subscribe(frequency="1h")
+    context.set_warmup(60)
+    context.allow_leverage(max_leverage=5)
+    context.set_metadata(direction_mode="both")
+
+
+def handle_data(context, data):
+    bars = get_history(51, "1h", "close", g.symbol)
+    if len(bars) < 51:
+        return
+
+    price = float(bars["close"].iloc[-1])
+    average = float(bars["close"].tail(50).mean())
+    long_position = get_position(g.symbol, position_side="long")
+    short_position = get_position(g.symbol, position_side="short")
+
+    if abs(float(long_position.amount or 0.0)) < 0.5:
+        order_target(
+            g.symbol,
+            1,
+            position_side="long",
+            reason="core_long",
+        )
+
+    hedge_required = price < average
+    if hedge_required and abs(float(short_position.amount or 0.0)) < 0.5:
+        order_target(
+            g.symbol,
+            -1,
+            position_side="short",
+            reason="open_short_hedge",
+        )
+    elif not hedge_required and abs(float(short_position.amount or 0.0)) >= 0.5:
+        order_target(
+            g.symbol,
+            0,
+            position_side="short",
+            reason="close_short_hedge",
+        )
+~~~
+
+The quantity unit follows the venue instrument specification; do not assume one contract always equals one base coin. Before live start, the platform confirms the account position mode. `both` and `neutral` fail closed when hedge mode cannot be confirmed. A running strategy reserves its account/exchange/market/symbol leg; overlapping ownership raises <code>strategyV2.liveLegConflict</code>. In confirmed hedge mode, separate long-only and short-only strategies may own opposite legs, but a strategy declaring <code>both</code> or <code>neutral</code> owns both legs.
+
+Never maintain authoritative quantities only in <code>g.long_qty</code>/<code>g.short_qty</code>. An order can be rejected, deferred, partially filled, or rounded by venue rules. Read synchronized leg positions and order status before updating cycle state.
 
 ---
 
@@ -634,6 +766,16 @@ Inspect:
 - <code>equityCurve</code>, drawdown, win rate, Profit Factor, benchmark, and excess return.
 - <code>dataProvenance</code>/<code>executionAssumptions</code>: data origin and fill model.
 
+### Costs and execution assumptions
+
+- Commission is charged on every fill. A completed round trip deducts both allocated entry commission and exit commission from realized profit.
+- Slippage is applied according to the reported execution assumptions.
+- Crypto funding payments are currently **not modeled in Strategy API V2 backtests**. Confirm <code>executionAssumptions.fundingMode == "not_modeled"</code>; do not compare a leveraged swap backtest directly with live net profit without estimating funding separately.
+- Live trading uses venue-reported fill fees and, where available, funding/account-ledger records. A fee may be charged in quote, base, or a discount token, so conversion and reconciliation can lag the fill.
+- Test a range of commission and slippage assumptions. A strategy whose edge disappears under a small cost increase is not robust.
+
+The backtest center also supports factor research and parameter tuning. Tuning accepts grid or random parameter spaces, caps a request at 500 variants, and reports out-of-sample validation for the selected result. Backtests may consume a system-configured credit amount; a failed execution is refunded automatically. UI request timeouts do not prove the server job failed—check backtest history before submitting a duplicate run.
+
 Zero executions can be valid: insufficient history, conditions never met, poor parameters, missing data, or rejected orders. Read logs and the order ledger before treating it as an engine failure.
 
 ---
@@ -652,10 +794,22 @@ A new deployment is stopped and must be started explicitly. Stop it before delet
 
 Current live-account boundaries:
 
-- Crypto live execution requires a supported exchange credential.
-- USStock live execution requires Alpaca or IBKR.
-- Mixed-market live deployment is unsupported.
-- Other markets cannot be forced through a mismatched credential.
+| Market | Supported live venues | Product boundary |
+| --- | --- | --- |
+| Crypto | Binance, Bitget, Bybit, OKX, Gate, HTX | spot and swap according to venue/account capability |
+| USStock | Alpaca, IBKR | current broker policy is long-only |
+| Other parsed markets | none | backtest/data availability does not imply live support |
+
+Mixed-market live deployment is unsupported. Other markets cannot be forced through a mismatched credential.
+
+### Position ownership, reconciliation, and account risk
+
+- A live strategy owns only its allocated strategy position. Manual holdings and positions owned by another strategy are not available for it to close.
+- Before placing a close or reversal, the runtime reconciles strategy allocation, database state, and the exchange snapshot. A mismatch blocks the order rather than risking a user's unrelated holding.
+- Same account/exchange/market/symbol/leg ownership is exclusive. Confirmed hedge mode can allow separate long-only and short-only strategies on opposite legs; <code>both</code>/<code>neutral</code> reserves both.
+- Minimum quantity, quantity step, minimum notional, available margin, leverage, and venue caps are applied after strategy sizing. The final submitted quantity can differ from the raw request.
+- Optional account-risk limits can reject orders for gross notional, estimated margin, gross leverage, or per-symbol notional. Treat those as risk warnings that require configuration or sizing changes, not as reasons to bypass the guard.
+- Market data, private WebSocket events, and periodic REST reconciliation work together. WebSocket improves latency; REST remains the recovery source after disconnects or missed events.
 
 Use signal mode first to validate notifications, signal frequency, and state restoration. A successful backtest does not prove that credentials, balances, venue rules, minimum order sizes, and network health are ready for live trading.
 
@@ -664,6 +818,8 @@ Use signal mode first to validate notifications, signal frequency, and state res
 ## 19. Sandbox and common failures
 
 Strategy source runs in a safe execution environment. File, network, database, process, dynamic execution, reflection, and unsafe imports are prohibited. Do not use <code>eval</code>, <code>exec</code>, <code>compile</code>, <code>open</code>, dunder bypasses, or external state.
+
+Allowed import roots are <code>numpy</code>, <code>pandas</code>, <code>math</code>, <code>json</code>, <code>datetime</code>, <code>time</code>, <code>collections</code>, <code>functools</code>, <code>itertools</code>, <code>statistics</code>, <code>decimal</code>, <code>fractions</code>, and <code>copy</code>. File/URL/database methods such as pandas <code>read_*</code>/<code>to_*</code>, NumPy load/save, pickle-like deserialization, and string-expression evaluators remain blocked even through an allowed module.
 
 | Error | Meaning | Fix |
 | --- | --- | --- |
@@ -676,11 +832,52 @@ Strategy source runs in a safe execution environment. File, network, database, p
 | <code>strategyV2.leverageNotAllowed</code> | run requests unpermitted leverage | permit it legally or disable it |
 | <code>strategyV2.leverageExceedsStrategyLimit</code> | requested leverage too high | lower the request |
 | <code>strategyV2.dataUnavailable:...</code> | instrument data unavailable | check canonical symbol and range |
+| <code>strategyV2.noMarketData</code> | live cycle has no usable frame | verify symbol, source, connection, and subscribed timeframe |
+| <code>strategyV2.initializeParamsUnavailable</code> | params read during discovery | move the read to a handler |
+| <code>strategyV2.directionModeViolation:...</code> | entry exceeds declared direction | fix metadata or signal direction; exits remain allowed |
+| <code>strategyV2.dualDirectionHedgeModeRequired:...</code> | account is not in hedge mode | enable venue hedge/dual-side mode |
+| <code>strategyV2.hedgeModeUnknown:...</code> | account mode could not be confirmed | repair credential/API access and retry |
+| <code>strategyV2.liveLegConflict:...</code> | another live strategy owns the leg | stop/reconfigure the conflicting strategy |
+| position/account mismatch | strategy allocation differs from venue | reconcile or stop-and-repair; do not bypass |
+| invalid amount/minimum notional | rounded quantity cannot be submitted | increase capital/weight or choose a suitable instrument |
+| account-risk rejection | configured account exposure limit exceeded | reduce size/leverage or deliberately revise the limit |
 | <code>strategyV2.runtimeFailed:...</code> | handler raised | inspect the named handler and cause |
 
 ---
 
-## 20. Pre-publication checklist
+## 20. Visual robot templates
+
+Robot templates generate editable Strategy API V2 source. The generated source—not the preview alone—is the deployable contract. Verify it after every manual edit.
+
+| Template | Trigger and sizing | Current boundary |
+| --- | --- | --- |
+| Grid | range split into arithmetic/geometric cells; each filled entry arms its paired cell exit | live uses resting limit orders; backtest replays OHLC touches |
+| DCA | fixed elapsed-minute interval and fixed capital fraction per purchase | Crypto spot, long-only |
+| Martingale | adverse-price levels with increasing allocation | capped levels, total budget, and cycle risk required |
+| Layered martingale | martingale levels organized into multiple allocation groups | same hard caps plus per-group limits |
+
+Grid rules:
+
+- A grid cell is a lifecycle: entry ready → entry working/filled → paired exit working/filled → next cycle. It is not “buy every lower level and liquidate the whole position at one price.”
+- <code>max_open_orders</code> limits simultaneously armed entries. Stable <code>client_order_id</code> values prevent duplicate cell orders.
+- Live grid execution uses exchange limit orders and fill reconciliation. Backtests use bar high/low touch replay and cannot know the exact intrabar path when several levels are crossed in one bar; use a sufficiently fine timeframe.
+- Neutral grids require swap hedge mode and own both legs. Spot grids are long-only.
+
+DCA rules:
+
+- The interval is measured in elapsed minutes, not “number of K-lines.” The handler can only act when a subscribed bar is processed, so an interval shorter than the source timeframe becomes effective on the next available bar.
+- Each purchase is capped by both per-order percentage and total cycle budget. Optional price filters, take-profit, hard stop, and trailing protection do not remove the need for a maximum order count.
+
+Martingale rules:
+
+- Each level needs a price trigger, planned allocation, maximum attempts, stable client reference, and confirmed-fill transition.
+- Generated martingale and layered-martingale sources enable <code>PERSIST_RUNTIME_STATE</code>. Preserve the recovery and final-sweep logic when editing them.
+- A rejected or partial order must not advance a level as if fully filled. After restart, reconcile state with the strategy-owned position before issuing another level or close.
+- Martingale is a high-tail-risk sizing method. Always cap total deployed capital, levels, leverage, stop loss, and restart-after-stop behavior.
+
+---
+
+## 21. Pre-publication checklist
 
 - [ ] The file has an English docstring covering name, universe, signals, schedule, and risk.
 - [ ] <code>initialize</code> only declares universe, subscription, warm-up, benchmark, schedules, leverage permission, and initial <code>g</code>.
@@ -690,12 +887,16 @@ Strategy source runs in a safe execution environment. File, network, database, p
 - [ ] Every history window checks actual length.
 - [ ] No future rows, negative shifts, or centered rolling.
 - [ ] Long exits and short entries are independent.
+- [ ] Hedge-mode code reads and writes explicit <code>position_side</code> legs.
 - [ ] Exposure is capped; grid, DCA, martingale, and scaling layers have hard limits.
 - [ ] Every order has an auditable reason.
+- [ ] Retryable/working orders use stable client IDs and do not advance state before confirmation.
 - [ ] Risk percentages use decimal ratios.
 - [ ] Leverage is declared only for Crypto swaps and is not multiplied twice.
+- [ ] Schedule timezone and cross-restart state requirements are explicit.
 - [ ] The manifest verifies successfully.
 - [ ] The order ledger is reviewed, not only the equity curve.
+- [ ] Both entry and exit fees are included; swap funding is evaluated separately from the current backtest.
 - [ ] Robustness is tested across periods and cost assumptions.
 - [ ] At least one successful backtest exists before publication.
 - [ ] Credentials, market, balance, lot size, and notifications are checked before live use.

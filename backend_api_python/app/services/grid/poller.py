@@ -8,7 +8,7 @@ import time
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
-from app.services.grid.exchange_orders import query_grid_order_fill
+from app.services.grid.exchange_orders import query_grid_order_fill, wait_grid_market_fill
 from app.services.grid.resting_orders_repo import GridRestingOrder, GridRestingOrderRepository
 from app.services.grid.runner import get_runner
 from app.services.exchange_execution import resolve_exchange_config
@@ -49,6 +49,10 @@ class GridFillPoller:
         self._repo = GridRestingOrderRepository()
         self._interval = max(1.0, _env_float("GRID_FILL_POLL_SEC", 3.0))
         self._min_order_interval = max(2.0, _env_float("GRID_FILL_MIN_ORDER_INTERVAL_SEC", 5.0))
+        self._stream_audit_interval = max(
+            15.0,
+            _env_float("EXECUTION_STREAM_REST_AUDIT_SEC", 30.0),
+        )
         self._max_orders_per_cycle = max(10, _env_int("GRID_FILL_MAX_ORDERS_PER_CYCLE", 150))
         self._max_req_per_cred_per_min = max(10, _env_int("GRID_FILL_MAX_REQ_PER_CREDENTIAL_PER_MIN", 120))
         self._last_poll_by_order: Dict[int, float] = {}
@@ -113,6 +117,20 @@ class GridFillPoller:
                 continue
             last = self._last_poll_by_order.get(oid, 0.0)
             min_iv = self._min_order_interval * (0.5 if str(order.status or "") == "partial" else 1.0)
+            runner = get_runner(sid)
+            try:
+                from app.startup import get_execution_stream_supervisor
+
+                ec = runner.exchange_config if runner and isinstance(runner.exchange_config, dict) else {}
+                stream_healthy = get_execution_stream_supervisor().is_healthy(
+                    exchange_id=str(ec.get("exchange_id") or ""),
+                    credential_id=int(ec.get("credential_id") or ec.get("credentials_id") or 0),
+                    market_type=str(getattr(getattr(runner, "engine", None), "cfg", None).market_type),
+                )
+            except Exception:
+                stream_healthy = False
+            if stream_healthy:
+                min_iv = max(min_iv, self._stream_audit_interval)
             if now - last < min_iv:
                 continue
             prio = 0 if str(order.status or "") == "partial" else 1
@@ -168,63 +186,114 @@ class GridFillPoller:
         oid = int(order.id or 0)
         if not oid:
             return
-        if status in ("open", "partial"):
-            if filled > float(order.processed_fill_qty or 0):
-                self._repo.update_status(
-                    oid,
-                    status="partial" if status == "partial" or filled < float(order.quantity or 0) else "open",
-                    filled_quantity=filled,
-                    avg_fill_price=avg,
-                )
-            return
-        if status == "cancelled":
-            self._repo.update_status(oid, status="cancelled", filled_quantity=filled, avg_fill_price=avg)
-            return
-        if status != "filled" and filled <= 0:
-            return
 
         prev = float(order.processed_fill_qty or 0)
         total_filled = float(filled or order.filled_quantity or 0)
         if total_filled <= 0 and status == "filled":
             total_filled = float(order.quantity or 0)
 
-        # Idempotent: already fully processed.
-        if prev >= total_filled and total_filled > 0:
-            if str(order.status or "") != "filled":
-                self._repo.update_status(
-                    oid,
-                    status="filled",
-                    filled_quantity=total_filled,
-                    avg_fill_price=avg,
-                    processed_fill_qty=prev,
-                )
-            return
-
         new_fill = total_filled - prev
-        if new_fill <= 0:
-            if status == "filled":
+        processed = prev
+        if new_fill > 1e-12:
+            try:
+                details: Dict[str, object] = {}
+                wait_grid_market_fill(
+                    client,
+                    symbol=order.symbol,
+                    market_type=market_type,
+                    exchange_config=(
+                        runner.exchange_config
+                        if isinstance(runner.exchange_config, dict)
+                        else {}
+                    ),
+                    exchange_order_id=order.exchange_order_id,
+                    client_order_id=order.client_order_id,
+                    max_wait_sec=0.0,
+                    details=details,
+                )
+                from app.services.pending_orders.fee_reconciliation import (
+                    fee_breakdown_snapshot,
+                    fee_breakdown_to_quote,
+                    fee_storage_values,
+                )
+
+                fees = fee_breakdown_snapshot(details)
+                commission, commission_ccy = fee_storage_values(fees)
+                fill_price = float(avg or order.price or 0.0)
+                commission_quote = (
+                    fee_breakdown_to_quote(
+                        client,
+                        symbol=order.symbol,
+                        fees=fees,
+                        fill_price=fill_price,
+                    )
+                    if fees and fill_price > 0
+                    else None
+                )
+                if fees:
+                    runner.engine.on_order_filled(
+                        order,
+                        new_fill,
+                        fill_price,
+                        commission=commission,
+                        commission_ccy=commission_ccy,
+                        commission_quote=commission_quote,
+                        fee_status="actual",
+                        fee_source="rest",
+                    )
+                else:
+                    runner.engine.on_order_filled(order, new_fill, fill_price)
+                processed = total_filled
+            except Exception as e:
+                logger.warning(
+                    "grid on_order_filled sid=%s oid=%s: %s",
+                    order.strategy_id,
+                    oid,
+                    e,
+                )
+                # Persist the exchange snapshot but leave processed_fill_qty
+                # untouched so list_unprocessed() retries the local posting.
                 self._repo.update_status(
                     oid,
-                    status="filled",
+                    status="partial" if total_filled > 0 else str(order.status or "open"),
                     filled_quantity=total_filled,
                     avg_fill_price=avg,
                     processed_fill_qty=prev,
                 )
-            return
+                return
 
-        try:
-            runner.engine.on_order_filled(order, new_fill, avg or float(order.price or 0))
-        except Exception as e:
-            logger.warning("grid on_order_filled sid=%s oid=%s: %s", order.strategy_id, oid, e)
-            return
+        if status in ("open", "partial"):
+            local_status = "partial" if total_filled > 0 else "open"
+        elif status == "cancelled":
+            local_status = "cancelled"
+        elif status == "filled" or total_filled >= float(order.quantity or 0) > 0:
+            local_status = "filled"
+        else:
+            local_status = str(order.status or "open")
 
         self._repo.update_status(
             oid,
-            status="filled",
+            status=local_status,
             filled_quantity=total_filled,
             avg_fill_price=avg,
-            processed_fill_qty=total_filled,
+            processed_fill_qty=processed,
         )
+
+        # A cancelled partially-filled exit no longer protects its remaining
+        # cell inventory. Reconcile immediately instead of waiting for the
+        # runner's periodic 15-second coverage pass.
+        if status == "cancelled" and total_filled > 0:
+            try:
+                runner.engine.sync_held_cell_exits(
+                    avg or float(order.price or 0)
+                )
+            except Exception as e:
+                logger.warning(
+                    "grid cancelled-partial reconcile sid=%s oid=%s: %s",
+                    order.strategy_id,
+                    oid,
+                    e,
+                )
 
     def sync_strategy(self, strategy_id: int) -> int:
         """Poll every open order for one strategy immediately (UI refresh)."""

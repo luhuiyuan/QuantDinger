@@ -16,6 +16,7 @@ logger = get_logger(__name__)
 
 _trading_executor = None
 _pending_order_worker = None
+_execution_stream_supervisor = None
 
 
 def get_trading_executor():
@@ -40,6 +41,15 @@ def get_pending_order_worker():
         from app.services.pending_order_worker import PendingOrderWorker
         _pending_order_worker = PendingOrderWorker()
     return _pending_order_worker
+
+
+def get_execution_stream_supervisor():
+    global _execution_stream_supervisor
+    if _execution_stream_supervisor is None:
+        from app.services.execution_streams import get_execution_stream_supervisor as _get
+
+        _execution_stream_supervisor = _get()
+    return _execution_stream_supervisor
 
 
 def _is_debug_reloader_parent() -> bool:
@@ -84,6 +94,14 @@ def start_grid_fill_poller():
         get_grid_fill_poller().start()
     except Exception as e:
         logger.error(f"Failed to start grid fill poller: {e}")
+
+
+def start_execution_stream_supervisor():
+    """Start private account/order streams before REST fallback pollers."""
+    try:
+        get_execution_stream_supervisor().start()
+    except Exception as e:
+        logger.error(f"Failed to start execution stream supervisor: {e}", exc_info=True)
 
 
 def start_usdt_order_worker():
@@ -214,6 +232,7 @@ def run_startup_hooks(app: Flask) -> None:
 
 def _start_trading_support_services() -> None:
     """Start exchange-facing services that belong with the trading runtime."""
+    start_execution_stream_supervisor()
     start_pending_order_worker()
     start_grid_fill_poller()
 

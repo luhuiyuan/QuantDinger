@@ -1,6 +1,7 @@
 """Shared Agent Token issuance / listing for admin and self-service routes."""
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -69,6 +70,14 @@ def deployment_mode_label() -> str:
     return raw or "self_hosted"
 
 
+def _positive_env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and value > 0 else default
+
+
 def get_token_policy(*, for_admin: bool = False) -> dict[str, Any]:
     saas = is_saas_mode()
     risks = {
@@ -82,6 +91,8 @@ def get_token_policy(*, for_admin: bool = False) -> dict[str, Any]:
         "allowed_scopes": sorted(ALL_SCOPES if for_admin else USER_SCOPES),
         "c_scope_admin_only": True,
         "default_paper_only": True,
+        "default_max_order_notional": _positive_env_float("AGENT_DEFAULT_MAX_ORDER_NOTIONAL", 1000),
+        "default_max_daily_notional": _positive_env_float("AGENT_DEFAULT_MAX_DAILY_NOTIONAL", 5000),
         "live_trading_requires_ack": True,
         "risk_disclosure": risks,
     }
@@ -132,6 +143,30 @@ def _parse_issue_body(body: dict[str, Any], *, allow_c_scope: bool) -> dict[str,
             )
 
     rate_limit = int(body.get("rate_limit_per_min") or 60)
+    if rate_limit < 1 or rate_limit > 6000:
+        raise TokenIssueError("rate_limit_per_min must be between 1 and 6000.", code=400)
+    try:
+        max_order_notional = float(
+            body["max_order_notional"]
+            if "max_order_notional" in body
+            else _positive_env_float("AGENT_DEFAULT_MAX_ORDER_NOTIONAL", 1000)
+        )
+        max_daily_notional = float(
+            body["max_daily_notional"]
+            if "max_daily_notional" in body
+            else _positive_env_float("AGENT_DEFAULT_MAX_DAILY_NOTIONAL", 5000)
+        )
+    except (TypeError, ValueError):
+        raise TokenIssueError("Trading notional limits must be numeric.", code=400)
+    if (
+        not math.isfinite(max_order_notional)
+        or not math.isfinite(max_daily_notional)
+        or max_order_notional <= 0
+        or max_daily_notional <= 0
+    ):
+        raise TokenIssueError("Trading notional limits must be positive.", code=400)
+    if max_daily_notional < max_order_notional:
+        raise TokenIssueError("max_daily_notional must be at least max_order_notional.", code=400)
     expires_at = _normalize_expiry(body.get("expires_in_days"))
 
     return {
@@ -141,6 +176,8 @@ def _parse_issue_body(body: dict[str, Any], *, allow_c_scope: bool) -> dict[str,
         "instruments": instruments,
         "paper_only": paper_only,
         "rate_limit": rate_limit,
+        "max_order_notional": max_order_notional,
+        "max_daily_notional": max_daily_notional,
         "expires_at": expires_at,
     }
 
@@ -157,8 +194,9 @@ def issue_agent_token(user_id: int, body: dict[str, Any], *, allow_c_scope: bool
             """
             INSERT INTO qd_agent_tokens
               (user_id, name, token_prefix, token_hash, scopes, markets, instruments,
-               paper_only, rate_limit_per_min, status, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
+               paper_only, rate_limit_per_min, max_order_notional,
+               max_daily_notional, status, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
             RETURNING id, created_at
             """,
             (
@@ -171,6 +209,8 @@ def issue_agent_token(user_id: int, body: dict[str, Any], *, allow_c_scope: bool
                 ",".join(parsed["instruments"]),
                 parsed["paper_only"],
                 parsed["rate_limit"],
+                parsed["max_order_notional"],
+                parsed["max_daily_notional"],
                 parsed["expires_at"],
             ),
         )
@@ -201,6 +241,8 @@ def issue_agent_token(user_id: int, body: dict[str, Any], *, allow_c_scope: bool
         "instruments": parsed["instruments"],
         "paper_only": parsed["paper_only"],
         "rate_limit_per_min": parsed["rate_limit"],
+        "max_order_notional": parsed["max_order_notional"],
+        "max_daily_notional": parsed["max_daily_notional"],
         "expires_at": parsed["expires_at"],
         "created_at": row.get("created_at"),
     }
@@ -213,7 +255,8 @@ def list_agent_tokens(user_id: int) -> list[dict[str, Any]]:
         cur.execute(
             """
             SELECT id, name, token_prefix, scopes, markets, instruments,
-                   paper_only, rate_limit_per_min, status, expires_at,
+                   paper_only, rate_limit_per_min, max_order_notional,
+                   max_daily_notional, status, expires_at,
                    last_used_at, created_at
             FROM qd_agent_tokens
             WHERE user_id = %s

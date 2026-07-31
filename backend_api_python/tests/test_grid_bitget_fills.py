@@ -224,3 +224,47 @@ def test_execute_grid_market_order_requires_fill(monkeypatch):
     assert ok2 is True
     assert filled2 == 0.004
     assert avg2 == 73000.0
+
+
+def test_execute_grid_market_order_preserves_actual_fee_and_order_identity(monkeypatch):
+    from app.services.grid.exchange_orders import execute_grid_market_order
+
+    class FakeResult:
+        exchange_order_id = "gate-order-42"
+
+    client = MagicMock()
+    monkeypatch.setattr(
+        "app.services.live_trading.execution.place_order_from_signal",
+        lambda *a, **k: FakeResult(),
+    )
+
+    def fake_wait(*args, **kwargs):
+        kwargs["details"].update(
+            {
+                "filled": 0.001,
+                "avg_price": 64000.0,
+                "fee": 0.032,
+                "fee_ccy": "USDT",
+            }
+        )
+        return 0.001, 64000.0
+
+    monkeypatch.setattr(
+        "app.services.grid.exchange_orders.wait_grid_market_fill",
+        fake_wait,
+    )
+    result = execute_grid_market_order(
+        client,
+        symbol="BTC/USDT",
+        signal_type="open_long",
+        quantity=0.001,
+        market_type="swap",
+        exchange_config={},
+        client_order_id="grid-init-42",
+    )
+    assert result.ok is True
+    assert result.exchange_order_id == "gate-order-42"
+    assert result.client_order_id == "grid-init-42"
+    assert result.commission == pytest.approx(0.032)
+    assert result.commission_ccy == "USDT"
+    assert result.commission_quote == pytest.approx(0.032)

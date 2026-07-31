@@ -24,7 +24,7 @@ try:
     import psycopg2
     from psycopg2 import pool
     from psycopg2 import OperationalError, InterfaceError
-    from psycopg2.extras import RealDictCursor
+    from psycopg2.extras import RealDictCursor, execute_batch
     HAS_PSYCOPG2 = True
 except ImportError:
     HAS_PSYCOPG2 = False
@@ -541,6 +541,15 @@ class PostgresCursor:
                 pass
 
         return result
+
+    def executemany(self, query: str, args_list: Any):
+        """Execute a statement in bulk without per-row RETURNING/savepoints."""
+        query = self._convert_placeholders(query)
+        self._buffered_row = None
+        self._last_insert_id = None
+        if HAS_PSYCOPG2:
+            return execute_batch(self._cursor, query, args_list, page_size=1000)
+        return self._cursor.executemany(query, args_list)
     
     def fetchone(self) -> Optional[Dict[str, Any]]:
         """Fetch single row"""

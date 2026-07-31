@@ -1,9 +1,8 @@
 """Regression tests for CryptoDataSource timeframe resampling.
 
-Background: Coinbase Advanced Trade exposes only {1m, 5m, 15m, 30m, 1h, 2h, 6h, 1d}
-via CCXT — it has no 1w, 4h, or 3m. Before this fix, requesting timeframe=1W on a
-Coinbase-backed deployment hit `parsing field "granularity": "1w" is not a valid value`
-and the indicator IDE chart showed "No data found".
+Some data providers expose only {1m, 5m, 15m, 30m, 1h, 2h, 6h, 1d}. These tests
+cover synthetic higher timeframes without tying the generic resampler to a retired
+exchange adapter.
 
 These tests pin the two helpers that make the resample work, without needing a live
 exchange or the full data source __init__:
@@ -15,26 +14,25 @@ from app.data_sources.crypto import CryptoDataSource
 
 # --- _pick_resample_source -------------------------------------------------
 
-COINBASE_LIKE = {'1m': 1, '5m': 1, '15m': 1, '30m': 1, '1h': 1, '2h': 1, '6h': 1, '1d': 1}
+LIMITED_INTERVALS = {'1m': 1, '5m': 1, '15m': 1, '30m': 1, '1h': 1, '2h': 1, '6h': 1, '1d': 1}
 BINANCE_LIKE = {'1m': 1, '3m': 1, '5m': 1, '15m': 1, '30m': 1, '1h': 1, '2h': 1, '4h': 1, '6h': 1, '12h': 1, '1d': 1, '1w': 1}
 
 
-def test_pick_source_for_1w_on_coinbase_uses_1d_x7():
-    assert CryptoDataSource._pick_resample_source('1w', COINBASE_LIKE) == ('1d', 7)
+def test_pick_source_for_1w_uses_1d_x7():
+    assert CryptoDataSource._pick_resample_source('1w', LIMITED_INTERVALS) == ('1d', 7)
 
 
-def test_pick_source_for_4h_on_coinbase_prefers_2h_over_1h():
-    # 2h exists on coinbase and gives a smaller bucket (fewer requested candles), so prefer it.
-    assert CryptoDataSource._pick_resample_source('4h', COINBASE_LIKE) == ('2h', 2)
+def test_pick_source_for_4h_prefers_2h_over_1h():
+    assert CryptoDataSource._pick_resample_source('4h', LIMITED_INTERVALS) == ('2h', 2)
 
 
 def test_pick_source_for_4h_falls_back_to_1h_when_2h_missing():
-    only_1h = {k: 1 for k in COINBASE_LIKE if k != '2h'}
+    only_1h = {k: 1 for k in LIMITED_INTERVALS if k != '2h'}
     assert CryptoDataSource._pick_resample_source('4h', only_1h) == ('1h', 4)
 
 
-def test_pick_source_for_3m_on_coinbase_uses_1m_x3():
-    assert CryptoDataSource._pick_resample_source('3m', COINBASE_LIKE) == ('1m', 3)
+def test_pick_source_for_3m_uses_1m_x3():
+    assert CryptoDataSource._pick_resample_source('3m', LIMITED_INTERVALS) == ('1m', 3)
 
 
 def test_pick_source_returns_none_when_no_supported_finer_granularity():
@@ -45,7 +43,7 @@ def test_pick_source_returns_none_when_no_supported_finer_granularity():
 
 
 def test_pick_source_returns_none_for_unknown_target_timeframe():
-    assert CryptoDataSource._pick_resample_source('99x', COINBASE_LIKE) is None
+    assert CryptoDataSource._pick_resample_source('99x', LIMITED_INTERVALS) is None
 
 
 # --- _resample_ohlcv -------------------------------------------------------

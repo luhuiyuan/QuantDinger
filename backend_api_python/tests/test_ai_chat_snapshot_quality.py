@@ -1,13 +1,17 @@
 import pytest
 
+import app.routes.ai_chat as ai_chat
+
 from app.routes.ai_chat import (
     _agent_response_language_name,
     _build_system_prompt,
     _fallback_agent_intent,
     _format_kline_time_utc,
     _normalize_agent_intent,
+    _stream_llm_with_recovery,
     _summarize_klines,
 )
+from app.services.llm import LLMAPIError
 
 
 def test_kline_timestamp_is_exposed_as_readable_utc():
@@ -117,3 +121,80 @@ def test_agent_intent_preserves_strategy_instrument_context():
         assert plan["entities"]["exchange_id"] == "okx"
         assert plan["entities"]["market_type"] == "swap"
         assert plan["entities"]["instrument_id"] == "SOL-USDT-SWAP"
+
+
+def test_stream_recovery_replaces_partial_provider_output(monkeypatch):
+    class FakeLLMService:
+        def stream_llm_api(self, messages, temperature):
+            yield "partial"
+            raise LLMAPIError(
+                "upstream stream closed",
+                status_code=502,
+                error_type="provider_unavailable",
+            )
+
+        def call_llm_api(self, messages, temperature, use_json_mode):
+            return "complete recovered answer"
+
+    monkeypatch.setattr(ai_chat, "LLMService", FakeLLMService)
+
+    events = list(_stream_llm_with_recovery([{"role": "user", "content": "hello"}]))
+
+    assert events == [
+        ("delta", {"text": "partial"}),
+        ("replace", {"text": "complete recovered answer", "recovered": True}),
+    ]
+
+
+def test_stream_output_limit_keeps_partial_without_regeneration(monkeypatch):
+    calls = {"fixed": 0}
+
+    class FakeLLMService:
+        def stream_llm_api(self, messages, temperature):
+            yield "partial"
+            raise LLMAPIError(
+                "output limit",
+                status_code=400,
+                error_type="max_tokens_exceeded",
+                finish_reason="length",
+                retryable=False,
+            )
+
+        def call_llm_api(self, *args, **kwargs):
+            calls["fixed"] += 1
+            return "must not run"
+
+    monkeypatch.setattr(ai_chat, "LLMService", FakeLLMService)
+
+    events = list(_stream_llm_with_recovery([{"role": "user", "content": "hello"}]))
+
+    assert events[0] == ("delta", {"text": "partial"})
+    assert events[1][0] == "warning"
+    assert events[1][1]["truncated"] is True
+    assert calls["fixed"] == 0
+
+
+def test_stream_non_retryable_error_does_not_regenerate(monkeypatch):
+    calls = {"fixed": 0}
+
+    class FakeLLMService:
+        def stream_llm_api(self, messages, temperature):
+            raise LLMAPIError(
+                "content blocked",
+                status_code=400,
+                error_type="content_policy_violation",
+                finish_reason="content_filter",
+                retryable=False,
+            )
+            yield  # pragma: no cover
+
+        def call_llm_api(self, *args, **kwargs):
+            calls["fixed"] += 1
+            return "must not run"
+
+    monkeypatch.setattr(ai_chat, "LLMService", FakeLLMService)
+
+    with pytest.raises(LLMAPIError, match="content blocked"):
+        list(_stream_llm_with_recovery([{"role": "user", "content": "hello"}]))
+
+    assert calls["fixed"] == 0

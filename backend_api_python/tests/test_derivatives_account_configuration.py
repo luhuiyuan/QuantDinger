@@ -5,6 +5,8 @@ import pytest
 from app.services.live_trading.account_configuration import configure_derivatives_account
 from app.services.live_trading.base import LiveTradingError
 from app.services.live_trading.bybit import BybitClient
+from app.services.live_trading.binance import BinanceFuturesClient
+from app.services.live_trading.gate import GateUsdtFuturesClient
 from app.services.live_trading.okx import OkxClient
 
 
@@ -48,3 +50,91 @@ def test_bybit_unchanged_margin_mode_is_success():
     client._signed_request = unchanged
 
     assert client.set_margin_mode("cross") is True
+
+
+def test_binance_rejects_leverage_above_api_limit_instead_of_clamping():
+    client = BinanceFuturesClient.__new__(BinanceFuturesClient)
+    client._signed_request = lambda *_args, **_kwargs: pytest.fail("request must not be sent")
+
+    with pytest.raises(LiveTradingError, match="exceeds"):
+        client.set_leverage(symbol="BTC/USDT", leverage=126)
+
+
+def test_binance_rejects_effective_leverage_mismatch():
+    client = BinanceFuturesClient.__new__(BinanceFuturesClient)
+    client._signed_request = lambda *_args, **_kwargs: {"leverage": 10}
+
+    with pytest.raises(LiveTradingError, match="applied 10x"):
+        client.set_leverage(symbol="BTC/USDT", leverage=20)
+
+
+def test_gate_uses_dual_comp_endpoints_and_rejects_dynamic_maximum():
+    client = GateUsdtFuturesClient.__new__(GateUsdtFuturesClient)
+    client._position_mode_cache = (0.0, "")
+    client._position_mode_cache_ttl_sec = 30.0
+    calls = []
+
+    def signed(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path.endswith("/accounts"):
+            return {"position_mode": "dual"}
+        if path.endswith("/dual_comp/positions"):
+            return []
+        return {"cross_leverage_limit": "5"}
+
+    client._signed_request = signed
+    client.get_contract = lambda **_kwargs: {"leverage_max": "10"}
+
+    assert client.is_hedge_position_mode(symbol="BTC/USDT") is True
+    assert client.get_positions() == []
+    assert calls[-1][1].endswith("/dual_comp/positions")
+
+    with pytest.raises(LiveTradingError, match="maximum 10x"):
+        client.set_leverage(contract="BTC_USDT", leverage=11, margin_mode="cross")
+
+
+def test_gate_rejects_effective_leverage_mismatch():
+    client = GateUsdtFuturesClient.__new__(GateUsdtFuturesClient)
+    client._position_mode_cache = (1e20, "single")
+    client._position_mode_cache_ttl_sec = 30.0
+    client.get_contract = lambda **_kwargs: {"leverage_max": "100"}
+    client._signed_request = lambda *_args, **_kwargs: {"cross_leverage_limit": "10"}
+
+    with pytest.raises(LiveTradingError, match="applied 10x"):
+        client.set_leverage(contract="BTC_USDT", leverage=20, margin_mode="cross")
+
+
+def test_gate_split_position_mode_is_rejected_before_leverage_change():
+    client = GateUsdtFuturesClient.__new__(GateUsdtFuturesClient)
+    client.get_position_mode = lambda: "dual_plus"
+    client.set_leverage = lambda **_kwargs: pytest.fail("leverage must not be changed")
+
+    with pytest.raises(LiveTradingError, match="dual_plus split-position"):
+        configure_derivatives_account(
+            client,
+            exchange_id="gate",
+            symbol="BTC/USDT",
+            leverage=5,
+            margin_mode="cross",
+        )
+
+
+def test_okx_hedge_mode_sets_both_leg_leverages():
+    client = OkxClient.__new__(OkxClient)
+    calls = []
+    client.get_account_config = lambda: {
+        "acctLv": "2",
+        "posMode": "long_short_mode",
+    }
+    client.set_leverage = lambda **kwargs: calls.append(kwargs) or True
+
+    result = configure_derivatives_account(
+        client,
+        exchange_id="okx",
+        symbol="BTC/USDT",
+        leverage=5,
+        margin_mode="cross",
+    )
+
+    assert result["position_mode"] == "hedge"
+    assert {call["pos_side"] for call in calls} == {"long", "short"}

@@ -92,10 +92,13 @@ def resolve_leg_context(
                 import json
 
                 raw_cfg = row.get("exchange_config") or ""
-                try:
-                    parsed = json.loads(raw_cfg) if isinstance(raw_cfg, str) and raw_cfg.strip() else {}
-                except Exception:
-                    parsed = {}
+                if isinstance(raw_cfg, dict):
+                    parsed = dict(raw_cfg)
+                else:
+                    try:
+                        parsed = json.loads(raw_cfg) if isinstance(raw_cfg, str) and raw_cfg.strip() else {}
+                    except Exception:
+                        parsed = {}
                 if isinstance(parsed, dict):
                     cred = credential_id_from_exchange_config(parsed)
                     if not exchange_id:

@@ -3,6 +3,7 @@ import signal
 import sys
 import os
 import threading
+import time
 import traceback
 import builtins as _builtins_mod
 import types
@@ -10,6 +11,7 @@ from typing import Dict, Any, Optional, Tuple, Set
 from contextlib import contextmanager
 
 from app.utils.logger import get_logger
+from app.utils.thread_capacity import format_thread_capacity
 
 logger = get_logger(__name__)
 
@@ -252,6 +254,120 @@ def build_safe_builtins(extra_allowed: Optional[Set[str]] = None) -> Dict[str, A
 
 # Timeout (cross-platform)
 
+
+class _TimeoutWatchdog:
+    """One bounded watchdog thread shared by all non-main-thread executions."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._registrations: Dict[int, Tuple[float, int, float, threading.Event]] = {}
+        self._next_token = 0
+        self._thread: Optional[threading.Thread] = None
+        self._pid = os.getpid()
+        if hasattr(os, "register_at_fork"):
+            os.register_at_fork(after_in_child=self._after_fork)
+
+    def _after_fork(self) -> None:
+        self._condition = threading.Condition()
+        self._registrations = {}
+        self._thread = None
+        self._pid = os.getpid()
+
+    def register(
+        self,
+        *,
+        target_tid: int,
+        seconds: float,
+        timed_out: threading.Event,
+    ) -> int:
+        with self._condition:
+            current_pid = os.getpid()
+            if current_pid != self._pid:
+                self._pid = current_pid
+                self._registrations.clear()
+                self._thread = None
+            self._ensure_thread_locked()
+            self._next_token += 1
+            token = self._next_token
+            self._registrations[token] = (
+                time.monotonic() + max(0.001, float(seconds)),
+                int(target_tid),
+                float(seconds),
+                timed_out,
+            )
+            self._condition.notify()
+            return token
+
+    def cancel(self, token: int) -> None:
+        with self._condition:
+            self._registrations.pop(int(token), None)
+            self._condition.notify()
+
+    def _ensure_thread_locked(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=self._run,
+            name="SafeExecTimeoutWatchdog",
+            daemon=True,
+        )
+        try:
+            self._thread.start()
+        except RuntimeError as exc:
+            self._thread = None
+            raise RuntimeError(
+                f"Failed to start shared execution timeout watchdog: {exc}; "
+                f"{format_thread_capacity()}"
+            ) from exc
+
+    def _run(self) -> None:
+        while True:
+            due: list[Tuple[int, int, float, threading.Event]] = []
+            with self._condition:
+                while not self._registrations:
+                    self._condition.wait()
+                now = time.monotonic()
+                next_deadline = min(item[0] for item in self._registrations.values())
+                if next_deadline > now:
+                    self._condition.wait(next_deadline - now)
+                    continue
+                for token, (deadline, target_tid, seconds, timed_out) in list(
+                    self._registrations.items()
+                ):
+                    if deadline <= now:
+                        self._registrations.pop(token, None)
+                        due.append((token, target_tid, seconds, timed_out))
+            for _token, target_tid, seconds, timed_out in due:
+                self._inject_timeout(target_tid, seconds, timed_out)
+
+    @staticmethod
+    def _inject_timeout(
+        target_tid: int,
+        seconds: float,
+        timed_out: threading.Event,
+    ) -> None:
+        timed_out.set()
+        try:
+            import ctypes
+
+            ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_ulong(target_tid),
+                ctypes.py_object(TimeoutError),
+            )
+            if ret == 0:
+                logger.warning("timeout inject: invalid thread id")
+            elif ret > 1:
+                ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                    ctypes.c_ulong(target_tid),
+                    ctypes.py_object(0),
+                )
+        except Exception as exc:
+            logger.warning("timeout inject failed after %ss: %s", seconds, exc)
+
+
+_TIMEOUT_WATCHDOG = _TimeoutWatchdog()
+
+
 @contextmanager
 def timeout_context(seconds: int):
     """Bound user-code execution time.
@@ -277,34 +393,22 @@ def timeout_context(seconds: int):
         except ValueError:
             pass  # fall through to timer strategy
 
-    # Strategy 2: threading.Timer + ctypes async exception (cross-platform)
+    # Strategy 2: one process-wide watchdog + async exception (cross-platform).
+    # A Timer per strategy cycle eventually exhausts the container PID quota
+    # because Linux counts threads as PIDs.
     target_tid = threading.current_thread().ident
+    if target_tid is None:
+        raise RuntimeError("Current execution thread has no identifier")
     timed_out = threading.Event()
-
-    def _inject_timeout():
-        timed_out.set()
-        try:
-            import ctypes
-            exc = ctypes.py_object(TimeoutError)
-            ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                ctypes.c_ulong(target_tid), exc
-            )
-            if ret == 0:
-                logger.warning("timeout inject: invalid thread id")
-            elif ret > 1:
-                ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                    ctypes.c_ulong(target_tid), ctypes.py_object(0)
-                )
-        except Exception as e:
-            logger.warning(f"timeout inject failed: {e}")
-
-    timer = threading.Timer(seconds, _inject_timeout)
-    timer.daemon = True
-    timer.start()
+    token = _TIMEOUT_WATCHDOG.register(
+        target_tid=target_tid,
+        seconds=float(seconds),
+        timed_out=timed_out,
+    )
     try:
         yield
     finally:
-        timer.cancel()
+        _TIMEOUT_WATCHDOG.cancel(token)
         if timed_out.is_set():
             raise TimeoutError(f"Code execution timed out after {seconds} seconds")
 

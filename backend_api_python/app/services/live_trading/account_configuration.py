@@ -61,27 +61,63 @@ def configure_derivatives_account(
     if isinstance(client, OkxClient):
         account_config = client.get_account_config() or {}
         account_level = str(account_config.get("acctLv") or "").strip()
+        position_mode = str(account_config.get("posMode") or "").strip().lower()
         if account_level:
             details["account_mode"] = account_level
         if account_level == "1":
             raise LiveTradingError("OKX_SWAP_ACCOUNT_MODE_REQUIRED")
-        ok = client.set_leverage(
-            inst_id=to_okx_swap_inst_id(symbol),
-            lever=target_leverage,
-            mgn_mode=mode,
-        )
+        if position_mode in ("long_short_mode", "longshort_mode"):
+            long_ok = client.set_leverage(
+                inst_id=to_okx_swap_inst_id(symbol),
+                lever=target_leverage,
+                mgn_mode=mode,
+                pos_side="long",
+            )
+            short_ok = client.set_leverage(
+                inst_id=to_okx_swap_inst_id(symbol),
+                lever=target_leverage,
+                mgn_mode=mode,
+                pos_side="short",
+            )
+            ok = bool(long_ok and short_ok)
+            details["position_mode"] = "hedge"
+        else:
+            ok = client.set_leverage(
+                inst_id=to_okx_swap_inst_id(symbol),
+                lever=target_leverage,
+                mgn_mode=mode,
+                pos_side="net",
+            )
     elif isinstance(client, BitgetMixClient):
-        ok = client.set_leverage(
+        bitget_mode = client.get_account_pos_mode(
             symbol=symbol,
-            leverage=target_leverage,
-            margin_mode="crossed" if mode == "cross" else "isolated",
+            margin_coin="USDT",
+            product_type="USDT-FUTURES",
         )
+        kwargs = {
+            "symbol": symbol,
+            "leverage": target_leverage,
+            "margin_mode": "crossed" if mode == "cross" else "isolated",
+        }
+        if bitget_mode == "hedge_mode":
+            long_ok = client.set_leverage(**kwargs, hold_side="long")
+            short_ok = client.set_leverage(**kwargs, hold_side="short")
+            ok = bool(long_ok and short_ok)
+            details["position_mode"] = "hedge"
+        else:
+            ok = client.set_leverage(**kwargs)
     elif isinstance(client, BybitClient):
         ok = client.set_margin_mode(mode) and client.set_leverage(
             symbol=symbol,
             leverage=target_leverage,
         )
     elif isinstance(client, GateUsdtFuturesClient):
+        position_mode = str(client.get_position_mode() or "").strip().lower()
+        if position_mode == "dual_plus":
+            raise LiveTradingError(
+                "Gate dual_plus split-position mode is not supported; "
+                "switch the futures account to single or dual mode"
+            )
         ok = client.set_leverage(
             contract=to_gate_currency_pair(symbol),
             leverage=target_leverage,

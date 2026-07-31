@@ -48,6 +48,44 @@ def test_secret_key_legacy_floor(monkeypatch):
         raise AssertionError("the public legacy SECRET_KEY must remain rejected")
 
 
+def test_settings_reload_keeps_existing_jwt_valid(monkeypatch):
+    from app.services.settings import runtime
+
+    active_secret = "stable-jwt-secret-shared-by-every-worker"
+    monkeypatch.setenv("SECRET_KEY", active_secret)
+    token = auth.generate_token(
+        user_id=1,
+        username="admin",
+        role="admin",
+        token_version=1,
+    )
+
+    def fake_load(_path, override=True):
+        assert override is True
+        monkeypatch.setenv("SECRET_KEY", "different-secret-from-settings-file")
+        monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+
+    monkeypatch.setattr(runtime, "load_dotenv", fake_load)
+    runtime.reload_runtime_env()
+    monkeypatch.setattr(auth, "_verify_token_version", lambda *_: True)
+    monkeypatch.setattr(
+        auth,
+        "_get_user_auth_state",
+        lambda _: {
+            "username": "admin",
+            "role": "admin",
+            "status": "active",
+            "token_version": 1,
+        },
+    )
+
+    payload = auth.verify_token(token)
+
+    assert Config.SECRET_KEY == active_secret
+    assert payload is not None
+    assert payload["_verified_username"] == "admin"
+
+
 def test_missing_token_version_is_rejected_before_database_check(monkeypatch):
     calls = []
     monkeypatch.setattr(

@@ -14,7 +14,8 @@ def test_scale_spot_open_notional_default_buffer():
     assert scale_spot_open_notional(1000.0) == 995.0
 
 
-def test_clamp_spot_close_uses_free_and_normalize():
+def test_clamp_spot_close_uses_free_and_normalize(monkeypatch):
+    monkeypatch.setenv("SPOT_CLOSE_SAFETY_RATIO", "1.0")
     client = MagicMock(spec=BinanceSpotClient)
     client.get_account.return_value = {"balances": [{"asset": "BTC", "free": "0.99"}]}
     client._normalize_quantity.return_value = (Decimal("0.98"), 2)
@@ -22,6 +23,7 @@ def test_clamp_spot_close_uses_free_and_normalize():
     assert final == 0.98
     assert meta.get("adjusted") is True
     assert meta.get("exchange_free") == 0.99
+    assert meta.get("safety_ratio") == 1.0
 
 
 def test_prepare_spot_live_order_bitget_market_buy_uses_quote():

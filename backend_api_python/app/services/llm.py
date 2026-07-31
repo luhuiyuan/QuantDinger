@@ -16,14 +16,78 @@ from app.utils.config_loader import load_addon_config
 
 logger = get_logger(__name__)
 
+DEFAULT_MAX_TOKENS = 16_384
+
+RETRYABLE_LLM_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
+RETRYABLE_LLM_ERROR_TYPES = {
+    "premature_eof",
+    "malformed_stream",
+    "provider_overloaded",
+    "provider_unavailable",
+    "rate_limit_exceeded",
+    "server",
+    "timeout",
+    "unmapped",
+}
+LLM_ERROR_TYPE_ALIASES = {
+    "api_error": "server",
+    "authentication_error": "authentication",
+    "insufficient_quota": "payment_required",
+    "internal_server_error": "server",
+    "invalid_request_error": "invalid_request",
+    "overloaded_error": "provider_overloaded",
+    "permission_error": "permission_denied",
+    "rate_limit_error": "rate_limit_exceeded",
+    "server_error": "server",
+    "service_unavailable": "provider_unavailable",
+    "timeout_error": "timeout",
+}
+MINIMAX_ERROR_TYPES = {
+    1000: "server",
+    1001: "timeout",
+    1002: "rate_limit_exceeded",
+    1004: "authentication",
+    1008: "payment_required",
+    1024: "server",
+    1026: "content_policy_violation",
+    1027: "content_policy_violation",
+    1033: "provider_unavailable",
+    1039: "max_tokens_exceeded",
+    1041: "rate_limit_exceeded",
+    2013: "invalid_request",
+    2049: "authentication",
+    2056: "rate_limit_exceeded",
+}
+
 
 class LLMAPIError(ValueError):
-    """Provider HTTP error with status and request metadata preserved."""
+    """Provider error with protocol metadata preserved for safe recovery decisions."""
 
-    def __init__(self, message: str, *, status_code: int, request_id: str = ""):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 502,
+        request_id: str = "",
+        generation_id: str = "",
+        error_type: str = "",
+        finish_reason: str = "",
+        retryable: Optional[bool] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.request_id = request_id
+        self.generation_id = generation_id
+        normalized_error_type = str(error_type or "").strip().lower()
+        self.error_type = LLM_ERROR_TYPE_ALIASES.get(normalized_error_type, normalized_error_type)
+        self.finish_reason = str(finish_reason or "").strip().lower()
+        if retryable is None:
+            retryable = (
+                self.error_type in RETRYABLE_LLM_ERROR_TYPES
+                if self.error_type
+                else status_code in RETRYABLE_LLM_STATUS_CODES
+            )
+        self.retryable = bool(retryable)
 
 
 class LLMProvider(Enum):
@@ -198,6 +262,20 @@ class LLMService:
             return model
         return self.get_default_model(provider)
 
+    def get_max_tokens(self) -> int:
+        """Get the shared maximum output-token budget for every LLM provider."""
+        config = load_addon_config()
+        configured = config.get('llm', {}).get('max_tokens', DEFAULT_MAX_TOKENS)
+        try:
+            return max(1, int(configured))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid LLM_MAX_TOKENS=%r; using %s",
+                configured,
+                DEFAULT_MAX_TOKENS,
+            )
+            return DEFAULT_MAX_TOKENS
+
     def is_configured(self, provider: LLMProvider = None) -> bool:
         """Return whether the provider has enough configuration to make a request."""
         p = provider or self.provider
@@ -219,6 +297,11 @@ class LLMService:
     @staticmethod
     def _truthy(value: Any) -> bool:
         return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _normalize_error_type(value: Any) -> str:
+        error_type = str(value or "").strip().lower()
+        return LLM_ERROR_TYPE_ALIASES.get(error_type, error_type)
 
     def _llm_proxy_url(self) -> str:
         config = load_addon_config()
@@ -301,6 +384,7 @@ class LLMService:
             "model": model,
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": self.get_max_tokens(),
         }
         
         # AtlasCloud documents the OpenAI-compatible ChatCompletion shape, but
@@ -323,9 +407,18 @@ class LLMService:
                 provider_name = "LLM"
             err_text = self._extract_provider_error(response)
             request_id = self._provider_request_id(response)
+            generation_id = self._provider_generation_id(response)
+            error_payload = None
+            try:
+                error_payload = response.json()
+            except Exception:
+                pass
+            error_type = self._provider_error_type_from_value(error_payload)
             metadata = [f"model={model}"]
             if request_id:
                 metadata.append(f"request_id={request_id}")
+            if generation_id:
+                metadata.append(f"generation_id={generation_id}")
             error_msg = (
                 f"{provider_name} API {response.status_code} "
                 f"({', '.join(metadata)})"
@@ -348,11 +441,50 @@ class LLMService:
                 error_msg,
                 status_code=response.status_code,
                 request_id=request_id,
+                generation_id=generation_id,
+                error_type=error_type,
             )
         
         result = response.json()
         if "choices" in result and len(result["choices"]) > 0:
-            content = result["choices"][0]["message"]["content"]
+            choice = result["choices"][0]
+            finish_reason = str(choice.get("finish_reason") or "").strip().lower()
+            provider_error = choice.get("error") or result.get("error")
+            if provider_error or finish_reason in {"error", "insufficient_system_resource"}:
+                error_type = self._provider_error_type_from_value(provider_error or result)
+                if finish_reason == "insufficient_system_resource" and not error_type:
+                    error_type = "provider_unavailable"
+                raise LLMAPIError(
+                    "LLM generation failed "
+                    f"(model={model}, finish_reason={finish_reason or 'error'}): "
+                    f"{self._format_provider_error_value(provider_error) or 'provider interrupted generation'}",
+                    status_code=self._status_code_from_provider_error(provider_error),
+                    request_id=self._provider_request_id(response),
+                    generation_id=str(result.get("id") or self._provider_generation_id(response) or "")[:200],
+                    error_type=error_type or "provider_unavailable",
+                    finish_reason=finish_reason or "error",
+                )
+            if finish_reason == "length":
+                raise LLMAPIError(
+                    f"LLM output reached the configured token limit (model={model})",
+                    status_code=400,
+                    request_id=self._provider_request_id(response),
+                    generation_id=str(result.get("id") or self._provider_generation_id(response) or "")[:200],
+                    error_type="max_tokens_exceeded",
+                    finish_reason="length",
+                    retryable=False,
+                )
+            if finish_reason == "content_filter":
+                raise LLMAPIError(
+                    f"LLM output was stopped by the provider content filter (model={model})",
+                    status_code=400,
+                    request_id=self._provider_request_id(response),
+                    generation_id=str(result.get("id") or self._provider_generation_id(response) or "")[:200],
+                    error_type="content_policy_violation",
+                    finish_reason=finish_reason,
+                    retryable=False,
+                )
+            content = (choice.get("message") or {}).get("content")
             if not content:
                 raise ValueError(f"Model {model} returned empty content")
             return content
@@ -372,6 +504,64 @@ class LLMService:
             if value:
                 return str(value).strip()[:200]
         return ""
+
+    @staticmethod
+    def _provider_generation_id(response) -> str:
+        headers = getattr(response, "headers", None) or {}
+        for name in ("x-generation-id", "generation-id"):
+            value = headers.get(name) or headers.get(name.title())
+            if value:
+                return str(value).strip()[:200]
+        return ""
+
+    @classmethod
+    def _provider_error_type_from_value(cls, value) -> str:
+        if not isinstance(value, dict):
+            return ""
+
+        metadata = value.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("error_type"):
+            return cls._normalize_error_type(metadata.get("error_type"))
+        if value.get("error_type"):
+            return cls._normalize_error_type(value.get("error_type"))
+
+        nested = value.get("error")
+        if isinstance(nested, dict):
+            nested_type = cls._provider_error_type_from_value(nested)
+            if nested_type:
+                return nested_type
+
+        raw_type = value.get("type")
+        if isinstance(raw_type, str) and raw_type.strip():
+            return cls._normalize_error_type(raw_type)
+        return ""
+
+    @staticmethod
+    def _status_code_from_provider_error(value, default: int = 502) -> int:
+        raw_code = value.get("code") if isinstance(value, dict) else None
+        try:
+            status_code = int(raw_code)
+        except (TypeError, ValueError):
+            status_code = default
+        if status_code < 400 or status_code > 599:
+            return default
+        return status_code
+
+    @staticmethod
+    def _minimax_stream_error(payload) -> tuple[int, str, str]:
+        if not isinstance(payload, dict):
+            return 0, "", ""
+        base_resp = payload.get("base_resp")
+        if not isinstance(base_resp, dict):
+            return 0, "", ""
+        try:
+            code = int(base_resp.get("status_code") or 0)
+        except (TypeError, ValueError):
+            return 0, "", ""
+        if code == 0:
+            return 0, "", ""
+        message = str(base_resp.get("status_msg") or f"MiniMax error {code}").strip()
+        return code, MINIMAX_ERROR_TYPES.get(code, "unmapped"), message
 
     @classmethod
     def _extract_provider_error(cls, response) -> str:
@@ -458,6 +648,7 @@ class LLMService:
             "contents": contents,
             "generationConfig": {
                 "temperature": temperature,
+                "maxOutputTokens": self.get_max_tokens(),
                 "responseMimeType": "application/json",
             }
         }
@@ -473,10 +664,64 @@ class LLMService:
         result = response.json()
         if "candidates" in result and len(result["candidates"]) > 0:
             candidate = result["candidates"][0]
+            finish_reason = str(candidate.get("finishReason") or "").strip().upper()
+            finish_message = str(candidate.get("finishMessage") or "").strip()
+            if finish_reason == "MAX_TOKENS":
+                raise LLMAPIError(
+                    f"Gemini output reached the configured token limit (model={model})",
+                    status_code=400,
+                    error_type="max_tokens_exceeded",
+                    finish_reason="length",
+                    retryable=False,
+                )
+            if finish_reason in {
+                "SAFETY",
+                "RECITATION",
+                "BLOCKLIST",
+                "PROHIBITED_CONTENT",
+                "SPII",
+                "IMAGE_SAFETY",
+            }:
+                raise LLMAPIError(
+                    f"Gemini stopped output for {finish_reason.lower()}"
+                    f"{f': {finish_message}' if finish_message else ''}",
+                    status_code=400,
+                    error_type="content_policy_violation",
+                    finish_reason=finish_reason.lower(),
+                    retryable=False,
+                )
+            if finish_reason in {"OTHER", "FINISH_REASON_UNSPECIFIED"}:
+                raise LLMAPIError(
+                    f"Gemini stopped output unexpectedly (finish_reason={finish_reason}, model={model})"
+                    f"{f': {finish_message}' if finish_message else ''}",
+                    status_code=502,
+                    error_type="provider_unavailable",
+                    finish_reason=finish_reason.lower(),
+                    retryable=True,
+                )
+            if finish_reason in {"MALFORMED_FUNCTION_CALL", "LANGUAGE"}:
+                raise LLMAPIError(
+                    f"Gemini could not produce a usable response (finish_reason={finish_reason}, model={model})",
+                    status_code=422,
+                    error_type="unprocessable",
+                    finish_reason=finish_reason.lower(),
+                    retryable=False,
+                )
             if "content" in candidate and "parts" in candidate["content"]:
                 text = candidate["content"]["parts"][0].get("text", "")
                 if text:
                     return text
+
+        prompt_feedback = result.get("promptFeedback") or {}
+        block_reason = str(prompt_feedback.get("blockReason") or "").strip()
+        if block_reason:
+            raise LLMAPIError(
+                f"Gemini blocked the prompt (block_reason={block_reason})",
+                status_code=400,
+                error_type="content_policy_violation",
+                finish_reason=block_reason.lower(),
+                retryable=False,
+            )
         
         raise ValueError("Gemini API response is missing content")
 
@@ -496,6 +741,7 @@ class LLMService:
             "model": model,
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": self.get_max_tokens(),
             "timeout": timeout,
             "drop_params": True,
         }
@@ -510,19 +756,100 @@ class LLMService:
         try:
             response = litellm.completion(**kwargs)
         except Exception as e:
-            raise ValueError(f"LiteLLM API error ({model}): {e}") from e
+            raw_status = getattr(e, "status_code", None)
+            try:
+                status_code = int(raw_status or 502)
+            except (TypeError, ValueError):
+                status_code = 502
+            raw_error_type = (
+                getattr(e, "code", "")
+                or getattr(e, "type", "")
+                or e.__class__.__name__
+            )
+            error_type = self._normalize_error_type(raw_error_type)
+            if error_type.endswith("error") and error_type not in RETRYABLE_LLM_ERROR_TYPES:
+                error_type = ""
+            raise LLMAPIError(
+                f"LiteLLM API error ({model}): {e}",
+                status_code=status_code,
+                request_id=str(getattr(e, "request_id", "") or ""),
+                error_type=error_type,
+            ) from e
 
         if response.choices and len(response.choices) > 0:
-            content = response.choices[0].message.content
+            choice = response.choices[0]
+            finish_reason = str(getattr(choice, "finish_reason", "") or "").strip().lower()
+            if finish_reason == "length":
+                raise LLMAPIError(
+                    f"LiteLLM output reached the configured token limit (model={model})",
+                    status_code=400,
+                    error_type="max_tokens_exceeded",
+                    finish_reason=finish_reason,
+                    retryable=False,
+                )
+            if finish_reason == "content_filter":
+                raise LLMAPIError(
+                    f"LiteLLM output was stopped by a content filter (model={model})",
+                    status_code=400,
+                    error_type="content_policy_violation",
+                    finish_reason=finish_reason,
+                    retryable=False,
+                )
+            if finish_reason in {"error", "insufficient_system_resource"}:
+                raise LLMAPIError(
+                    f"LiteLLM provider interrupted generation (model={model}, finish_reason={finish_reason})",
+                    status_code=503,
+                    error_type="provider_unavailable",
+                    finish_reason=finish_reason,
+                    retryable=True,
+                )
+            content = choice.message.content
             if not content:
                 raise ValueError(f"Model {model} returned empty content")
             return content
         else:
             raise ValueError("LiteLLM response is missing 'choices'")
 
-    def _stream_openai_compatible(self, messages: list, model: str, temperature: float,
-                                  api_key: str, base_url: str, timeout: int):
-        """Stream text deltas from an OpenAI-compatible chat endpoint."""
+    @staticmethod
+    def _iter_sse_data(response):
+        """Yield complete SSE data fields while ignoring comments and event metadata."""
+        data_lines = []
+        for raw_line in response.iter_lines(decode_unicode=False):
+            if isinstance(raw_line, bytes):
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r")
+            else:
+                line = str(raw_line or "").rstrip("\r")
+
+            if not line:
+                if data_lines:
+                    yield "\n".join(data_lines)
+                    data_lines = []
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+                continue
+            if line.lstrip().startswith(("{", "[DONE]")):
+                if data_lines:
+                    yield "\n".join(data_lines)
+                    data_lines = []
+                yield line.strip()
+
+        if data_lines:
+            yield "\n".join(data_lines)
+
+    def _stream_openai_compatible(
+        self,
+        messages: list,
+        model: str,
+        temperature: float,
+        api_key: str,
+        base_url: str,
+        timeout: int,
+        provider: LLMProvider = None,
+    ):
+        """Stream OpenAI-compatible deltas and require a provider terminal signal."""
         url = f"{base_url}/chat/completions"
         headers = {"Content-Type": "application/json"}
         if (api_key or "").strip():
@@ -535,45 +862,144 @@ class LLMService:
             "model": model,
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": self.get_max_tokens(),
             "stream": True,
         }
         response = self._llm_post(url, headers=headers, json_payload=data, timeout=timeout, stream=True)
         if response.status_code >= 400:
-            err_text = ""
+            err_text = self._extract_provider_error(response)
+            error_payload = None
             try:
-                err = response.json().get("error")
-                err_text = err.get("message") if isinstance(err, dict) else str(err or "")
+                error_payload = response.json()
             except Exception:
-                err_text = (response.text or "").strip()[:300]
+                pass
+            error_type = self._provider_error_type_from_value(error_payload)
+            request_id = self._provider_request_id(response)
+            generation_id = self._provider_generation_id(response)
             session = getattr(response, "_quantdinger_llm_session", None)
             response.close()
             if session is not None:
                 session.close()
-            raise ValueError(f"LLM API {response.status_code}: {err_text}".strip())
+            raise LLMAPIError(
+                f"LLM API {response.status_code} (model={model}): {err_text}".strip(),
+                status_code=response.status_code,
+                request_id=request_id,
+                generation_id=generation_id,
+                error_type=error_type,
+            )
 
+        provider_name = (provider or self.provider).value
+        saw_terminal = False
+        generation_id = self._provider_generation_id(response)
+        request_id = self._provider_request_id(response)
         try:
-            for raw_line in response.iter_lines(decode_unicode=False):
-                if not raw_line:
-                    continue
-                if isinstance(raw_line, bytes):
-                    line = raw_line.decode("utf-8", errors="replace").strip()
-                else:
-                    line = str(raw_line).strip()
-                if line.startswith("data:"):
-                    line = line[5:].strip()
-                if line == "[DONE]":
+            for event_data in self._iter_sse_data(response):
+                if event_data.strip() == "[DONE]":
+                    saw_terminal = True
                     break
                 try:
-                    payload = json.loads(line)
-                except Exception:
+                    payload = json.loads(event_data)
+                except Exception as exc:
+                    raise LLMAPIError(
+                        f"Malformed LLM SSE data (provider={provider_name}, model={model})",
+                        status_code=502,
+                        request_id=request_id,
+                        generation_id=generation_id,
+                        error_type="malformed_stream",
+                        retryable=True,
+                    ) from exc
+
+                if not isinstance(payload, dict):
                     continue
+                generation_id = str(payload.get("id") or generation_id or "").strip()[:200]
+                stream_error = payload.get("error")
+                if stream_error:
+                    error_text = self._format_provider_error_value(stream_error)
+                    error_type = self._provider_error_type_from_value(stream_error)
+                    status_code = self._status_code_from_provider_error(stream_error)
+                    raise LLMAPIError(
+                        "LLM stream error "
+                        f"(provider={provider_name}, model={model}, error_type={error_type or 'unknown'}): "
+                        f"{error_text or stream_error}",
+                        status_code=status_code,
+                        request_id=request_id,
+                        generation_id=generation_id,
+                        error_type=error_type or "provider_unavailable",
+                        finish_reason="error",
+                    )
+
+                minimax_code, minimax_type, minimax_message = self._minimax_stream_error(payload)
+                if minimax_code:
+                    raise LLMAPIError(
+                        f"MiniMax stream error {minimax_code} (model={model}): {minimax_message}",
+                        status_code=502,
+                        request_id=request_id,
+                        generation_id=generation_id,
+                        error_type=minimax_type,
+                    )
+
                 choices = payload.get("choices") or []
                 if not choices:
                     continue
-                delta = choices[0].get("delta") or {}
+                choice = choices[0]
+                delta = choice.get("delta") or {}
                 content = delta.get("content")
                 if content:
                     yield content
+
+                finish_reason = str(choice.get("finish_reason") or "").strip().lower()
+                if not finish_reason:
+                    continue
+                if finish_reason in {"stop", "tool_calls", "function_call"}:
+                    saw_terminal = True
+                    continue
+                if finish_reason == "length":
+                    raise LLMAPIError(
+                        f"LLM output reached the configured token limit (model={model})",
+                        status_code=400,
+                        request_id=request_id,
+                        generation_id=generation_id,
+                        error_type="max_tokens_exceeded",
+                        finish_reason=finish_reason,
+                        retryable=False,
+                    )
+                if finish_reason == "content_filter":
+                    raise LLMAPIError(
+                        f"LLM output was stopped by the provider content filter (model={model})",
+                        status_code=400,
+                        request_id=request_id,
+                        generation_id=generation_id,
+                        error_type="content_policy_violation",
+                        finish_reason=finish_reason,
+                        retryable=False,
+                    )
+                if finish_reason == "insufficient_system_resource":
+                    raise LLMAPIError(
+                        f"LLM provider interrupted generation due to insufficient resources (model={model})",
+                        status_code=503,
+                        request_id=request_id,
+                        generation_id=generation_id,
+                        error_type="provider_unavailable",
+                        finish_reason=finish_reason,
+                        retryable=True,
+                    )
+                raise LLMAPIError(
+                    f"LLM stream stopped with unsupported finish_reason={finish_reason} (model={model})",
+                    status_code=502,
+                    request_id=request_id,
+                    generation_id=generation_id,
+                    error_type="unmapped",
+                    finish_reason=finish_reason,
+                )
+            if not saw_terminal:
+                raise LLMAPIError(
+                    f"LLM stream ended before a terminal event (provider={provider_name}, model={model})",
+                    status_code=502,
+                    request_id=request_id,
+                    generation_id=generation_id,
+                    error_type="premature_eof",
+                    retryable=True,
+                )
         finally:
             session = getattr(response, "_quantdinger_llm_session", None)
             response.close()
@@ -917,7 +1343,15 @@ class LLMService:
         model = self._normalize_model_for_provider(model, p)
         config = load_addon_config()
         timeout = int(config.get(p.value, {}).get('timeout', 120))
-        yield from self._stream_openai_compatible(messages, model, temperature, api_key, base_url, timeout)
+        yield from self._stream_openai_compatible(
+            messages,
+            model,
+            temperature,
+            api_key,
+            base_url,
+            timeout,
+            provider=p,
+        )
     
     def _try_alternative_providers(self, messages: list, model: str, temperature: float,
                                   use_json_mode: bool, excluded_provider: LLMProvider = None) -> str:

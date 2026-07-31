@@ -125,6 +125,90 @@ def _record_paper_order(*, body: dict, fill_price: float | None, status: str, no
     }
 
 
+def _reserve_live_notional(notional: float) -> tuple[bool, dict]:
+    token_id = int(current_token().get("id") or 0)
+    user_id = current_user_id()
+    key = (request.headers.get("Idempotency-Key") or "").strip()
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            SELECT max_order_notional, max_daily_notional
+            FROM qd_agent_tokens
+            WHERE id = %s AND user_id = %s
+            FOR UPDATE
+            """,
+            (token_id, user_id),
+        )
+        limits = cur.fetchone() or {}
+        per_order = float(limits.get("max_order_notional") or 1000)
+        daily = float(limits.get("max_daily_notional") or 5000)
+        if notional > per_order:
+            db.rollback()
+            cur.close()
+            return False, {
+                "reason": "max_order_notional",
+                "estimated_notional": notional,
+                "limit": per_order,
+            }
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(notional), 0) AS used
+            FROM qd_agent_notional_reservations
+            WHERE agent_token_id = %s
+              AND created_at >= date_trunc('day', NOW())
+              AND status IN ('reserved', 'executed')
+            """,
+            (token_id,),
+        )
+        used = float((cur.fetchone() or {}).get("used") or 0)
+        if used + notional > daily:
+            db.rollback()
+            cur.close()
+            return False, {
+                "reason": "max_daily_notional",
+                "estimated_notional": notional,
+                "used_today": used,
+                "limit": daily,
+            }
+        cur.execute(
+            """
+            INSERT INTO qd_agent_notional_reservations
+              (user_id, agent_token_id, idempotency_key, notional, status)
+            VALUES (%s, %s, %s, %s, 'reserved')
+            ON CONFLICT (agent_token_id, idempotency_key) DO NOTHING
+            """,
+            (user_id, token_id, key, notional),
+        )
+        db.commit()
+        cur.close()
+    return True, {
+        "estimated_notional": notional,
+        "used_today_before": used,
+        "max_order_notional": per_order,
+        "max_daily_notional": daily,
+    }
+
+
+def _finish_live_notional(status: str) -> None:
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            UPDATE qd_agent_notional_reservations
+            SET status = %s, updated_at = NOW()
+            WHERE agent_token_id = %s AND idempotency_key = %s
+            """,
+            (
+                status,
+                int(current_token().get("id") or 0),
+                (request.headers.get("Idempotency-Key") or "").strip(),
+            ),
+        )
+        db.commit()
+        cur.close()
+
+
 def _place_live_order(*, body: dict, user_id: int) -> dict:
     credential_id = int(body.get("credential_id") or body.get("credentialId") or 0)
     market = (body.get("market") or "").strip()
@@ -265,6 +349,7 @@ def _place_live_order(*, body: dict, user_id: int) -> dict:
     )
     raw_record = dict(raw) if isinstance(raw, dict) else {"raw": raw}
     raw_record["_quick_trade"] = {
+        "client_order_id": client_order_id,
         "requested_base_qty": qty,
         "exchange_status": exchange_status,
         "native_protection": protection_result,
@@ -379,13 +464,31 @@ def place_order():
         )
 
     if not paper_only():
+        reference_price = float(body.get("limit_price") or 0) if order_type == "limit" else float(
+            _last_price(market, symbol) or 0
+        )
+        if reference_price <= 0:
+            return error(400, "A current market price is required to enforce live notional limits")
+        notional = qty_f * reference_price
+        reserved, limit_state = _reserve_live_notional(notional)
+        if not reserved:
+            return error(
+                403,
+                "Live agent trading notional limit exceeded",
+                details=limit_state,
+                http=403,
+            )
         try:
             result = _place_live_order(body=body, user_id=current_user_id())
         except ValueError as exc:
+            _finish_live_notional("failed")
             return error(400, str(exc), http=400)
         except Exception as exc:
+            _finish_live_notional("failed")
             logger.error(f"agent_v1 live quick_trade failed: {exc}", exc_info=True)
             return error(500, "live quick_trade failed", details=str(exc), http=500)
+        _finish_live_notional("executed")
+        result["notional_policy"] = limit_state
         record_completed_job(
             user_id=current_user_id(),
             agent_token_id=int(current_token().get("id") or 0),
@@ -412,11 +515,69 @@ def place_order():
 @agent_v1_bp.route("/quick-trade/kill-switch", methods=["POST"])
 @agent_required(SCOPE_T)
 def kill_switch():
-    """Cancel all of the calling tenant's open paper orders.
+    """Best-effort cancel agent orders and revoke every tenant T token."""
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") is not True:
+        return error(400, "confirm=true is required for the emergency kill switch")
+    user_id = current_user_id()
+    live_cancelled = 0
+    live_failures: list[dict] = []
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            SELECT id, credential_id, symbol, market_type, exchange_order_id, raw_result
+            FROM qd_quick_trades
+            WHERE user_id = %s AND source = 'agent_mcp'
+              AND status IN ('submitted', 'partial', 'partially_filled')
+              AND COALESCE(exchange_order_id, '') <> ''
+            ORDER BY id DESC
+            """,
+            (user_id,),
+        )
+        live_rows = cur.fetchall() or []
+        cur.close()
 
-    This intentionally limits scope to the agent's own surface; revoking live
-    exchange orders requires the human admin path (separate, audited).
-    """
+    for row in live_rows:
+        try:
+            from app.services.pending_orders.live_order_phases import cancel_live_limit_order
+            from app.services.quick_trade.credentials import build_exchange_config, create_exchange_client
+
+            market_type = str(row.get("market_type") or "swap")
+            config = build_exchange_config(int(row.get("credential_id") or 0), user_id, {
+                "market_type": market_type,
+            })
+            client = create_exchange_client(config, market_type=market_type)
+            raw = row.get("raw_result") or {}
+            if not isinstance(raw, dict):
+                raw = {}
+            metadata = raw.get("_quick_trade") or {}
+            outcome = cancel_live_limit_order(
+                client=client,
+                symbol=str(row.get("symbol") or ""),
+                order_id=str(row.get("exchange_order_id") or ""),
+                client_order_id=str(metadata.get("client_order_id") or ""),
+                market_type=market_type,
+                exchange_config=config,
+            )
+            if outcome is None:
+                raise ValueError("exchange client does not support cancellation")
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    "UPDATE qd_quick_trades SET status = 'cancelled' WHERE id = %s AND user_id = %s",
+                    (row["id"], user_id),
+                )
+                db.commit()
+                cur.close()
+            live_cancelled += 1
+        except Exception as exc:
+            live_failures.append({
+                "trade_id": row.get("id"),
+                "exchange_order_id": row.get("exchange_order_id"),
+                "error": str(exc)[:300],
+            })
+
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
@@ -425,9 +586,25 @@ def kill_switch():
             SET status = 'cancelled', note = COALESCE(note,'') || ' [kill_switch]'
             WHERE user_id = %s AND status NOT IN ('filled','cancelled','rejected')
             """,
-            (current_user_id(),),
+            (user_id,),
         )
-        affected = cur.rowcount
+        paper_affected = cur.rowcount
+        cur.execute(
+            """
+            UPDATE qd_agent_tokens
+            SET status = 'revoked'
+            WHERE user_id = %s AND status = 'active'
+              AND (',' || UPPER(scopes) || ',') LIKE '%%,T,%%'
+            """,
+            (user_id,),
+        )
+        revoked = cur.rowcount
         db.commit()
         cur.close()
-    return envelope({"cancelled_open_paper_orders": int(affected or 0)})
+    return envelope({
+        "cancelled_open_paper_orders": int(paper_affected or 0),
+        "cancelled_live_agent_orders": live_cancelled,
+        "live_cancel_failures": live_failures,
+        "revoked_t_tokens": int(revoked or 0),
+        "manual_review_required": bool(live_failures),
+    }, message="emergency-stop")

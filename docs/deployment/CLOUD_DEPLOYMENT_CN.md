@@ -378,6 +378,60 @@ docker compose -f docker-compose.ghcr.yml logs --tail=100 frontend
 docker compose -f docker-compose.ghcr.yml logs --tail=100 backend
 ```
 
+### AI 流式输出约 50～60 秒后中断
+
+典型症状：
+
+- `/api/ai/chat/message/stream` 已返回部分内容，约 50～60 秒后在浏览器网络面板中变为失败；
+- 前端随后退回普通 `/api/ai/chat/message` 请求；
+- 后端容器没有重启、没有 OOM，后端日志也不一定出现 `chat_message_stream failed`。
+
+这通常发生在宿主机 Nginx、1Panel OpenResty 等外层反向代理继续使用默认超时和响应缓冲时。即使 Docker 内部的前端代理已经配置 600 秒，外层代理仍可能先中断 SSE 连接。
+
+在每个对外提供 AI 聊天的域名配置中，为 SSE 路径增加独立的精确匹配。移动 H5 默认转发到 `8889`；Web 前端请把端口改为 `8888`：
+
+```nginx
+location = /api/ai/chat/message/stream {
+    proxy_pass http://127.0.0.1:8889;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection "";
+
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_request_buffering off;
+
+    proxy_connect_timeout 75s;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    send_timeout 600s;
+
+    add_header X-Accel-Buffering "no" always;
+    add_header Cache-Control "no-cache, no-transform" always;
+}
+```
+
+1Panel OpenResty 的站点配置和日志通常挂载在：
+
+```text
+/opt/1panel/www/sites/<域名>/proxy/
+/opt/1panel/www/sites/<域名>/log/access.log
+/opt/1panel/www/sites/<域名>/log/error.log
+```
+
+修改后先验证再重载；容器名以实际环境为准：
+
+```bash
+docker exec <openresty-container> /usr/local/openresty/nginx/sbin/nginx -t
+docker exec <openresty-container> /usr/local/openresty/nginx/sbin/nginx -s reload
+```
+
+如果仍会中断，在错误日志中搜索 `upstream timed out`、`upstream prematurely closed connection`、`499`、`502` 和 `504`，同时检查后端容器的 `RestartCount` 与 `OOMKilled`。
+
 ### 交易所或 LLM 出网需要代理
 
 后端运行时请求外网需要代理时，在 `backend.env` 或 `backend_api_python/.env` 设置 `PROXY_URL`。

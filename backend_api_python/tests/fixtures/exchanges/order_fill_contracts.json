@@ -81,51 +81,6 @@
     }
   },
   {
-    "id": "coinbase_spot_done",
-    "client": "CoinbaseExchangeClient",
-    "market_type": "spot",
-    "response": {
-      "status": "done",
-      "filled_size": "0.02",
-      "executed_value": "1300.0"
-    },
-    "expected": {
-      "filled": 0.02,
-      "avg": 65000.0,
-      "status": "filled"
-    }
-  },
-  {
-    "id": "kraken_spot_closed",
-    "client": "KrakenClient",
-    "market_type": "spot",
-    "response": {
-      "status": "closed",
-      "vol_exec": "0.015",
-      "cost": "975.0"
-    },
-    "expected": {
-      "filled": 0.015,
-      "avg": 65000.0,
-      "status": "filled"
-    }
-  },
-  {
-    "id": "kraken_futures_filled",
-    "client": "KrakenFuturesClient",
-    "market_type": "swap",
-    "response": {
-      "status": "filled",
-      "filledSize": "0.03",
-      "avgFillPrice": "65010"
-    },
-    "expected": {
-      "filled": 0.03,
-      "avg": 65010.0,
-      "status": "filled"
-    }
-  },
-  {
     "id": "htx_swap_numeric_filled",
     "client": "HtxClient",
     "market_type": "swap",

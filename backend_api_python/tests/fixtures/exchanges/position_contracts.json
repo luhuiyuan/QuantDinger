@@ -83,20 +83,6 @@
     }
   },
   {
-    "id": "kraken_futures_open_position_short",
-    "row": {
-      "symbol": "PF_XBTUSD",
-      "side": "short",
-      "size": "0.008"
-    },
-    "side": "short",
-    "contracts_to_base": 1,
-    "expected": {
-      "inferred_side": "short",
-      "base_qty": 0.008
-    }
-  },
-  {
     "id": "htx_direction_buy_long_contracts_to_base",
     "row": {
       "contract_code": "BTC-USDT",

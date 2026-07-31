@@ -536,7 +536,23 @@ class OkxClient(BaseRestClient):
         body: Dict[str, Any] = {"instId": iid, "lever": str(lv), "mgnMode": mm}
         if ps:
             body["posSide"] = ps
-        _ = self._signed_request("POST", "/api/v5/account/set-leverage", json_body=body)
+        response = self._signed_request(
+            "POST", "/api/v5/account/set-leverage", json_body=body
+        )
+        rows = (response.get("data") or []) if isinstance(response, dict) else []
+        first = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
+        effective_raw = first.get("lever") if isinstance(first, dict) else None
+        if effective_raw not in (None, ""):
+            try:
+                effective = int(float(effective_raw))
+            except (TypeError, ValueError) as exc:
+                raise LiveTradingError(
+                    f"OKX returned an invalid effective leverage: {effective_raw}"
+                ) from exc
+            if effective != lv:
+                raise LiveTradingError(
+                    f"OKX applied {effective}x instead of requested {lv}x leverage"
+                )
         self._lev_cache[cache_key] = (now, True)
         return True
 
@@ -639,7 +655,10 @@ class OkxClient(BaseRestClient):
                 "ordType": "market",
                 "sz": self._dec_str(sz_dec),
             }
-            if reduce_only:
+            # OKX documents reduceOnly for FUTURES/SWAP net mode only. In
+            # long/short mode the side + posSide combination identifies a
+            # closing order and it is inherently reduce-only.
+            if reduce_only and ps == "net":
                 body["reduceOnly"] = "true"
         if client_order_id:
             body["clOrdId"] = str(client_order_id)
@@ -715,7 +734,7 @@ class OkxClient(BaseRestClient):
                 "sz": self._dec_str(sz_dec, strict_precision=sz_precision),
                 "px": str(px),
             }
-            if reduce_only:
+            if reduce_only and ps == "net":
                 body["reduceOnly"] = "true"
 
         if client_order_id:

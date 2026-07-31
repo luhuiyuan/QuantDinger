@@ -263,6 +263,18 @@ def test_htx_swap_market_order_uses_mode_fallback():
     mock_place.assert_called_once()
 
 
+def test_htx_position_mode_probe_failure_stays_unknown():
+    c = HtxClient(api_key="k", secret_key="s", market_type="swap")
+    with patch.object(c, "_swap_v5_request", side_effect=RuntimeError("v5 unavailable")):
+        with patch.object(
+            c,
+            "_swap_private_request_raw",
+            side_effect=RuntimeError("v1 unavailable"),
+        ):
+            assert c.detect_swap_hedge_mode(symbol="DOGE/USDT") is None
+            assert c.get_swap_hedge_mode(symbol="DOGE/USDT") is False
+
+
 def test_is_single_asset_mode_unavailable():
     assert htx_v5.is_single_asset_mode_unavailable(
         "The Single-Asset Collateral mode is temporarily unavailable."
