@@ -1,20 +1,20 @@
 ## 1. 基线与迁移护栏
 
-- [ ] 1.1 盘点 `backend_api_python/app/tasks/`、`send_task`、Agent Job、fast analysis、Beat 配置、健康检查和 Compose 中全部 Celery 入口，建立 Task Definition 与阶段映射清单
+- [x] 1.1 盘点 `backend_api_python/app/tasks/`、`send_task`、Agent Job、fast analysis、Beat 配置、健康检查和 Compose 中全部 Celery 入口，建立 Task Definition 与阶段映射清单
 - [ ] 1.2 增加一次性硬切换前置检查，能够列出 Celery active、reserved、scheduled 及待迁移任务，并在任一硬门槛失败时阻止切换
-- [ ] 1.3 明确生产版本不包含 `execution_mode`、Celery fallback、双发保护或回切适配器；旧 Celery 入口只在硬切换前的历史代码中存在
-- [ ] 1.4 补充内部任务模块边界文档，明确 Domain Scheduler、Task Scheduler 和 Task executor 在同一 `scheduler-worker` 中的独立职责与健康状态
+- [x] 1.3 明确生产版本不包含 `execution_mode`、Celery fallback、双发保护或回切适配器；旧 Celery 入口只在硬切换前的历史代码中存在
+- [x] 1.4 补充内部任务模块边界文档，明确 Domain Scheduler、Task Scheduler 和 Task executor 在同一 `scheduler-worker` 中的独立职责与健康状态
 
 ## 2. 数据库控制层
 
-- [ ] 2.1 新增数据库迁移和模型：`qd_task_definitions`、`qd_task_schedules`、`qd_task_runs`、`qd_task_events`、`qd_task_leases`、`qd_task_audit`
-- [ ] 2.2 为 `schedule_id + scheduled_at`、活动 `exclusivity_key`、Run 状态、优先级 FIFO、事件时间和领域引用建立唯一约束及查询索引
-- [ ] 2.3 实现通用 repository，覆盖计划修订、Run 创建、合法状态转换、结果摘要、领域引用、retry 关联和不可变终态
-- [ ] 2.4 为数据库约束、并发创建、非法状态转换、历史保留和领域关联添加针对性测试
+- [x] 2.1 新增数据库迁移和模型：`qd_task_definitions`、`qd_task_schedules`、`qd_task_runs`、`qd_task_events`、`qd_task_leases`、`qd_task_audit`
+- [x] 2.2 为 `schedule_id + scheduled_at`、活动 `exclusivity_key`、Run 状态、优先级 FIFO、事件时间和领域引用建立唯一约束及查询索引
+- [x] 2.3 实现通用 repository，覆盖计划修订、Run 创建、合法状态转换、结果摘要、领域引用、retry 关联和不可变终态
+- [x] 2.4 为数据库约束、并发创建、非法状态转换、历史保留和领域关联添加针对性测试
 
 ## 3. Task Definition 注册表
 
-- [ ] 3.1 实现代码 Task Registry，声明稳定 `task_key`、参数 Schema、默认值、版本、优先级、互斥策略、retry/timeout/cancel 能力和领域适配器
+- [x] 3.1 实现代码 Task Registry，声明稳定 `task_key`、参数 Schema、默认值、版本、优先级、互斥策略、retry/timeout/cancel 能力和领域适配器
 - [ ] 3.2 实现 worker 启动时注册表幂等同步、新定义物化、移除定义 `retired` 和不一致时阻止 Task Scheduler 启动
 - [ ] 3.3 实现 Run 创建时 definition/Schema/参数快照固化，以及缺失旧处理器时 `definition_version_unavailable` 失败路径
 - [ ] 3.4 添加注册表 Schema 校验、版本升级、retired 任务、非法 Shell/Python/SQL 入口和旧版本不可用测试
