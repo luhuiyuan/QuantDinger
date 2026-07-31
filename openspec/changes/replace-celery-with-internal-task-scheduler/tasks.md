@@ -1,8 +1,8 @@
 ## 1. 基线与迁移护栏
 
 - [ ] 1.1 盘点 `backend_api_python/app/tasks/`、`send_task`、Agent Job、fast analysis、Beat 配置、健康检查和 Compose 中全部 Celery 入口，建立 Task Definition 与阶段映射清单
-- [ ] 1.2 为迁移任务定义 `execution_mode` 配置、默认值和管理员审计契约，确保同一 `task_key` 只能归属 `celery`、`internal` 或 `disabled`
-- [ ] 1.3 增加迁移前置检查，能够列出 Celery active、reserved、scheduled 及待迁移任务，并拒绝未审计的双发配置
+- [ ] 1.2 增加一次性硬切换前置检查，能够列出 Celery active、reserved、scheduled 及待迁移任务，并在任一硬门槛失败时阻止切换
+- [ ] 1.3 明确生产版本不包含 `execution_mode`、Celery fallback、双发保护或回切适配器；旧 Celery 入口只在硬切换前的历史代码中存在
 - [ ] 1.4 补充内部任务模块边界文档，明确 Domain Scheduler、Task Scheduler 和 Task executor 在同一 `scheduler-worker` 中的独立职责与健康状态
 
 ## 2. 数据库控制层
@@ -60,7 +60,7 @@
 - [ ] 8.3 实现 Schedules 标签页，支持注册任务下拉选择、Cron/时区/Schema 参数编辑、启用/暂停和修订信息
 - [ ] 8.4 实现 Runs 标签页及详情抽屉/页面，展示进度、heartbeat、领域详情、结果摘要、错误码、取消和 retry 操作
 - [ ] 8.5 实现 Logs 标签页，支持任务、状态、所有者、时间、错误码和关联 provider 请求筛选以及脱敏事件详情
-- [ ] 8.6 实现活动数据每 5 秒轮询、页面离开时停止轮询、稳定 cursor 消费和后端未启用时的兼容提示
+- [ ] 8.6 实现活动数据每 5 秒轮询、页面离开时停止轮询和稳定 cursor 消费；不增加 Celery 兼容提示或 fallback 页面
 - [ ] 8.7 添加权限、表单校验、重复启动、计划暂停、取消、retry、日志筛选和轮询生命周期的前端针对性测试
 
 ## 9. 第一阶段：维护与市场数据任务迁移
@@ -69,7 +69,7 @@
 - [ ] 9.2 注册并迁移 market catalog sync、CN quote refresh、CN market-history targeted/daily sync，并连接现有领域批次和进度
 - [ ] 9.3 注册并迁移 fundamental incremental sync 和 fundamental backfill，移除运行中 pause/resume，接入安全取消与新 Run retry
 - [ ] 9.4 为基本面全市场回填配置无总墙钟限制、provider 请求超时、Eastmoney 限流、标的级检查点和全局互斥键
-- [ ] 9.5 更新相关管理路由，移除第一阶段任务的 `send_task` 直接投递并按 `execution_mode` 保持单一归属
+- [ ] 9.5 更新相关管理路由，移除第一阶段任务的 `send_task` 直接投递并改为内部 Task Run 创建
 - [ ] 9.6 使用小批量市场数据和基本面目标验证调度、进度、provider 错误详情、取消、retry、部署中断和磁盘阈值行为
 
 ## 10. 第二阶段：AI 与 Agent 任务迁移
@@ -83,11 +83,11 @@
 
 - [ ] 11.1 实现最终切换命令/流程：停止 Beat 和新投递、撤回未开始工作并记录 `migration_skipped`、终止活动工作并记录 `migration_interrupted`
 - [ ] 11.2 确保迁移中断任务不自动创建内部 Run，管理员只能检查最后 checkpoint 后人工 retry，并验证审计链路
-- [ ] 11.3 实现可自动执行的删除硬门槛检查，覆盖 internal 归属、Celery 队列为空、调度、互斥、retry、取消、worker loss、权限、日志、前端和回退说明
+- [ ] 11.3 实现可自动执行的硬切换门槛检查，覆盖全部任务适配完成、Celery 队列为空、调度、互斥、retry、取消、worker loss、权限、日志、前端和硬切换演练
 - [ ] 11.4 记录删除前 Git 提交、镜像版本和数据库恢复说明；任一硬门槛失败时阻止继续
 - [ ] 11.5 全部门槛通过后从 Compose 和 GHCR Compose 删除 Celery Worker、Celery Beat 与 `redis-jobs`，保留缓存 Redis
 - [ ] 11.6 删除 Celery app、task decorators、Beat 配置、send_task 适配器、Celery-only Python 依赖、环境变量、health/readiness 和告警
-- [ ] 11.7 更新部署、进程角色、并发模型、模块边界、API 和运维文档，记录取消/retry、worker loss 和迁移中断处理手册
+- [ ] 11.7 删除所有 Celery 兼容文档和配置说明，更新部署、进程角色、并发模型、模块边界、API 和运维文档，记录取消/retry、worker loss 和硬切换中断处理手册
 
 ## 12. 最终验证与低资源部署
 

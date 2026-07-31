@@ -62,11 +62,11 @@ Task Scheduler 每 5 秒尝试获得 PostgreSQL advisory lock 并扫描已启用
 
 ### 9. 管理 API 和统一前端页面
 
-管理页面包含 Overview、Schedules、Runs、Logs 四个标签页，Run 详情通过抽屉或详情页展示。管理员可管理全部注册任务、计划和 Run；普通用户只读查看自己提交的用户任务。第一版每 5 秒轮询，列表和事件 API 使用稳定分页及 cursor 字段，为后续 SSE 保留升级空间。所有计划修改、启动、取消、重试、执行模式切换和迁移操作写入管理审计。
+管理页面包含 Overview、Schedules、Runs、Logs 四个标签页，Run 详情通过抽屉或详情页展示。管理员可管理全部注册任务、计划和 Run；普通用户只读查看自己提交的用户任务。第一版每 5 秒轮询，列表和事件 API 使用稳定分页及 cursor 字段，为后续 SSE 保留升级空间。所有计划修改、启动、取消、重试和硬切换操作写入管理审计。
 
-### 10. 单一执行归属和不可自动续跑的迁移
+### 10. 一次性硬切换和不可自动续跑的迁移
 
-迁移期间每个 Task Definition 的 `execution_mode` 只能为 `celery`、`internal` 或 `disabled`，禁止双发。切换时先停止 Celery Beat 和新投递，撤回未执行项并记录 `migration_skipped`，立即终止活动 Celery 任务并记录 `failed/migration_interrupted`。系统不自动创建内部 Run；管理员检查领域检查点后人工重试。全部任务切换并通过硬门槛后，立即删除 Celery Worker、Celery Beat、`redis-jobs`、Celery 配置、健康检查和 Python 依赖。
+开发期间可以在测试环境实现和验证内部系统，但生产运行期不引入 `execution_mode`、Celery/内部双后端、fallback 或回切适配器。最终发布是一次性硬切换：停止 Celery Beat 和新投递，撤回未执行项并记录 `migration_skipped`，立即终止活动 Celery 任务并记录 `failed/migration_interrupted`，然后启动不含 Celery 代码和配置的版本。系统不自动创建内部 Run；管理员检查领域检查点后人工重试。
 
 ## Risks / Trade-offs
 
@@ -74,20 +74,20 @@ Task Scheduler 每 5 秒尝试获得 PostgreSQL advisory lock 并扫描已启用
 - [同容器的 Task executor 可能影响 Domain Scheduler] → Run 使用独立子进程、第一阶段全局并发 1，并分别暴露健康状态；后续可按同一数据库契约拆分部署。
 - [父进程失联后 180 秒内 Run 仍显示运行] → UI 显示最后心跳和租约信息；180 秒是在误判与故障发现速度之间选择的宽松窗口。
 - [立即终止 Celery 任务会丢失未提交工作] → 迁移前记录任务、检查点和操作者，统一标记 `migration_interrupted`，只允许人工确认后新建 Run。
-- [删除 Celery 后软件回滚成本较高] → 删除前记录 Git 提交和镜像版本、验证数据库回退说明，并把全部硬门槛设为阻断条件。
+- [删除 Celery 后软件回滚成本较高] → 删除前记录 Git 提交和镜像版本、验证数据库恢复说明，并把全部硬门槛设为阻断条件；不提供运行时回切。
 - [90 天事件量可能增长] → 普通进度写入限频、metadata 限长、按索引批量清理；最终 Run 摘要不依赖事件回放。
 
 ## Migration Plan
 
-1. 建立通用表、注册表、状态机、调度锁、租约、子进程协议和只读管理 API，不改变现有 Celery 投递。
+1. 建立通用表、注册表、状态机、调度锁、租约、子进程协议和管理 API；此阶段只在开发/测试环境验证，不向生产引入运行时兼容层。
 2. 增加统一前端页面及权限、审计、事件清理和故障演练能力。
-3. 第一阶段迁移维护与市场数据任务；每个任务按 `execution_mode` 保证单一归属，并完成小批量验证。
+3. 第一阶段完成维护与市场数据任务适配，并完成小批量验证；不添加任务级 Celery/内部模式字段。
 4. 第二阶段迁移 AI/Agent Job 和 fast analysis；保持现有 Agent Job API/SSE 外部契约，由领域适配器连接 Task Run。
 5. 停止 Celery 新投递，撤回未执行任务，立即终止活动任务并记录迁移失败；由管理员决定是否从检查点手工重试。
-6. 运行全部删除硬门槛：Cron、互斥、FIFO、retry、取消、超时、worker loss、权限、审计、90 天清理、Compose、前端和迁移行为均通过。
+6. 运行全部删除硬门槛：Cron、互斥、FIFO、retry、取消、超时、worker loss、权限、审计、90 天清理、Compose、前端和硬切换演练均通过。
 7. 立即删除 Celery Worker、Celery Beat、`redis-jobs` 和 Celery-only 代码、配置、依赖、health/readiness；顺序构建和部署受影响服务。
 
-回滚只影响未来触发，不转移活动 Run。删除前可按 Task Definition 把未来执行切回 Celery；删除后只能恢复已记录的代码/镜像版本和兼容数据库结构。任何回滚都必须先暂停计划并处理活动内部 Run。
+不提供回切 Celery 的运行时路径。硬切换失败时停止新计划、保留内部 Run 现场并修复后重新部署；如需软件版本回退，必须恢复完整旧制品和部署编排，不能让新版本调用已删除的 Celery 适配器。
 
 ## Open Questions
 

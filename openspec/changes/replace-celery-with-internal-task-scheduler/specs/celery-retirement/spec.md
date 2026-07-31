@@ -1,18 +1,18 @@
 ## ADDED Requirements
 
 ### Requirement: 分阶段迁移全部有限任务
-系统 MUST 分阶段迁移全部 Celery 有限任务：第一阶段迁移维护和市场数据任务，第二阶段迁移 AI/Agent Job。Domain Scheduler 的长生命周期领域循环 MUST 保持独立且不得被误迁移为有限 Task Run。
+系统 MUST 分阶段完成全部有限任务的内部适配：第一阶段完成维护和市场数据任务，第二阶段完成 AI/Agent Job；分阶段只表示开发和验证顺序，不表示生产运行期保留双后端。Domain Scheduler 的长生命周期领域循环 MUST 保持独立且不得被误迁移为有限 Task Run。
 
 #### Scenario: 第一阶段完成
 - **WHEN** 维护、目录同步、行情同步和基本面同步任务完成内部执行验证
-- **THEN** 这些任务不再通过 Celery 投递，而 AI/Agent 任务可继续按单一归属留在 Celery 直至第二阶段
+- **THEN** 这些任务已具备内部 Task Run 适配和验收证据，但在最终硬切换前不发布部分生产迁移状态
 
-### Requirement: 每个任务定义单一执行归属
-迁移期间每个 Task Definition MUST 具有 `celery`、`internal` 或 `disabled` 的唯一执行模式；同一任务不得由 Celery 和内部执行器双发。模式切换 MUST 只影响未来创建的工作并记录管理员审计。
+### Requirement: 生产版本不得包含 Celery 兼容层
+最终生产版本 MUST 不包含 `execution_mode`、Celery/内部双后端、fallback、运行时切换或回切适配器；所有有限任务入口 MUST 直接创建内部 Task Run，Domain Scheduler 仍只负责长生命周期领域循环。
 
-#### Scenario: 切换市场同步到内部执行
-- **WHEN** 管理员将任务执行模式从 `celery` 切换为 `internal`
-- **THEN** 后续触发只创建内部 Run，系统不得向 Celery 同时投递
+#### Scenario: 检查最终生产制品
+- **WHEN** 发布流程扫描代码、配置和 Compose 定义
+- **THEN** 不存在 Celery 投递调用、兼容模式字段、fallback 分支或 Celery 容器定义
 
 ### Requirement: 切换时立即终止 Celery 工作
 最终切换时系统 MUST 停止 Celery Beat 和新投递，撤回未开始的 Celery 工作并记录 `migration_skipped`，立即终止活动 Celery 工作并记录 `failed/migration_interrupted`。系统 MUST 不自动创建内部 Run或自动从检查点续跑。
@@ -22,7 +22,7 @@
 - **THEN** 原任务记录为 `failed/migration_interrupted`，管理员检查最后领域检查点后才能手工创建内部 retry Run
 
 ### Requirement: 删除前硬验证门槛
-系统和部署变更 MUST 在删除任何 Celery 运行组件前证明所有注册任务为 internal、Celery active/reserved/scheduled 均为空，并通过 Cron、跳过、互斥、FIFO、自动 retry、人工 retry、安全取消、强制终止、worker loss、进度、事件、审计、权限、90 天清理、前端和数据库回退验证。任一门槛失败 MUST 阻止删除。
+系统和部署变更 MUST 在硬切换前证明全部有限任务适配已完成、Celery active/reserved/scheduled 均为空，并通过 Cron、跳过、互斥、FIFO、自动 retry、人工 retry、安全取消、强制终止、worker loss、进度、事件、审计、权限、90 天清理、前端和硬切换演练验证。任一门槛失败 MUST 阻止硬切换。
 
 #### Scenario: worker loss 故障演练失败
 - **WHEN** 其他迁移测试通过但 worker loss 未能在 180 秒后正确标记失败
@@ -35,9 +35,9 @@
 - **WHEN** 所有任务已切换且硬门槛全部通过
 - **THEN** Compose 不再启动 Celery Worker、Celery Beat 或 `redis-jobs`，后端 readiness 不再依赖它们，内部任务功能保持可用
 
-### Requirement: 回滚不得转移活动 Run
-迁移或软件回滚 MUST 只改变未来触发，并在切换前暂停计划和处理活动 Run。系统 MUST 不把活动内部 Run 转交 Celery，也不得把已终止 Celery 工作伪装为内部 Run。
+### Requirement: 硬切换失败不得运行时回切
+硬切换失败 MUST 停止新计划并保留内部 Run 现场，修复后重新部署；系统 MUST 不把活动内部 Run 转交 Celery，也不得把已终止 Celery 工作伪装为内部 Run。软件版本回退只能恢复完整旧制品和部署编排。
 
-#### Scenario: 内部执行切换后请求回滚
-- **WHEN** 管理员在仍有活动内部 Run 时请求恢复旧版本
-- **THEN** 运维流程先暂停未来计划并要求活动 Run完成、取消或失败，不转移执行所有权
+#### Scenario: 硬切换后发现内部执行缺陷
+- **WHEN** 管理员发现内部执行缺陷并请求恢复旧版本
+- **THEN** 系统暂停未来计划并保留活动 Run，运维只能通过完整旧制品回退，不存在新版本到 Celery 的运行时切换
