@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any
 import requests
 
+from app.data_sources.rate_limiter import get_eastmoney_limiter
 from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 EASTMONEY_MAIN_DATA_URL = "https://datacenter.eastmoney.com/securities/api/data/get"
@@ -49,12 +50,14 @@ def _number(value: Any) -> float | None:
 def fetch_eastmoney_annual_reports(code: str, session=requests) -> list[dict]:
     code=str(code).replace('.SH','').replace('.SZ','').zfill(6)
     rows_by_period={}
+    limiter = get_eastmoney_limiter()
     main_params={"type":"RPT_F10_FINANCE_MAINFINADATA","sty":"ALL","filter":f'(SECUCODE="{code}.{_exchange(code)}")(REPORT_TYPE="年报")',"p":"1","ps":"100","sr":"-1","st":"REPORT_DATE","source":"HSF10","client":"PC"}
     with ProviderAttempt(
         provider="eastmoney", data_domain="fundamental_history",
         operation="annual_main_report", call_source="cn_fundamental_history",
         subject_summary={"security_code": code},
     ) as attempt:
+        limiter.wait()
         response=session.get(EASTMONEY_MAIN_DATA_URL, params=main_params, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
         attempt.set_http_status(getattr(response, "status_code", None))
         response.raise_for_status()
@@ -72,6 +75,7 @@ def fetch_eastmoney_annual_reports(code: str, session=requests) -> list[dict]:
             operation=_STATEMENT_OPERATIONS[report_name], call_source="cn_fundamental_history",
             subject_summary={"security_code": code, "report_name": report_name},
         ) as attempt:
+            limiter.wait()
             response=session.get(EASTMONEY_STATEMENT_DATA_URL, params=params, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
             attempt.set_http_status(getattr(response, "status_code", None))
             response.raise_for_status()

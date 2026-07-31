@@ -158,6 +158,37 @@ class CNMarketHistoryRepository:
             finally:
                 cur.close()
 
+    def list_eligible_instruments(self) -> list[str]:
+        """Return the current catalog plus persisted delisted ordinary shares.
+
+        A new installation has a populated market catalog before it has any
+        ``qd_cn_instruments`` rows, so relying only on the latter would turn a
+        supposed full-market backfill into an empty run.  Persisted instrument
+        rows retain delisted shares after they leave the live catalog.
+        """
+        with self._connection_factory() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT instrument AS symbol FROM qd_cn_instruments
+                    WHERE exchange IN ('SH', 'SZ') AND security_type = 'ordinary_share'
+                    UNION
+                    SELECT symbol FROM qd_market_symbols
+                    WHERE market = 'CNStock' AND is_active = 1
+                    ORDER BY symbol
+                    """
+                )
+                instruments = []
+                for row in cur.fetchall():
+                    try:
+                        instruments.append(parse_cn_instrument(row["symbol"]).canonical)
+                    except Exception:
+                        continue
+                return list(dict.fromkeys(instruments))
+            finally:
+                cur.close()
+
     def fetch_confirmed_non_trading_dates(
         self,
         instrument: str,

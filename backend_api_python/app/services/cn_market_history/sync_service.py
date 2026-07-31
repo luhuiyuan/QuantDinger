@@ -86,6 +86,44 @@ class CNMarketHistorySyncService:
         parent_run_id: str | None = None,
         request_kind: str = "targeted",
     ) -> str:
+        return self._create_run(
+            instruments,
+            start_date,
+            end_date,
+            requested_by=requested_by,
+            parent_run_id=parent_run_id,
+            request_kind=request_kind,
+            full_market=False,
+        )
+
+    def create_full_market_run(
+        self,
+        start_date: date,
+        end_date: date,
+        *,
+        requested_by: int | None,
+    ) -> str:
+        """Create one serialized backfill over every persisted eligible A share."""
+        return self._create_run(
+            self.data_repository.list_eligible_instruments(),
+            start_date,
+            end_date,
+            requested_by=requested_by,
+            request_kind="backfill",
+            full_market=True,
+        )
+
+    def _create_run(
+        self,
+        instruments: Sequence[str],
+        start_date: date,
+        end_date: date,
+        *,
+        requested_by: int | None,
+        parent_run_id: str | None = None,
+        request_kind: str,
+        full_market: bool,
+    ) -> str:
         if not self.settings.sync_enabled:
             raise CNHistorySyncDisabled("CN history synchronization is disabled")
         if end_date < start_date:
@@ -100,7 +138,7 @@ class CNMarketHistorySyncService:
             canonical.append(instrument)
         if not canonical:
             raise ValueError("At least one supported A-share instrument is required")
-        if len(canonical) > self.settings.max_targets_per_run:
+        if not full_market and len(canonical) > self.settings.max_targets_per_run:
             raise ValueError(
                 f"A sync run accepts at most {self.settings.max_targets_per_run} instruments"
             )
@@ -134,6 +172,7 @@ class CNMarketHistorySyncService:
                 "instruments": [target.instrument.canonical for target in targets],
                 "start_date": start_date.isoformat(),
                 "end_date": end_date.isoformat(),
+                "full_market": full_market,
             },
         )
         audit_action = {
@@ -150,6 +189,7 @@ class CNMarketHistorySyncService:
                 "end_date": end_date.isoformat(),
                 "request_kind": request_kind,
                 "parent_run_id": parent_run_id,
+                "full_market": full_market,
             },
             result_status="pending",
         )

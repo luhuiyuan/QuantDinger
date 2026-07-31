@@ -1,5 +1,18 @@
+import pytest
+
+from app.data_sources import cn_fundamental_history as history_module
 from app.data_sources.cn_fundamental_history import fetch_eastmoney_annual_reports
 from app.services import external_data_request_logs as request_log_module
+
+
+@pytest.fixture(autouse=True)
+def disable_eastmoney_wait(monkeypatch):
+ class NoopLimiter:
+  def wait(self): return 0.0
+
+ monkeypatch.setattr(history_module, 'get_eastmoney_limiter', lambda: NoopLimiter())
+
+
 class Response:
  def raise_for_status(self): pass
  def json(self): return {"result":{"data":[{"REPORT_DATE":"2025-12-31 00:00:00","NOTICE_DATE":"2026-04-17 00:00:00","UPDATE_DATE":"2026-04-17","SECUCODE":"600519.SH","TOTALOPERATEREVE":100,"PARENTNETPROFIT":20,"TOTAL_SHARE":10}]}}
@@ -54,3 +67,18 @@ def test_annual_backfill_records_each_eastmoney_provider_attempt(monkeypatch):
   'annual_main_report', 'annual_income_statement',
   'annual_cashflow_statement', 'annual_balance_statement'
  }
+
+
+def test_rate_limits_each_eastmoney_request(monkeypatch):
+ class RecordingLimiter:
+  def __init__(self): self.wait_count = 0
+  def wait(self): self.wait_count += 1
+
+ limiter = RecordingLimiter()
+ monkeypatch.setattr(
+  history_module, 'get_eastmoney_limiter', lambda: limiter, raising=False
+ )
+
+ fetch_eastmoney_annual_reports('600519', StatementSession())
+
+ assert limiter.wait_count == 4

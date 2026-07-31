@@ -26,6 +26,43 @@ _Avoid_: call source when referring to a technical module, provider name
 One logical attempt by an External Data Request to obtain a dataset from one named provider. Fallback attempts are separate Provider Attempts, rather than hidden retries inside one record.
 _Avoid_: HTTP packet, transport trace
 
+### Task execution
+
+**Task Scheduler**:
+A QuantDinger capability that determines when a finite background Task Run
+should become eligible, including recurring Cron schedules and administrator
+controls. It is distinct from the mechanism that executes a Task Run.
+_Avoid_: Domain Scheduler, timer thread
+
+**Domain Scheduler**:
+The long-lived process that owns portfolio monitoring, payment scans, signal
+alerts, and other domain loops requiring renewable ownership and controlled
+shutdown. It is not the owner of finite background Task Runs.
+_Avoid_: Task Scheduler, Celery Beat
+
+**Task Run**:
+One durable execution instance of a finite background task, with an explicit
+lifecycle, progress, retry history, and operator-visible outcome.
+_Avoid_: thread, cron entry, transient callback
+
+**Task Definition**:
+The code-registered contract for a finite background task, including its
+validated parameter schema, execution capabilities, version, and domain
+integration. Database records materialize this contract but do not redefine it.
+_Avoid_: arbitrary job, shell command, database-only task
+
+**Exclusivity Key**:
+A registered-task-generated identity that limits how many active Task Runs may
+coexist. It may be global, scoped to a domain object, or scoped to a user; it
+is not user-entered free text.
+_Avoid_: queue name, priority, task key
+
+**Task Event**:
+A sanitized, structured, operator-visible record of a Task Run lifecycle,
+progress, retry, cancellation, or error transition. Raw process output and
+secrets are not Task Events.
+_Avoid_: stdout, stack dump, provider response body
+
 ### Candidate selection
 
 **Candidate Pool Rule**:
@@ -61,8 +98,11 @@ The daily process that collects new annual disclosures and source revisions, rec
 _Avoid_: on-demand candidate calculation, concurrent history sync
 
 **Fundamental Historical Backfill**:
-An administrator-started, sequential import of available annual Fundamental History. It is checkpointed at instrument level and may be paused, resumed, retried, and inspected without silently restarting on deployment.
-_Avoid_: deployment-time bulk import, untracked batch job
+An administrator-started, sequential import of available annual Fundamental
+History. It is checkpointed at instrument level and may be safely cancelled,
+retried as a new Task Run, and inspected. It does not pause or resume in place,
+and deployment must not silently restart it.
+_Avoid_: deployment-time bulk import, untracked batch job, in-place resume
 
 **Fundamental Source Evidence**:
 The retained structured source fields, source identifiers, request context, announcement reference, and content hash that support a Fundamental History version. The first scope stores this evidence in PostgreSQL but does not bulk-archive source PDF files.

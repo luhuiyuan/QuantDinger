@@ -6,6 +6,10 @@ from app.services.cn_fundamental_history.service import CNFundamentalHistoryServ
 class Repository:
     def __init__(self):
         self.appended = []
+        self.ensured = []
+
+    def ensure_instrument(self, instrument):
+        self.ensured.append(instrument)
 
     def append_observation(self, **kwargs):
         self.appended.append(kwargs)
@@ -28,3 +32,16 @@ def test_announcement_later_than_as_of_is_not_written_or_calculated():
     )
     assert repository.appended == []
     assert result["observationsWritten"] == 0
+
+
+def test_sync_materializes_catalog_instrument_before_fetching_observations():
+    repository = Repository()
+
+    def fetcher(code):
+        assert code == "300750"
+        assert repository.ensured == ["CNStock:300750.SZ"]
+        return []
+
+    CNFundamentalHistoryService(
+        repository=repository, fetcher=fetcher
+    ).sync_instrument("CNStock:300750.SZ")

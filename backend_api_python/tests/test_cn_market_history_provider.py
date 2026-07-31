@@ -253,6 +253,13 @@ class _FakeDataRepository:
     def upsert_instrument_metadata(self, metadata, classifications):
         del metadata, classifications
 
+    def list_eligible_instruments(self):
+        return [
+            "CNStock:600519.SH",
+            "CNStock:000001.SZ",
+            "CNStock:300750.SZ",
+        ]
+
     def upsert_daily_bars(self, bars):
         self.pages.append(tuple(bars))
         return UpsertSummary(inserted=len(bars))
@@ -458,7 +465,47 @@ def test_retry_excludes_parent_overlap_and_writes_sanitized_audit_scope() -> Non
         "end_date": "2024-01-04",
         "request_kind": "retry",
         "parent_run_id": "run-parent",
+        "full_market": False,
     }
     assert not any(
         key in str(audit).lower() for key in ("password", "api_key", "secret")
     )
+
+
+def test_full_market_run_uses_catalog_and_persisted_universe_without_target_cap() -> None:
+    class Operations:
+        def __init__(self):
+            self.targets = None
+            self.payload = None
+            self.audit = None
+
+        def find_overlapping_active_run(self, *args, **kwargs):
+            return None
+
+        def create_sync_run(self, targets, **kwargs):
+            self.targets = targets
+            self.payload = kwargs["request_payload"]
+            assert kwargs["request_kind"] == "backfill"
+            return "run-full"
+
+        def write_audit(self, **kwargs):
+            self.audit = kwargs
+
+    operations = Operations()
+    service = CNMarketHistorySyncService(
+        settings=_settings(max_targets_per_run=1),
+        data_repository=_FakeDataRepository(),
+        operations_repository=operations,
+        disk_guard=_FakeDiskGuard(),
+    )
+
+    run_id = service.create_full_market_run(
+        date(2020, 1, 1), date(2026, 1, 31), requested_by=7
+    )
+
+    assert run_id == "run-full"
+    assert [target.instrument.canonical for target in operations.targets] == [
+        "CNStock:600519.SH", "CNStock:000001.SZ", "CNStock:300750.SZ",
+    ]
+    assert operations.payload["full_market"] is True
+    assert operations.audit["request_scope"]["full_market"] is True

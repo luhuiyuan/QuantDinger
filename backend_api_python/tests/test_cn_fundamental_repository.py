@@ -27,10 +27,13 @@ def test_pit_query_keeps_only_available_versions_and_merges_official_fields():
 def test_eligible_universe_includes_delisted_but_only_shenzhen_shanghai_ordinary_shares():
     repository = CNFundamentalHistoryRepository()
     captured = {}
-    repository._fetchall = lambda sql, params: captured.setdefault("call", (sql, params)) and [{"instrument": "CNStock:600519.SH"}]
-    assert repository.list_eligible_instruments() == ["CNStock:600519.SH"]
+    repository._fetchall = lambda sql, params: captured.setdefault("call", (sql, params)) and [
+        {"symbol": "600519"}, {"symbol": "000001.SZ"}, {"symbol": "not-a-share"},
+    ]
+    assert repository.list_eligible_instruments() == ["CNStock:600519.SH", "CNStock:000001.SZ"]
     assert "delisted_on" not in captured["call"][0]
     assert "security_type='ordinary_share'" in captured["call"][0]
+    assert "qd_market_symbols" in captured["call"][0]
 
 
 def test_provider_revision_has_distinct_content_hash_and_is_not_an_overwrite():

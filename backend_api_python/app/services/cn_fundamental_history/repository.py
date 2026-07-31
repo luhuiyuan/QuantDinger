@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from app.utils.db import get_db_connection
+from app.services.cn_market_history.instruments import parse_cn_instrument
 
 
 def _json(value: Any) -> str:
@@ -24,6 +25,62 @@ def _hash(payload: Mapping) -> str:
 class CNFundamentalHistoryRepository:
     def __init__(self, connection_factory: Callable = get_db_connection):
         self._connection_factory = connection_factory
+
+    def ensure_instrument(self, instrument: str) -> None:
+        """Materialize a current catalog symbol before writing FK-bound history."""
+        parsed = parse_cn_instrument(instrument)
+        with self._connection_factory() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    "SELECT 1 AS present FROM qd_cn_instruments WHERE instrument=%s",
+                    (parsed.canonical,),
+                )
+                if cur.fetchone():
+                    return
+
+                cur.execute(
+                    """SELECT name FROM qd_market_symbols
+                       WHERE market='CNStock'
+                         AND UPPER(symbol) IN (%s,%s,%s)
+                       ORDER BY is_active DESC,id ASC LIMIT 1""",
+                    (
+                        parsed.code,
+                        f"{parsed.code}.{parsed.exchange}",
+                        parsed.canonical.upper(),
+                    ),
+                )
+                catalog_row = cur.fetchone()
+                if not catalog_row:
+                    raise ValueError("cn_fundamental.instrument_not_found")
+
+                name = str(catalog_row.get("name") or "")
+                source = "market_symbols"
+                content_hash = _hash(
+                    {
+                        "instrument": parsed.canonical,
+                        "name": name,
+                        "security_type": "ordinary_share",
+                        "source": source,
+                    }
+                )
+                cur.execute(
+                    """INSERT INTO qd_cn_instruments
+                       (instrument,code,exchange,name,security_type,source,source_version,content_hash)
+                       VALUES (%s,%s,%s,%s,'ordinary_share',%s,'',%s)
+                       ON CONFLICT (instrument) DO NOTHING""",
+                    (
+                        parsed.canonical,
+                        parsed.code,
+                        parsed.exchange,
+                        name,
+                        source,
+                        content_hash,
+                    ),
+                )
+                db.commit()
+            finally:
+                cur.close()
 
     @contextmanager
     def advisory_lock(self, key: str = "cn-fundamental-history") -> Iterator[bool]:
@@ -253,12 +310,21 @@ class CNFundamentalHistoryRepository:
 
     def list_eligible_instruments(self) -> list[str]:
         rows = self._fetchall(
-            """SELECT instrument FROM qd_cn_instruments
+            """SELECT instrument AS symbol FROM qd_cn_instruments
                WHERE exchange IN ('SH','SZ') AND security_type='ordinary_share'
-               ORDER BY exchange,code""",
+               UNION
+               SELECT symbol FROM qd_market_symbols
+               WHERE market='CNStock' AND is_active=1
+               ORDER BY symbol""",
             (),
         )
-        return [row["instrument"] for row in rows]
+        instruments = []
+        for row in rows:
+            try:
+                instruments.append(parse_cn_instrument(row["symbol"]).canonical)
+            except Exception:
+                continue
+        return list(dict.fromkeys(instruments))
 
     def persist_screening(self, instrument: str, period_end: date, available_at: date, screening, *, formula_version: str) -> None:
         with self._connection_factory() as db:

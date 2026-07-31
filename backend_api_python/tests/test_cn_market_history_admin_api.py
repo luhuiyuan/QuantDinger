@@ -60,6 +60,12 @@ class _SyncService:
         self.created.append((instruments, start_date, end_date, kwargs))
         return "run-new"
 
+    def create_full_market_run(self, start_date, end_date, **kwargs):
+        if self.error:
+            raise self.error
+        self.created.append(("full-market", start_date, end_date, kwargs))
+        return "run-full-market"
+
     def retry_failed_run(self, run_id, **kwargs):
         if self.error:
             raise self.error
@@ -111,6 +117,29 @@ def test_admin_creates_persistent_run_and_enqueues_one_task(client, monkeypatch)
     assert response.get_json()["data"]["runId"] == "run-new"
     assert queued == ["run-new"]
     assert service.created[0][3]["requested_by"] == 7
+
+
+def test_admin_creates_full_market_backfill_without_target_cap(client, monkeypatch):
+    _auth(monkeypatch)
+    service = _SyncService()
+    queued = []
+    monkeypatch.setattr(routes, "get_sync_service", lambda: service)
+    monkeypatch.setattr(routes, "_enqueue_sync", queued.append)
+
+    response = client.post(
+        "/api/market-history/sync-runs",
+        headers=_headers(),
+        json={
+            "fullMarket": True,
+            "startDate": "2020-01-01",
+            "endDate": "2026-01-31",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.get_json()["data"]["runId"] == "run-full-market"
+    assert service.created == [("full-market", date(2020, 1, 1), date(2026, 1, 31), {"requested_by": 7})]
+    assert queued == ["run-full-market"]
 
 
 def test_duplicate_active_run_returns_conflict_without_enqueue(client, monkeypatch):

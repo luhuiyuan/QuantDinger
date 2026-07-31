@@ -117,16 +117,25 @@ def create_sync_run():
         end_date = _parse_date(payload.get("endDate"), "endDate")
         if end_date < start_date:
             raise ValueError("cn_history.invalid_date_range")
-        request_kind = str(payload.get("requestKind") or "targeted").strip().lower()
-        if request_kind not in {"targeted", "repair"}:
+        full_market = bool(payload.get("fullMarket"))
+        request_kind = str(
+            payload.get("requestKind") or ("backfill" if full_market else "targeted")
+        ).strip().lower()
+        if request_kind not in ({"targeted", "repair"} if not full_market else {"backfill"}):
             raise ValueError("cn_history.request_kind_unsupported")
-        run_id = get_sync_service().create_targeted_run(
-            instruments,
-            start_date,
-            end_date,
-            requested_by=int(g.user_id),
-            request_kind=request_kind,
-        )
+        service = get_sync_service()
+        if full_market:
+            run_id = service.create_full_market_run(
+                start_date, end_date, requested_by=int(g.user_id)
+            )
+        else:
+            run_id = service.create_targeted_run(
+                instruments,
+                start_date,
+                end_date,
+                requested_by=int(g.user_id),
+                request_kind=request_kind,
+            )
         _enqueue_sync(run_id)
         return _success({"runId": run_id, "status": "pending"}, status=202)
     except Exception as exc:

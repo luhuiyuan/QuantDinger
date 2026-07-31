@@ -28,6 +28,7 @@ class CNFundamentalHistoryService:
 
     def sync_instrument(self, instrument: str, *, as_of: date | None = None) -> dict:
         as_of = as_of or date.today()
+        self.repository.ensure_instrument(instrument)
         code = instrument.split(":")[-1].split(".")[0]
         rows = self.fetcher(code)
         written = []
