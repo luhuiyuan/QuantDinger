@@ -22,6 +22,8 @@ from app.services.cn_market_history import (
     parse_cn_instrument,
 )
 from app.services.cn_market_history.disk_guard import DiskGuard
+from app.services.cn_fundamental_history.repository import CNFundamentalHistoryRepository
+from app.services.cn_fundamental_history.service import CNFundamentalRunService
 from app.utils.auth import admin_required, login_required
 from app.utils.logger import get_logger
 
@@ -46,11 +48,31 @@ def get_disk_guard() -> DiskGuard:
     return DiskGuard(load_cn_market_history_settings())
 
 
+def get_fundamental_repository() -> CNFundamentalHistoryRepository:
+    return CNFundamentalHistoryRepository()
+
+
+def get_fundamental_run_service() -> CNFundamentalRunService:
+    return CNFundamentalRunService(
+        repository=get_fundamental_repository(), disk_guard=get_disk_guard()
+    )
+
+
 def _enqueue_sync(run_id: str) -> None:
     from app.celery_app import celery_app
 
     celery_app.send_task(
         "quantdinger.tasks.cn_market_history_sync",
+        args=[run_id],
+        queue="maintenance",
+    )
+
+
+def _enqueue_fundamental_sync(run_id: str) -> None:
+    from app.celery_app import celery_app
+
+    celery_app.send_task(
+        "quantdinger.tasks.cn_fundamental_run",
         args=[run_id],
         queue="maintenance",
     )
@@ -310,3 +332,119 @@ def _disk_payload(status: Any) -> dict[str, Any]:
         "softFreeBytes": status.soft_free_bytes,
         "hardFreeBytes": status.hard_free_bytes,
     }
+
+# Fundamental-history admin surface (kept under market-history operations).
+@cn_market_history_blp.route('/fundamentals/capabilities', methods=['GET'])
+@login_required
+@admin_required
+def fundamental_capabilities():
+    return _success({'apiVersion': 1, 'supportedMarket': 'CNStock', 'frequency': 'annual', 'primarySource': 'eastmoney', 'officialSource': 'cninfo', 'incrementalSchedule': '20:30 Asia/Shanghai'})
+
+
+@cn_market_history_blp.route('/fundamentals/sync-runs', methods=['POST'])
+@login_required
+@admin_required
+def create_fundamental_sync_run():
+    try:
+        payload = request.get_json(silent=True) or {}
+        instruments = payload.get('instruments') or []
+        if not isinstance(instruments, list):
+            raise ValueError('cn_fundamental.instruments_required')
+        run_id = get_fundamental_run_service().create_run(
+            instruments, requested_by=int(g.user_id), request_kind='backfill',
+            full_market=bool(payload.get('fullMarket')),
+        )
+        _enqueue_fundamental_sync(run_id)
+        return _success({'runId': run_id, 'status': 'pending'}, status=202)
+    except Exception as exc:
+        return _operation_error(exc, 'fundamental_create')
+
+
+@cn_market_history_blp.route('/fundamentals/sync-runs', methods=['GET'])
+@login_required
+@admin_required
+def list_fundamental_sync_runs():
+    limit = max(1, min(200, int(request.args.get('limit') or 50)))
+    return _success(get_fundamental_repository().list_runs(limit=limit))
+
+
+@cn_market_history_blp.route('/fundamentals/sync-runs/<string:run_id>', methods=['GET'])
+@login_required
+@admin_required
+def get_fundamental_sync_run(run_id: str):
+    run = get_fundamental_repository().get_run(run_id)
+    if not run:
+        return jsonify({'code': 0, 'msg': 'cn_fundamental.run_not_found', 'data': None}), 404
+    return _success(run)
+
+
+def _control_fundamental_run(run_id: str, status: str):
+    try:
+        service = get_fundamental_run_service()
+        service.set_control_status(run_id, status, actor_user_id=int(g.user_id))
+        if status == 'pending':
+            _enqueue_fundamental_sync(run_id)
+        return _success({'runId': run_id, 'status': status})
+    except Exception as exc:
+        return _operation_error(exc, f'fundamental_{status}')
+
+
+@cn_market_history_blp.route('/fundamentals/sync-runs/<string:run_id>/pause', methods=['POST'])
+@login_required
+@admin_required
+def pause_fundamental_sync_run(run_id: str):
+    return _control_fundamental_run(run_id, 'paused')
+
+
+@cn_market_history_blp.route('/fundamentals/sync-runs/<string:run_id>/resume', methods=['POST'])
+@login_required
+@admin_required
+def resume_fundamental_sync_run(run_id: str):
+    return _control_fundamental_run(run_id, 'pending')
+
+
+@cn_market_history_blp.route('/fundamentals/sync-runs/<string:run_id>/cancel', methods=['POST'])
+@login_required
+@admin_required
+def cancel_fundamental_sync_run(run_id: str):
+    return _control_fundamental_run(run_id, 'cancelled')
+
+
+@cn_market_history_blp.route('/fundamentals/sync-runs/<string:run_id>/retry', methods=['POST'])
+@login_required
+@admin_required
+def retry_fundamental_sync_run(run_id: str):
+    try:
+        retry_id = get_fundamental_run_service().retry_failed(
+            run_id, actor_user_id=int(g.user_id)
+        )
+        _enqueue_fundamental_sync(retry_id)
+        return _success({'runId': retry_id, 'parentRunId': run_id, 'status': 'pending'}, status=202)
+    except Exception as exc:
+        return _operation_error(exc, 'fundamental_retry')
+
+
+@cn_market_history_blp.route('/fundamentals/coverage', methods=['GET'])
+@login_required
+@admin_required
+def fundamental_coverage():
+    limit = max(1, min(1000, int(request.args.get('limit') or 200)))
+    return _success(get_fundamental_repository().coverage_summary(limit=limit))
+
+
+@cn_market_history_blp.route('/fundamentals/quality-issues', methods=['GET'])
+@login_required
+@admin_required
+def fundamental_quality_issues():
+    status = str(request.args.get('status') or 'open')
+    limit = max(1, min(1000, int(request.args.get('limit') or 200)))
+    return _success(get_fundamental_repository().list_quality_issues(status=status, limit=limit))
+
+
+@cn_market_history_blp.route('/fundamentals/verification-targets', methods=['GET'])
+@login_required
+@admin_required
+def fundamental_verification_targets():
+    status = str(request.args.get('status') or 'pending')
+    limit = max(1, min(1000, int(request.args.get('limit') or 200)))
+    return _success(get_fundamental_repository().list_verification_targets(status=status, limit=limit))

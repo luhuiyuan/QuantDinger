@@ -451,7 +451,7 @@ def fetch_yfinance_klines(
     start = end - timedelta(days=days)
 
     df: Any = None
-    with ProviderAttempt(provider="yfinance", data_domain="kline", operation="history", call_source="asia_stock_kline", subject_summary={"symbol": yf_sym, "timeframe": timeframe}, fallback_index=2, retry_count=max(0, _MAX_ATTEMPTS - 1)) as provider_attempt:
+    with ProviderAttempt(provider="yfinance", data_domain="kline", operation="history", call_source="market_kline", subject_summary={"symbol": yf_sym, "timeframe": timeframe}, fallback_index=2, retry_count=max(0, _MAX_ATTEMPTS - 1)) as provider_attempt:
         for attempt in range(_MAX_ATTEMPTS):
             try:
                 ticker = yf.Ticker(yf_sym)

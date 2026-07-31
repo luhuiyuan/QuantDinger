@@ -111,7 +111,7 @@ def _fetch_quote_raw(code: str, timeout: int = 8) -> Optional[List[str]]:
 
 
 def fetch_quote(code: str, timeout: int = 8) -> Optional[List[str]]:
-    with ProviderAttempt(provider="tencent", data_domain="quote", operation="single_quote", call_source="tencent", subject_summary={"symbol": str(code or "")[:16]}) as attempt:
+    with ProviderAttempt(provider="tencent", data_domain="quote", operation="single_quote", call_source="market_quote", subject_summary={"symbol": str(code or "")[:16]}) as attempt:
         result = _fetch_quote_raw(code, timeout=timeout)
         if not result:
             attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no quote")
@@ -144,7 +144,7 @@ def _fetch_quote_map_raw(codes: List[str], timeout: int = 8) -> Dict[str, List[s
 
 
 def fetch_quote_map(codes: List[str], timeout: int = 8) -> Dict[str, List[str]]:
-    with ProviderAttempt(provider="tencent", data_domain="quote", operation="batch_quote", call_source="tencent", subject_summary={"instrument_count": len(codes or [])}) as attempt:
+    with ProviderAttempt(provider="tencent", data_domain="quote", operation="batch_quote", call_source="market_quote", subject_summary={"instrument_count": len(codes or [])}) as attempt:
         result = _fetch_quote_map_raw(codes, timeout=timeout)
         if not result:
             attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no quotes")
@@ -322,7 +322,7 @@ def _fetch_kline_raw(code: str, period: str, count: int = 300, adj: str = "qfq",
 
 
 def fetch_kline(code: str, period: str, count: int = 300, adj: str = "qfq", timeout: int = 10) -> List[List[str]]:
-    with ProviderAttempt(provider="tencent", data_domain="kline", operation="history", call_source="tencent", subject_summary={"symbol": str(code or "")[:16], "timeframe": str(period or "")[:8]}, fallback_index=1) as attempt:
+    with ProviderAttempt(provider="tencent", data_domain="kline", operation="history", call_source="market_kline", subject_summary={"symbol": str(code or "")[:16], "timeframe": str(period or "")[:8]}, fallback_index=1) as attempt:
         result = _fetch_kline_raw(code, period, count=count, adj=adj, timeout=timeout)
         if not result:
             attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no kline bars")

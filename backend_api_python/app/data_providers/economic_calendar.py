@@ -383,7 +383,7 @@ def _fetch_tradingeconomics_calendar() -> List[Dict[str, Any]]:
     date_from = (today - timedelta(days=_TRADING_ECONOMICS_LOOKBACK_DAYS)).isoformat()
     date_to = (today + timedelta(days=_TRADING_ECONOMICS_LOOKAHEAD_DAYS)).isoformat()
 
-    with ProviderAttempt(provider="tradingeconomics", data_domain="calendar", operation="economic_calendar", subject_summary={"from": date_from, "to": date_to}) as attempt:
+    with ProviderAttempt(provider="tradingeconomics", data_domain="calendar", operation="economic_calendar", call_source="economic_calendar", subject_summary={"from": date_from, "to": date_to}) as attempt:
         resp = requests.get(
             f"{TradingEconomicsConfig.BASE_URL}/calendar/country/All/{date_from}/{date_to}",
             params={"c": TradingEconomicsConfig.CREDENTIALS, "f": "json"}, timeout=TradingEconomicsConfig.TIMEOUT,
@@ -442,7 +442,7 @@ def _fetch_finnhub_calendar(api_key: Optional[str] = None) -> List[Dict[str, Any
     date_to = (today + timedelta(days=_CALENDAR_LOOKAHEAD_DAYS)).isoformat()
     token = str(api_key or APIKeys.FINNHUB_API_KEY or "").strip()
 
-    with ProviderAttempt(provider="finnhub", data_domain="calendar", operation="economic_calendar", subject_summary={"from": date_from, "to": date_to}) as attempt:
+    with ProviderAttempt(provider="finnhub", data_domain="calendar", operation="economic_calendar", call_source="economic_calendar", subject_summary={"from": date_from, "to": date_to}) as attempt:
         resp = requests.get(
             f"{FinnhubConfig.BASE_URL}/calendar/economic",
             params={"from": date_from, "to": date_to, "token": token}, timeout=FinnhubConfig.TIMEOUT,
@@ -494,7 +494,7 @@ def _fetch_akshare_calendar() -> List[Dict[str, Any]]:
     seen_keys: set = set()
     idx_seq = 0
 
-    with ProviderAttempt(provider="akshare_wallstreetcn", data_domain="calendar", operation="economic_calendar", subject_summary={"days": _AKSHARE_LOOKBACK_DAYS + _AKSHARE_LOOKAHEAD_DAYS + 1}) as attempt:
+    with ProviderAttempt(provider="akshare_wallstreetcn", data_domain="calendar", operation="economic_calendar", call_source="economic_calendar", subject_summary={"days": _AKSHARE_LOOKBACK_DAYS + _AKSHARE_LOOKAHEAD_DAYS + 1}) as attempt:
         for day_offset in range(-_AKSHARE_LOOKBACK_DAYS, _AKSHARE_LOOKAHEAD_DAYS + 1):
             day = today + timedelta(days=day_offset)
             try:

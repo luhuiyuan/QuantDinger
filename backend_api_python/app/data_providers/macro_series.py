@@ -47,7 +47,7 @@ class MacroSeriesProvider:
         limit: int = 120,
     ) -> Dict[str, Any]:
         if not FredConfig.API_KEY:
-            with ProviderAttempt(provider="fred", data_domain="macro", operation="series_observations", subject_summary={"series_id": series_id}) as attempt:
+            with ProviderAttempt(provider="fred", data_domain="macro", operation="series_observations", call_source="macro_data", subject_summary={"series_id": series_id}) as attempt:
                 attempt.skip(disabled=True, reason="FRED_API_KEY is not configured")
             raise ValueError("FRED_API_KEY is not configured")
 
@@ -63,7 +63,7 @@ class MacroSeriesProvider:
         if end:
             params["observation_end"] = str(end)
 
-        with ProviderAttempt(provider="fred", data_domain="macro", operation="series_observations", subject_summary={"series_id": series_id}) as attempt:
+        with ProviderAttempt(provider="fred", data_domain="macro", operation="series_observations", call_source="macro_data", subject_summary={"series_id": series_id}) as attempt:
             response = requests.get(
                 f"{FredConfig.BASE_URL}/series/observations",
                 params=params,
@@ -92,7 +92,7 @@ class MacroSeriesProvider:
         if BLSConfig.API_KEY:
             payload["registrationkey"] = BLSConfig.API_KEY
 
-        with ProviderAttempt(provider="bls", data_domain="macro", operation="series", subject_summary={"series_count": len(payload["seriesid"])}) as attempt:
+        with ProviderAttempt(provider="bls", data_domain="macro", operation="series", call_source="macro_data", subject_summary={"series_count": len(payload["seriesid"])}) as attempt:
             response = requests.post(
                 f"{BLSConfig.BASE_URL}/timeseries/data/",
                 json=payload,
@@ -110,7 +110,7 @@ class MacroSeriesProvider:
 
     def fetch_bea_data(self, dataset: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if not BEAConfig.API_KEY:
-            with ProviderAttempt(provider="bea", data_domain="macro", operation="dataset", subject_summary={"dataset": dataset}) as attempt:
+            with ProviderAttempt(provider="bea", data_domain="macro", operation="dataset", call_source="macro_data", subject_summary={"dataset": dataset}) as attempt:
                 attempt.skip(disabled=True, reason="BEA_API_KEY is not configured")
             raise ValueError("BEA_API_KEY is not configured")
 
@@ -123,7 +123,7 @@ class MacroSeriesProvider:
         if params:
             request_params.update(params)
 
-        with ProviderAttempt(provider="bea", data_domain="macro", operation="dataset", subject_summary={"dataset": dataset}) as attempt:
+        with ProviderAttempt(provider="bea", data_domain="macro", operation="dataset", call_source="macro_data", subject_summary={"dataset": dataset}) as attempt:
             response = requests.get(BEAConfig.BASE_URL, params=request_params, timeout=BEAConfig.TIMEOUT)
             attempt.set_http_status(response.status_code)
             response.raise_for_status()

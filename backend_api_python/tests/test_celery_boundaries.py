@@ -13,6 +13,7 @@ def test_celery_queues_keep_trading_outside_task_system():
 
 
 def test_celery_beat_owns_periodic_maintenance():
+    from celery.schedules import crontab
     from app.celery_app import celery_app
 
     schedule = celery_app.conf.beat_schedule
@@ -20,6 +21,14 @@ def test_celery_beat_owns_periodic_maintenance():
     assert schedule["ai-calibration-cycle"]["task"] == "quantdinger.tasks.ai_calibration"
     assert schedule["market-catalog-sync"]["task"] == "quantdinger.tasks.market_catalog_sync"
     assert schedule["market-catalog-sync"]["schedule"] == 86400
+    quote_refresh_schedule = schedule["cn-stock-quote-refresh"]["schedule"]
+    assert isinstance(quote_refresh_schedule, crontab)
+    assert quote_refresh_schedule.minute == set(range(0, 60, 5))
+    fundamental_schedule = schedule["cn-fundamental-incremental"]["schedule"]
+    assert isinstance(fundamental_schedule, crontab)
+    assert fundamental_schedule.hour == {20}
+    assert fundamental_schedule.minute == {30}
+    assert celery_app.conf.task_routes["quantdinger.tasks.cn_fundamental_run"]["queue"] == "maintenance"
 
 
 def test_fast_analysis_dispatches_to_celery(monkeypatch):

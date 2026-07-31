@@ -27,6 +27,8 @@ from app.services.market.cn_stock_market import (
     load_cn_symbol_catalog,
     load_cn_watchlist_symbols,
 )
+from app.services.cn_fundamental_history.metrics import FundamentalMetricCalculator
+from app.services.cn_fundamental_history.repository import CNFundamentalHistoryRepository
 from app.services.market.cn_stock_quote_snapshots import (
     get_cn_market_overview_cache,
     load_persisted_cn_market_snapshot,
@@ -530,6 +532,31 @@ def get_cn_stock_detail(symbol: str):
             'msg': 'cn_market.detail_unavailable',
             'data': {'identity': identity, 'status': 'unavailable', 'warning': str(exc)},
         }), 503
+
+
+@market_blp.route('/cn/stocks/<string:symbol>/fundamentals', methods=['GET'])
+@login_required
+def get_cn_stock_fundamentals(symbol: str):
+    identity = load_cn_symbol(symbol)
+    if not identity:
+        return jsonify({'code': 0, 'msg': 'cn_market.symbol_not_found', 'data': None}), 404
+    try:
+        from datetime import date
+        instrument = identity.get('instrument') or f"CNStock:{identity['symbol']}"
+        try:
+            as_of = date.fromisoformat(request.args.get('asOf')) if request.args.get('asOf') else date.today()
+        except ValueError:
+            return jsonify({'code': 0, 'msg': 'cn_market.invalid_as_of', 'data': None}), 400
+        observations = CNFundamentalHistoryRepository().load_as_of(instrument, as_of)
+        metrics = FundamentalMetricCalculator().calculate(observations) if observations else {}
+        return jsonify({'code': 1, 'msg': 'success', 'data': {
+            'instrument': instrument, 'observations': observations,
+            'metrics': {key: {'status': value.status, 'value': value.value, 'evidence': value.evidence} for key, value in metrics.items()},
+            'available': bool(observations), 'asOf': as_of.isoformat(),
+        }})
+    except Exception as exc:
+        logger.error('CN stock fundamentals failed: %s', exc)
+        return jsonify({'code': 0, 'msg': 'cn_market.fundamentals_unavailable', 'data': None}), 503
 
 
 @market_blp.route('/cn/stocks/<string:symbol>/history', methods=['GET'])

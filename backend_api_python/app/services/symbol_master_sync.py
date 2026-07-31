@@ -281,7 +281,7 @@ def fetch_crypto_symbols_with_diagnostics():
         for market_type in ("spot", "swap"):
             context_rows: List[SymbolMasterRow] = []
             try:
-                with ProviderAttempt(provider=exchange_id, data_domain="market_catalog", operation="load_markets", call_source="symbol_master_sync", subject_summary={"market_type": market_type}, fallback_index=fallback_index, retry_count=1) as attempt:
+                with ProviderAttempt(provider=exchange_id, data_domain="market_catalog", operation="load_markets", call_source="symbol_catalog_sync", subject_summary={"market_type": market_type}, fallback_index=fallback_index, retry_count=1) as attempt:
                     ccxt_id, options = resolve_ccxt_for_live_trading(exchange_id, market_type)
                     config = {"enableRateLimit": True, "timeout": max(int(CCXTConfig.TIMEOUT or 0), 30000)}
                     if options:
@@ -307,7 +307,7 @@ def fetch_crypto_symbols_with_diagnostics():
             except Exception as e:
                 if exchange_id == "okx":
                     try:
-                        with ProviderAttempt(provider="okx_official", data_domain="market_catalog", operation="load_instruments", call_source="symbol_master_sync", subject_summary={"market_type": market_type}, fallback_index=fallback_index + 1) as attempt:
+                        with ProviderAttempt(provider="okx_official", data_domain="market_catalog", operation="load_instruments", call_source="symbol_catalog_sync", subject_summary={"market_type": market_type}, fallback_index=fallback_index + 1) as attempt:
                             context_rows = _fetch_okx_public_symbol_rows(market_type, _classify_asset)
                         rows.extend(context_rows)
                         contexts.append({

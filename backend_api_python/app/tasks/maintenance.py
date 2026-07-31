@@ -165,3 +165,25 @@ def run_cn_stock_quote_refresh() -> dict:
     from app.services.market.cn_stock_quote_snapshots import CNStockQuoteRefreshService
 
     return CNStockQuoteRefreshService().run(trigger_kind="scheduled")
+
+
+@celery_app.task(name="quantdinger.tasks.cn_fundamental_incremental")
+def run_cn_fundamental_incremental() -> dict:
+    """Create one serialized daily run; active backfills make it skip safely."""
+    if not _enabled("CN_FUNDAMENTAL_INCREMENTAL_ENABLED", "false"):
+        return {"skipped": True, "reason": "disabled"}
+    symbols = [item.strip() for item in os.getenv("CN_FUNDAMENTAL_DAILY_SYMBOLS", "").split(",") if item.strip()]
+    if not symbols:
+        return {"skipped": True, "reason": "empty_universe"}
+    from app.services.cn_fundamental_history.service import CNFundamentalRunService
+
+    service = CNFundamentalRunService()
+    run_id = service.create_run(symbols, requested_by=None, request_kind="scheduled")
+    return service.run(run_id)
+
+
+@celery_app.task(name="quantdinger.tasks.cn_fundamental_run")
+def run_cn_fundamental_run(run_id: str) -> dict:
+    from app.services.cn_fundamental_history.service import CNFundamentalRunService
+
+    return CNFundamentalRunService().run(run_id)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 from celery import Celery, Task
+from celery.schedules import crontab
 from app.config.redis_urls import celery_broker_url, celery_result_backend_url
 
 
@@ -56,6 +57,8 @@ celery_app.conf.update(
         "quantdinger.tasks.cn_market_history_sync": {"queue": "maintenance"},
         "quantdinger.tasks.cn_market_history_daily": {"queue": "maintenance"},
         "quantdinger.tasks.cn_stock_quote_refresh": {"queue": "maintenance"},
+        "quantdinger.tasks.cn_fundamental_incremental": {"queue": "maintenance"},
+        "quantdinger.tasks.cn_fundamental_run": {"queue": "maintenance"},
         "quantdinger.tasks.worker_heartbeat": {"queue": "maintenance"},
         "quantdinger.tasks.cleanup_runtime_metadata": {"queue": "maintenance"},
         "quantdinger.tasks.cleanup_external_data_request_logs": {"queue": "maintenance"},
@@ -79,7 +82,11 @@ celery_app.conf.update(
         },
         "cn-stock-quote-refresh": {
             "task": "quantdinger.tasks.cn_stock_quote_refresh",
-            "schedule": max(300, int(os.getenv("CN_QUOTE_REFRESH_INTERVAL_SEC", "300"))),
+            "schedule": crontab(minute="*/5"),
+        },
+        "cn-fundamental-incremental": {
+            "task": "quantdinger.tasks.cn_fundamental_incremental",
+            "schedule": crontab(hour=20, minute=30),
         },
         "celery-worker-heartbeat": {
             "task": "quantdinger.tasks.worker_heartbeat",

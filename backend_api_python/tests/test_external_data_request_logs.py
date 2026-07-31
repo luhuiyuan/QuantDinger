@@ -81,6 +81,7 @@ def test_tencent_kline_provider_attempt_records_success_and_empty_response(monke
     entry = service.entries[-1].normalized()
     assert entry["provider"] == "tencent"
     assert entry["data_domain"] == "kline"
+    assert entry["call_source"] == "market_kline"
     assert entry["fallback_index"] == 1
     assert entry["result"] == "success"
 
