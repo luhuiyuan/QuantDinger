@@ -1,0 +1,970 @@
+{
+  "schema_version": 1,
+  "purpose": "Machine-checked inventory of outbound data calls and explicitly allowed exclusions. Paths are exact and repository-relative.",
+  "allowed_exclusion_categories": [
+    "infrastructure",
+    "llm",
+    "notification",
+    "oauth",
+    "payment",
+    "trading"
+  ],
+  "entries": [
+    {
+      "path": "backend_api_python/app/data_providers/adanos_sentiment.py",
+      "owner_module": "app.data_providers.adanos_sentiment",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "analysis.sentiment.adanos"
+      ],
+      "adapters": [
+        "adanos"
+      ],
+      "capabilities": [
+        "us_equity_sentiment"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_providers/commodities.py",
+      "owner_module": "app.data_providers.commodities",
+      "detected_clients": [
+        "requests",
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.commodities.overview"
+      ],
+      "adapters": [
+        "twelve_data",
+        "yfinance",
+        "tiingo"
+      ],
+      "capabilities": [
+        "commodity_quote"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_providers/crypto.py",
+      "owner_module": "app.data_providers.crypto",
+      "detected_clients": [
+        "requests",
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.crypto.overview"
+      ],
+      "adapters": [
+        "yfinance",
+        "coingecko",
+        "coincap"
+      ],
+      "capabilities": [
+        "crypto_market_snapshot"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_providers/economic_calendar.py",
+      "owner_module": "app.data_providers.economic_calendar",
+      "detected_clients": [
+        "akshare",
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.economic_calendar"
+      ],
+      "adapters": [
+        "akshare",
+        "trading_economics",
+        "finnhub"
+      ],
+      "capabilities": [
+        "economic_calendar"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_providers/forex.py",
+      "owner_module": "app.data_providers.forex",
+      "detected_clients": [
+        "requests",
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.forex.overview"
+      ],
+      "adapters": [
+        "twelve_data",
+        "yfinance",
+        "tiingo"
+      ],
+      "capabilities": [
+        "forex_quote"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_providers/heatmap.py",
+      "owner_module": "app.data_providers.heatmap",
+      "detected_clients": [
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.global_heatmap"
+      ],
+      "adapters": [
+        "yfinance"
+      ],
+      "capabilities": [
+        "global_heatmap"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_providers/indices.py",
+      "owner_module": "app.data_providers.indices",
+      "detected_clients": [
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.indices.overview"
+      ],
+      "adapters": [
+        "yfinance"
+      ],
+      "capabilities": [
+        "market_index_quote"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_providers/macro_series.py",
+      "owner_module": "app.data_providers.macro_series",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.macro.series"
+      ],
+      "adapters": [
+        "fred",
+        "bls",
+        "bea"
+      ],
+      "capabilities": [
+        "macro_series"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_providers/opportunities.py",
+      "owner_module": "app.data_providers.opportunities",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "analysis.opportunities"
+      ],
+      "adapters": [
+        "finnhub"
+      ],
+      "capabilities": [
+        "equity_opportunity"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_providers/sentiment.py",
+      "owner_module": "app.data_providers.sentiment",
+      "detected_clients": [
+        "akshare",
+        "requests",
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "analysis.market_sentiment"
+      ],
+      "adapters": [
+        "cnn_fear_greed",
+        "yfinance",
+        "akshare"
+      ],
+      "capabilities": [
+        "market_sentiment"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_sources/asia_stock_kline.py",
+      "owner_module": "app.data_sources.asia_stock_kline",
+      "detected_clients": [
+        "akshare",
+        "requests",
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.asia_stock.kline"
+      ],
+      "adapters": [
+        "twelve_data",
+        "tencent",
+        "yfinance",
+        "akshare"
+      ],
+      "capabilities": [
+        "asia_equity_kline"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_sources/cn_fundamental_history.py",
+      "owner_module": "app.data_sources.cn_fundamental_history",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "task.cn_fundamental_history.eastmoney"
+      ],
+      "adapters": [
+        "eastmoney"
+      ],
+      "capabilities": [
+        "cn_fundamental_history"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_sources/cn_hk_fundamentals.py",
+      "owner_module": "app.data_sources.cn_hk_fundamentals",
+      "detected_clients": [
+        "akshare",
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.cn_hk.fundamentals"
+      ],
+      "adapters": [
+        "twelve_data",
+        "akshare"
+      ],
+      "capabilities": [
+        "cn_hk_fundamentals"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_sources/cninfo_fundamental_history.py",
+      "owner_module": "app.data_sources.cninfo_fundamental_history",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "task.cn_fundamental_history.cninfo_verification"
+      ],
+      "adapters": [
+        "cninfo"
+      ],
+      "capabilities": [
+        "cn_corporate_announcement"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_sources/crypto.py",
+      "owner_module": "app.data_sources.crypto",
+      "detected_clients": [
+        "ccxt"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.crypto.kline"
+      ],
+      "adapters": [
+        "ccxt_public_market"
+      ],
+      "capabilities": [
+        "crypto_public_market_data"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_sources/forex.py",
+      "owner_module": "app.data_sources.forex",
+      "detected_clients": [
+        "requests",
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.forex.quote_kline"
+      ],
+      "adapters": [
+        "twelve_data",
+        "tiingo",
+        "yfinance"
+      ],
+      "capabilities": [
+        "forex_market_data"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_sources/futures.py",
+      "owner_module": "app.data_sources.futures",
+      "detected_clients": [
+        "ccxt",
+        "requests",
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.futures.quote_kline"
+      ],
+      "adapters": [
+        "ccxt_public_market",
+        "twelve_data",
+        "tiingo",
+        "yfinance"
+      ],
+      "capabilities": [
+        "futures_market_data"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_sources/moex.py",
+      "owner_module": "app.data_sources.moex",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.moex.quote_kline"
+      ],
+      "adapters": [
+        "moex"
+      ],
+      "capabilities": [
+        "moex_market_data"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_sources/tencent.py",
+      "owner_module": "app.data_sources.tencent",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.cn_hk.quote_snapshot"
+      ],
+      "adapters": [
+        "tencent"
+      ],
+      "capabilities": [
+        "cn_hk_quote"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/data_sources/us_stock.py",
+      "owner_module": "app.data_sources.us_stock",
+      "detected_clients": [
+        "finnhub",
+        "requests",
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.us_stock.quote_kline"
+      ],
+      "adapters": [
+        "finnhub",
+        "yfinance",
+        "alpha_vantage",
+        "twelve_data",
+        "tiingo"
+      ],
+      "capabilities": [
+        "us_equity_market_data"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/routes/ai_chat.py",
+      "owner_module": "app.routes.ai_chat",
+      "detected_clients": [
+        "akshare"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "ai_chat.macro_nonfarm_context"
+      ],
+      "adapters": [
+        "akshare"
+      ],
+      "capabilities": [
+        "us_macro_release"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/routes/credentials.py",
+      "owner_module": "app.routes.credentials",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "trading",
+      "exclusion_reason": "Validates exchange or broker credentials for account and execution operations.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/routes/quick_trade.py",
+      "owner_module": "app.routes.quick_trade",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "quick_trade.public_price_conversion"
+      ],
+      "adapters": [
+        "binance_public",
+        "bybit_public"
+      ],
+      "capabilities": [
+        "crypto_public_quote"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/routes/settings.py",
+      "owner_module": "app.routes.settings",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "admin.data_source_connection_test"
+      ],
+      "adapters": [
+        "finnhub"
+      ],
+      "capabilities": [
+        "us_equity_quote"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ],
+      "excluded_calls": [
+        {
+          "allowlist_category": "llm",
+          "calling_feature": "admin.openrouter_balance",
+          "reason": "Queries LLM-provider account usage rather than an analysis dataset."
+        }
+      ]
+    },
+    {
+      "path": "backend_api_python/app/services/alpaca_trading/client.py",
+      "owner_module": "app.services.alpaca_trading.client",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "trading",
+      "exclusion_reason": "Reads Alpaca trading-account activities and account state.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/services/cn_fundamental_history/service.py",
+      "owner_module": "app.services.cn_fundamental_history.service",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "infrastructure",
+      "exclusion_reason": "References requests exception classes only; provider transport is owned by the injected adapters.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/services/cn_market_history/official_adjustments.py",
+      "owner_module": "app.services.cn_market_history.official_adjustments",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "task.cn_history.official_adjustments"
+      ],
+      "adapters": [
+        "cn_exchange_official"
+      ],
+      "capabilities": [
+        "cn_corporate_actions"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/services/fundamental_data.py",
+      "owner_module": "app.services.fundamental_data",
+      "detected_clients": [
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "analysis.us_fundamentals"
+      ],
+      "adapters": [
+        "yfinance"
+      ],
+      "capabilities": [
+        "us_fundamentals"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/services/live_trading/base.py",
+      "owner_module": "app.services.live_trading.base",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "trading",
+      "exclusion_reason": "Shared authenticated broker/exchange execution transport.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/services/llm.py",
+      "owner_module": "app.services.llm",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "llm",
+      "exclusion_reason": "Calls configured LLM inference providers.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/services/login_notify.py",
+      "owner_module": "app.services.login_notify",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "infrastructure",
+      "exclusion_reason": "Best-effort GeoIP enrichment for login security notifications.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/services/data_routing/adapters/production_transports.py",
+      "owner_module": "app.services.data_routing.adapters.production_transports",
+      "detected_clients": [
+        "akshare",
+        "ccxt",
+        "requests",
+        "yfinance"
+      ],
+      "scope": "adapter_transport",
+      "adapters": [
+        "akshare",
+        "easy_tdx",
+        "tencent",
+        "twelve_data",
+        "yfinance"
+      ],
+      "migration_status": "registered_adapter_transport"
+    },
+    {
+      "path": "backend_api_python/app/services/market/symbol_search.py",
+      "owner_module": "app.services.market.symbol_search",
+      "detected_clients": [
+        "akshare",
+        "ccxt",
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.symbol_search"
+      ],
+      "adapters": [
+        "akshare",
+        "ccxt_public_market",
+        "finnhub"
+      ],
+      "capabilities": [
+        "market_catalog"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/services/market_data_collector.py",
+      "owner_module": "app.services.market_data_collector",
+      "detected_clients": [
+        "akshare",
+        "finnhub",
+        "requests",
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "analysis.market_data_collection"
+      ],
+      "adapters": [
+        "finnhub",
+        "akshare",
+        "yfinance",
+        "binance_public"
+      ],
+      "capabilities": [
+        "global_market_overview",
+        "crypto_derivatives_market_data"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/services/oauth_service.py",
+      "owner_module": "app.services.oauth_service",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "oauth",
+      "exclusion_reason": "OAuth token and user-profile exchange.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/services/search.py",
+      "owner_module": "app.services.search",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "analysis.news_search"
+      ],
+      "adapters": [
+        "searxng",
+        "brave",
+        "bing",
+        "gdelt",
+        "tavily",
+        "alpha_vantage",
+        "jina"
+      ],
+      "capabilities": [
+        "analysis_search"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/services/security_service.py",
+      "owner_module": "app.services.security_service",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "infrastructure",
+      "exclusion_reason": "Security challenge verification, not analysis data.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/services/signal_notifier.py",
+      "owner_module": "app.services.signal_notifier",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "notification",
+      "exclusion_reason": "Delivers outbound strategy and signal notifications.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/services/symbol_master_sync.py",
+      "owner_module": "app.services.symbol_master_sync",
+      "detected_clients": [
+        "akshare",
+        "ccxt",
+        "requests"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "task.symbol_master_sync"
+      ],
+      "adapters": [
+        "akshare",
+        "ccxt_public_market",
+        "finnhub",
+        "moex",
+        "stooq"
+      ],
+      "capabilities": [
+        "symbol_master"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/services/symbol_name.py",
+      "owner_module": "app.services.symbol_name",
+      "detected_clients": [
+        "requests",
+        "yfinance"
+      ],
+      "scope": "in_scope",
+      "calling_features": [
+        "market.symbol_name"
+      ],
+      "adapters": [
+        "yfinance",
+        "finnhub",
+        "moex"
+      ],
+      "capabilities": [
+        "symbol_reference"
+      ],
+      "credential_sources": [
+        "legacy environment or app.config when the provider requires credentials"
+      ],
+      "migration_status": "routed",
+      "router_entries": [
+        "app.services.data_routing.gateway.RoutedExternalDataGateway.execute"
+      ]
+    },
+    {
+      "path": "backend_api_python/app/services/usdt_payment/watchers/evm.py",
+      "owner_module": "app.services.usdt_payment.watchers.evm",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "payment",
+      "exclusion_reason": "Observes payment-chain transactions for billing.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/services/usdt_payment/watchers/solana.py",
+      "owner_module": "app.services.usdt_payment.watchers.solana",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "payment",
+      "exclusion_reason": "Observes payment-chain transactions for billing.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/services/usdt_payment/watchers/tron.py",
+      "owner_module": "app.services.usdt_payment.watchers.tron",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "payment",
+      "exclusion_reason": "Observes payment-chain transactions for billing.",
+      "migration_status": "excluded"
+    },
+    {
+      "path": "backend_api_python/app/utils/http.py",
+      "owner_module": "app.utils.http",
+      "detected_clients": [
+        "requests",
+        "requests.adapters"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "infrastructure",
+      "exclusion_reason": "Constructs the shared bounded HTTP session; it does not select or fetch a dataset itself.",
+      "migration_status": "excluded"
+    }
+  ]
+}

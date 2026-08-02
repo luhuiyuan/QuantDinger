@@ -4,14 +4,6 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict, Iterable, List, Optional
 
-import requests
-
-from app.config.data_sources import BEAConfig, BLSConfig, FredConfig
-from app.services.external_data_request_logs import ProviderAttempt
-from app.utils.logger import get_logger
-
-logger = get_logger(__name__)
-
 
 class MacroSeriesProvider:
     """Small typed client for stable US macro sources."""
@@ -20,22 +12,24 @@ class MacroSeriesProvider:
         return [
             {
                 "provider": "FRED",
-                "configured": FredConfig.CONFIGURED,
-                "available": FredConfig.CONFIGURED,
+                "configured": None,
+                "available": None,
                 "purpose": "US macro time series: rates, inflation, labor, financial conditions.",
+                "note": "Managed by Data Source Operations routing policy.",
             },
             {
                 "provider": "BLS",
-                "configured": bool(BLSConfig.API_KEY),
-                "available": True,
+                "configured": None,
+                "available": None,
                 "purpose": "Official CPI, employment, wages, and labor market series.",
-                "note": "A registration key is optional but recommended for higher limits.",
+                "note": "Managed by Data Source Operations routing policy.",
             },
             {
                 "provider": "BEA",
-                "configured": BEAConfig.CONFIGURED,
-                "available": BEAConfig.CONFIGURED,
+                "configured": None,
+                "available": None,
                 "purpose": "Official GDP, income, consumption, and national accounts data.",
+                "note": "Managed by Data Source Operations routing policy.",
             },
         ]
 
@@ -46,37 +40,13 @@ class MacroSeriesProvider:
         end: Optional[date | str] = None,
         limit: int = 120,
     ) -> Dict[str, Any]:
-        if not FredConfig.API_KEY:
-            with ProviderAttempt(provider="fred", data_domain="macro", operation="series_observations", call_source="macro_data", subject_summary={"series_id": series_id}) as attempt:
-                attempt.skip(disabled=True, reason="FRED_API_KEY is not configured")
-            raise ValueError("FRED_API_KEY is not configured")
+        from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-        params: Dict[str, Any] = {
-            "series_id": series_id,
-            "api_key": FredConfig.API_KEY,
-            "file_type": "json",
-            "sort_order": "desc",
-            "limit": max(1, min(int(limit), 1000)),
-        }
-        if start:
-            params["observation_start"] = str(start)
-        if end:
-            params["observation_end"] = str(end)
-
-        with ProviderAttempt(provider="fred", data_domain="macro", operation="series_observations", call_source="macro_data", subject_summary={"series_id": series_id}) as attempt:
-            response = requests.get(
-                f"{FredConfig.BASE_URL}/series/observations",
-                params=params,
-                timeout=FredConfig.TIMEOUT,
-            )
-            attempt.set_http_status(response.status_code)
-            response.raise_for_status()
-            data = response.json()
-        return {
-            "provider": "FRED",
-            "series_id": series_id,
-            "observations": data.get("observations", []),
-        }
+        return dict(get_routed_external_data_gateway().execute(
+            "market.macro.series",
+            {"operation": "fred_series", "series_id": series_id, "start": str(start) if start else None, "end": str(end) if end else None, "limit": limit},
+            constraints={"venue": "fred"},
+        ).data or {})
 
     def fetch_bls_series(
         self,
@@ -84,51 +54,22 @@ class MacroSeriesProvider:
         start_year: int,
         end_year: int,
     ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "seriesid": list(series_ids),
-            "startyear": str(start_year),
-            "endyear": str(end_year),
-        }
-        if BLSConfig.API_KEY:
-            payload["registrationkey"] = BLSConfig.API_KEY
+        from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-        with ProviderAttempt(provider="bls", data_domain="macro", operation="series", call_source="macro_data", subject_summary={"series_count": len(payload["seriesid"])}) as attempt:
-            response = requests.post(
-                f"{BLSConfig.BASE_URL}/timeseries/data/",
-                json=payload,
-                timeout=BLSConfig.TIMEOUT,
-            )
-            attempt.set_http_status(response.status_code)
-            response.raise_for_status()
-            data = response.json()
-        return {
-            "provider": "BLS",
-            "series": data.get("Results", {}).get("series", []),
-            "status": data.get("status"),
-            "messages": data.get("message", []),
-        }
+        return dict(get_routed_external_data_gateway().execute(
+            "market.macro.series",
+            {"operation": "bls_series", "series_ids": list(series_ids), "start_year": start_year, "end_year": end_year},
+            constraints={"venue": "bls"},
+        ).data or {})
 
     def fetch_bea_data(self, dataset: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        if not BEAConfig.API_KEY:
-            with ProviderAttempt(provider="bea", data_domain="macro", operation="dataset", call_source="macro_data", subject_summary={"dataset": dataset}) as attempt:
-                attempt.skip(disabled=True, reason="BEA_API_KEY is not configured")
-            raise ValueError("BEA_API_KEY is not configured")
+        from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-        request_params: Dict[str, Any] = {
-            "UserID": BEAConfig.API_KEY,
-            "method": "GetData",
-            "DataSetName": dataset,
-            "ResultFormat": "JSON",
-        }
-        if params:
-            request_params.update(params)
-
-        with ProviderAttempt(provider="bea", data_domain="macro", operation="dataset", call_source="macro_data", subject_summary={"dataset": dataset}) as attempt:
-            response = requests.get(BEAConfig.BASE_URL, params=request_params, timeout=BEAConfig.TIMEOUT)
-            attempt.set_http_status(response.status_code)
-            response.raise_for_status()
-            data = response.json()
-        return {"provider": "BEA", "dataset": dataset, "data": data}
+        return dict(get_routed_external_data_gateway().execute(
+            "market.macro.series",
+            {"operation": "bea_dataset", "dataset": dataset, "params": dict(params or {})},
+            constraints={"venue": "bea"},
+        ).data or {})
 
 
 _macro_series_provider: Optional[MacroSeriesProvider] = None

@@ -72,6 +72,14 @@ def compute_market_overview() -> Dict[str, Any]:
 
 def compute_market_sentiment() -> Dict[str, Any]:
     """Fetch macro sentiment indicators in parallel with neutral fallbacks."""
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+    return dict(get_routed_external_data_gateway().execute(
+        "analysis.market_sentiment",
+        {"operation": "dashboard_sentiment"},
+        constraints={"market": "GLOBAL"},
+    ).data or {})
+
     with ThreadPoolExecutor(max_workers=7) as executor:
         futures = {
             executor.submit(fetch_fear_greed_index): "fear_greed",
@@ -111,6 +119,14 @@ def compute_market_sentiment() -> Dict[str, Any]:
 
 def compute_trading_opportunities() -> List[Dict[str, Any]]:
     """Run enabled market scanners and return sorted opportunity rows."""
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+    return list(get_routed_external_data_gateway().execute(
+        "analysis.opportunities",
+        {"operation": "scan"},
+        constraints={"market": "GLOBAL"},
+    ).data or [])
+
     opportunities: List[Dict[str, Any]] = []
     candidate_scanners = [
         ("Crypto", lambda: analyze_opportunities_crypto(opportunities)),

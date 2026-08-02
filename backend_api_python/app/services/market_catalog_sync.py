@@ -6,10 +6,7 @@ import os
 import threading
 from datetime import datetime, timezone
 
-from app.services.symbol_master_sync import (
-    fetch_crypto_symbols_with_diagnostics,
-    upsert_symbol_master,
-)
+from app.services.symbol_master_sync import SymbolMasterRow, upsert_symbol_master
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 
@@ -78,7 +75,16 @@ def _finish_run(run_id: int, status: str, result: dict) -> None:
 
 def _run_sync(run_id: int) -> None:
     try:
-        rows, contexts = fetch_crypto_symbols_with_diagnostics()
+        from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+        payload = get_routed_external_data_gateway().execute(
+            "task.symbol_master_sync",
+            {"operation": "full_sync", "market": "Crypto"},
+            constraints={"market": "Crypto"},
+            mode="background",
+        ).data or []
+        rows = [item if isinstance(item, SymbolMasterRow) else SymbolMasterRow(**item) for item in payload]
+        contexts = [{"ok": True, "source": "unified_router", "rows": len(rows)}]
         written = upsert_symbol_master(rows) if rows else 0
         succeeded = sum(1 for item in contexts if item.get("ok"))
         failed = len(contexts) - succeeded

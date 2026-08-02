@@ -11,13 +11,6 @@ from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as Futur
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable, Iterable
 
-from app.data_sources.tencent import (
-    fetch_quote,
-    fetch_quote_map,
-    normalize_cn_code,
-    parse_quote_to_market_row,
-    parse_quote_to_ticker,
-)
 from app.services.cn_market_history.instruments import CNInstrumentError, parse_cn_instrument
 from app.services.cn_market_history.models import AdjustmentMode
 from app.services.cn_market_history.query_service import (
@@ -26,6 +19,7 @@ from app.services.cn_market_history.query_service import (
 )
 from app.services.cn_market_history.quality import CNMarketHistoryQualityService
 from app.services.kline import KlineService
+from app.services.data_routing.gateway import get_routed_external_data_gateway
 from app.services.market.technical_indicators import calculate_indicator_package
 from app.services.market_schedule import latest_completed_session
 from app.services.strategy_v2.execution_policy import CNStockExecutionPolicy
@@ -101,41 +95,29 @@ def normalize_cn_snapshot_row(row: dict, *, as_of: str, source: str) -> dict | N
 
 
 def fetch_cn_market_snapshot() -> dict:
-    """通过现有 AkShare 依赖一次获取沪深 A 股展示快照。"""
-    import akshare as ak  # type: ignore
-
-    fetched_at = datetime.now(timezone.utc).isoformat()
-    frame = ak.stock_zh_a_spot_em()
-    records = frame.to_dict("records") if frame is not None else []
-    source = "eastmoney-akshare"
-    rows = [
-        normalized
-        for row in records
-        if (normalized := normalize_cn_snapshot_row(row, as_of=fetched_at, source=source))
-    ]
-    if not rows:
+    """Fetch the A-share snapshot exclusively through unified routing."""
+    result = get_routed_external_data_gateway().execute(
+        "market.cn_stock.snapshot",
+        {"market": "CNStock", "subject": "all"},
+        constraints={"market": "CNStock"},
+    )
+    payload = dict(result.data or {})
+    if not payload.get("rows"):
         raise CNMarketSnapshotUnavailable("A-share snapshot returned no Shanghai/Shenzhen rows")
-    return {"rows": rows, "asOf": fetched_at, "source": source}
+    return payload
 
 
 def fetch_cn_quote_rows(symbols: Iterable[str]) -> list[dict]:
-    """Fetch a page-sized batch of Tencent quotes for degraded list display."""
+    """Fetch a page-sized quote batch exclusively through unified routing."""
     requested = list(symbols or [])[:100]
-    codes = [normalize_cn_code(symbol) for symbol in requested]
-    by_code = fetch_quote_map(codes)
-    fetched_at = datetime.now(timezone.utc).isoformat()
-    rows = []
-    for code in codes:
-        raw = by_code.get(code.lower())
-        if not raw:
-            continue
-        market_row = parse_quote_to_market_row(raw)
-        normalized = normalize_cn_snapshot_row(
-            market_row, as_of=market_row.get("quoteTime") or fetched_at, source="tencent-batch"
-        )
-        if normalized:
-            rows.append(normalized)
-    return rows
+    if not requested:
+        return []
+    result = get_routed_external_data_gateway().execute(
+        "market.cn_hk.quote_snapshot",
+        {"market": "CNStock", "symbols": requested},
+        constraints={"market": "CNStock"},
+    )
+    return list(result.data or [])
 
 
 class CNMarketSnapshotService:
@@ -208,45 +190,16 @@ class CNMarketSnapshotService:
 
 
 def fetch_core_indices() -> list[dict]:
-    now = datetime.now(timezone.utc).isoformat()
-    quote_codes = [provider_code for _symbol, _name, provider_code in INDEX_DEFINITIONS]
-    try:
-        quote_map = fetch_quote_map(quote_codes)
-    except Exception:
-        quote_map = {}
-    output = []
-    for symbol, default_name, provider_code in INDEX_DEFINITIONS:
-        try:
-            parts = quote_map.get(provider_code.lower()) or fetch_quote(provider_code)
-            ticker = parse_quote_to_ticker(parts or []) if parts else {}
-            latest = _number(ticker.get("last"))
-            if latest is None or latest <= 0:
-                raise ValueError("quote unavailable")
-            output.append({
-                "symbol": symbol,
-                "name": ticker.get("name") or default_name,
-                "latest": latest,
-                "change": _number(ticker.get("change")),
-                "changePercent": _number(ticker.get("changePercent")),
-                "asOf": now,
-                "source": "tencent",
-                "freshness": "fresh",
-                "status": "available",
-            })
-        except Exception as exc:
-            output.append({
-                "symbol": symbol,
-                "name": default_name,
-                "latest": None,
-                "change": None,
-                "changePercent": None,
-                "asOf": None,
-                "source": "tencent",
-                "freshness": "unavailable",
-                "status": "unavailable",
-                "warning": str(exc),
-            })
-    return output
+    result = get_routed_external_data_gateway().execute(
+        "market.cn_stock.core_indices",
+        {
+            "market": "CNStock",
+            "symbols": [provider_code for _symbol, _name, provider_code in INDEX_DEFINITIONS],
+            "index_definitions": list(INDEX_DEFINITIONS),
+        },
+        constraints={"market": "CNStock"},
+    )
+    return list(result.data or [])
 
 
 def _classification(row: dict) -> tuple[str, str] | None:

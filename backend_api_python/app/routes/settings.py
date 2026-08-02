@@ -21,6 +21,14 @@ logger = get_logger(__name__)
 
 settings_blp = Blueprint('settings', __name__)
 
+ROUTED_DATA_SOURCE_SECRET_KEYS = frozenset({
+    'FINNHUB_API_KEY', 'TRADING_ECONOMICS_CLIENT', 'TRADING_ECONOMICS_KEY',
+    'FRED_API_KEY', 'BLS_API_KEY', 'BEA_API_KEY', 'COINGLASS_API_KEY',
+    'CRYPTOQUANT_API_KEY', 'TIINGO_API_KEY', 'TWELVE_DATA_API_KEY', 'ADANOS_API_KEY',
+    'TAVILY_API_KEYS', 'SEARCH_GOOGLE_API_KEY', 'SEARCH_GOOGLE_CX',
+    'SEARCH_BING_API_KEY', 'SERPAPI_KEYS', 'ALPHA_VANTAGE_API_KEY',
+})
+
 # ---------------------------------------------------------------
 # ---------------------------------------------------------------
 
@@ -1753,6 +1761,8 @@ def _schema_with_advanced_flags():
     for group_key, group in CONFIG_SCHEMA.items():
         items = []
         for item in group.get('items', []):
+            if item['key'] in ROUTED_DATA_SOURCE_SECRET_KEYS:
+                continue
             new_item = dict(item)
             new_item['is_advanced'] = item['key'] in ADVANCED_KEYS
             items.append(new_item)
@@ -1815,6 +1825,8 @@ def get_settings_values():
         result[group_key] = {}
         for item in group['items']:
             key = item['key']
+            if key in ROUTED_DATA_SOURCE_SECRET_KEYS:
+                continue
             if item['type'] == 'password':
                 value = env_values.get(key, '')
                 result[group_key][key] = ''
@@ -1895,6 +1907,8 @@ def save_settings():
             
             for item in CONFIG_SCHEMA[group_key]['items']:
                 key = item['key']
+                if key in ROUTED_DATA_SOURCE_SECRET_KEYS:
+                    continue
                 if key in group_values:
                     new_value = group_values[key]
                     
@@ -2077,18 +2091,16 @@ def test_connection():
                 return jsonify({'code': 0, 'msg': 'OpenRouter connection failed'})
         
         elif service == 'finnhub':
-            import requests
-            api_key = data.get('api_key') or os.getenv('FINNHUB_API_KEY')
-            if not api_key:
-                return jsonify({'code': 0, 'msg': 'API key is not configured'})
-            resp = requests.get(
-                f'https://finnhub.io/api/v1/quote?symbol=AAPL&token={api_key}',
-                timeout=10
+            from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+            routed = get_routed_external_data_gateway().execute(
+                'admin.data_source_connection_test',
+                {'operation': 'ticker', 'symbol': 'AAPL'},
+                constraints={'market': 'US'},
             )
-            if resp.status_code == 200:
+            if float((routed.data or {}).get('last') or 0) > 0:
                 return jsonify({'code': 1, 'msg': 'Finnhub connection successful'})
-            else:
-                return jsonify({'code': 0, 'msg': f'Finnhub connection failed: {resp.status_code}'})
+            return jsonify({'code': 0, 'msg': 'Finnhub connection returned no quote'})
         
         return jsonify({'code': 0, 'msg': 'Unknown service'})
     

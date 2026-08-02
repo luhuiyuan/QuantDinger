@@ -9,7 +9,6 @@ from typing import Any
 import requests
 
 from app.data_sources.rate_limiter import get_eastmoney_limiter
-from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 EASTMONEY_MAIN_DATA_URL = "https://datacenter.eastmoney.com/securities/api/data/get"
 EASTMONEY_STATEMENT_DATA_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
@@ -52,40 +51,24 @@ def fetch_eastmoney_annual_reports(code: str, session=requests) -> list[dict]:
     rows_by_period={}
     limiter = get_eastmoney_limiter()
     main_params={"type":"RPT_F10_FINANCE_MAINFINADATA","sty":"ALL","filter":f'(SECUCODE="{code}.{_exchange(code)}")(REPORT_TYPE="年报")',"p":"1","ps":"100","sr":"-1","st":"REPORT_DATE","source":"HSF10","client":"PC"}
-    with ProviderAttempt(
-        provider="eastmoney", data_domain="fundamental_history",
-        operation="annual_main_report", call_source="cn_fundamental_history",
-        subject_summary={"security_code": code},
-    ) as attempt:
-        limiter.wait()
-        response=session.get(EASTMONEY_MAIN_DATA_URL, params=main_params, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
-        attempt.set_http_status(getattr(response, "status_code", None))
-        response.raise_for_status()
-        main_rows = (response.json().get("result") or {}).get("data") or []
-        if not main_rows:
-            attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no annual main reports")
-        for item in main_rows:
-            report=str(item.get("REPORT_DATE") or "")[:10]
-            if len(report) == 10:
-                rows_by_period[report] = dict(item)
+    limiter.wait()
+    response=session.get(EASTMONEY_MAIN_DATA_URL, params=main_params, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
+    response.raise_for_status()
+    main_rows = (response.json().get("result") or {}).get("data") or []
+    for item in main_rows:
+        report=str(item.get("REPORT_DATE") or "")[:10]
+        if len(report) == 10:
+            rows_by_period[report] = dict(item)
     for report_name in _STATEMENT_REPORTS:
         params={"reportName":report_name,"columns":"ALL","filter":f'(SECUCODE="{code}.{_exchange(code)}")',"pageNumber":"1","pageSize":"100","sortTypes":"-1","sortColumns":"REPORT_DATE","source":"HSF10","client":"PC"}
-        with ProviderAttempt(
-            provider="eastmoney", data_domain="fundamental_history",
-            operation=_STATEMENT_OPERATIONS[report_name], call_source="cn_fundamental_history",
-            subject_summary={"security_code": code, "report_name": report_name},
-        ) as attempt:
-            limiter.wait()
-            response=session.get(EASTMONEY_STATEMENT_DATA_URL, params=params, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
-            attempt.set_http_status(getattr(response, "status_code", None))
-            response.raise_for_status()
-            statement_rows = (response.json().get("result") or {}).get("data") or []
-            if not statement_rows:
-                attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no statement rows")
-            for item in statement_rows:
-                report=str(item.get("REPORT_DATE") or "")[:10]
-                if report in rows_by_period:
-                    rows_by_period[report].update(item)
+        limiter.wait()
+        response=session.get(EASTMONEY_STATEMENT_DATA_URL, params=params, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
+        response.raise_for_status()
+        statement_rows = (response.json().get("result") or {}).get("data") or []
+        for item in statement_rows:
+            report=str(item.get("REPORT_DATE") or "")[:10]
+            if report in rows_by_period:
+                rows_by_period[report].update(item)
     output=[]
     ordered = sorted(rows_by_period.items(), reverse=True)
     for index, (report, raw) in enumerate(ordered):

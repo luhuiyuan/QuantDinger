@@ -144,3 +144,10 @@ def test_pool_stats_reports_private_psycopg_pool_counts():
         "used": 3,
         "opened": 5,
     }
+
+
+def test_connection_health_check_closes_probe_transaction():
+    probe = _ProbeConn({"1": 1})
+
+    assert db_postgres._is_connection_healthy(probe) is True
+    assert probe.rollbacks == 1

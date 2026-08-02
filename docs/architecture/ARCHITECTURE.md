@@ -20,6 +20,7 @@ It complements, but does not replace, `MODULE_BOUNDARIES.md`,
 | Agent Gateway | `backend_api_python/app/routes/agent_v1` | Scoped agent/MCP API under `/api/agent/v1/...` |
 | Strategy Runtime | `backend_api_python/app/services/trading_executor.py` and related services | Strategy loops, signal handling, pending order generation |
 | Market Data | `backend_api_python/app/data_sources`, `app/data_providers` | K-line, quote, symbol, fundamentals, macro and news data |
+| Unified Data Routing | `backend_api_python/app/services/data_routing` | Provider registry, instances, credentials, policy, cache, quota, health, attempts, provenance, and cutover gates |
 | Live Trading | `backend_api_python/app/services/live_trading` | Exchange and broker REST adapters |
 | Background Workers | `backend_api_python/app/startup.py`, worker services | Pending orders, portfolio monitor, grid fill poller, USDT watchers |
 
@@ -30,6 +31,7 @@ It complements, but does not replace, `MODULE_BOUNDARIES.md`,
 | `app/routes` | HTTP request parsing, auth checks, response shape | Exchange-specific trading rules, long loops, large DB workflows |
 | `app/openapi` | OpenAPI export, route registration, tag metadata | Business behavior |
 | `app/services` | Use-case orchestration and domain workflows | Flask `request`/`g` objects except at route boundary |
+| `app/services/data_routing` | All cross-provider selection and operational control for external analysis data | Feature-specific provider priority, plaintext secret lookup, trading/account operations |
 | `app/services/live_trading` | Broker/exchange adapters and normalized order APIs | Strategy lifecycle or frontend response formatting |
 | `app/data_sources` | Raw market data adapters | Order placement or strategy state mutation |
 | `app/data_providers` | Aggregated market/global data providers | Trading decisions |
@@ -94,6 +96,16 @@ When a route starts to need helpers, move the helpers to a service module first.
 - Adapters should not know about users, JWTs, Flask, or frontend wording.
 - Exchange-specific error handling stays near the adapter.
 - Business services decide whether an adapter error is retryable or user-facing.
+
+For in-scope external analysis data, registered Adapter transports may perform
+only bounded retries against the same provider. `DataRouter` exclusively owns
+cross-provider ordering, eligibility, cache selection, quota skips, health
+checks, quality gates, and Provider Attempt records. Calling Features must enter
+through `RoutedExternalDataGateway.execute`; the zero-bypass inventory is
+`docs/architecture/EXTERNAL_DATA_OUTBOUND_INVENTORY.json`.
+
+Trading accounts, balances, positions, and order execution remain outside this
+boundary even when they use the same vendor SDK as a public market-data Adapter.
 
 ## Data Rules
 

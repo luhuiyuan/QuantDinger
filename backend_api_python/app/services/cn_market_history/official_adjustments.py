@@ -198,6 +198,8 @@ class OfficialAdjustmentReferenceProvider:
         self,
         instrument: CNInstrument,
         event_dates: Sequence[date],
+        *,
+        allow_cninfo: bool = True,
     ) -> dict[date, OfficialAdjustmentReference]:
         output = {}
         for index, event_date in enumerate(event_dates):
@@ -245,7 +247,7 @@ class OfficialAdjustmentReferenceProvider:
             if index + 1 < len(event_dates) and self.settings.request_interval_seconds:
                 self._sleep(self.settings.request_interval_seconds)
         missing = [item for item in event_dates if item not in output]
-        if missing:
+        if missing and allow_cninfo:
             output.update(self._fetch_cninfo(instrument, missing))
         return output
 

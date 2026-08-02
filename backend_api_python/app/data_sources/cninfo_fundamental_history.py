@@ -12,7 +12,6 @@ from typing import Any, Mapping
 
 import requests
 
-from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 CNINFO_QUERY_URL = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
 MAPPING_VERSION = "cninfo-structured-verification-v1"
@@ -52,29 +51,21 @@ def fetch_cninfo_annual_announcements(
     session=requests,
 ) -> list[dict]:
     code = str(code).split(".")[0].zfill(6)
-    with ProviderAttempt(
-        provider="cninfo", data_domain="fundamental_history",
-        operation="annual_announcement_query", call_source="cn_fundamental_verification",
-        subject_summary={"security_code": code, "start_date": start_date, "end_date": end_date},
-    ) as attempt:
-        response = session.post(
-            CNINFO_QUERY_URL,
-            data={
-                "stock": code,
-                "category": "category_ndbg_szsh;",
-                "pageNum": 1,
-                "pageSize": 30,
-                "seDate": f"{start_date.isoformat()}~{end_date.isoformat()}",
-                "column": "sse" if code.startswith("6") else "szse",
-            },
-            timeout=20,
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.cninfo.com.cn/"},
-        )
-        attempt.set_http_status(getattr(response, "status_code", None))
-        response.raise_for_status()
-        announcements = response.json().get("announcements") or []
-        if not announcements:
-            attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no annual announcements")
+    response = session.post(
+        CNINFO_QUERY_URL,
+        data={
+            "stock": code,
+            "category": "category_ndbg_szsh;",
+            "pageNum": 1,
+            "pageSize": 30,
+            "seDate": f"{start_date.isoformat()}~{end_date.isoformat()}",
+            "column": "sse" if code.startswith("6") else "szse",
+        },
+        timeout=20,
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.cninfo.com.cn/"},
+    )
+    response.raise_for_status()
+    announcements = response.json().get("announcements") or []
     output = []
     for item in announcements:
         adjunct = str(item.get("adjunctUrl") or "")

@@ -211,7 +211,7 @@ def _fetch_indices_heatmap() -> List[Dict[str, Any]]:
     return _cap_heatmap_rows(rows)
 
 
-def generate_heatmap_data() -> Dict[str, Any]:
+def _generate_heatmap_yfinance() -> Dict[str, Any]:
     """Generate heatmap data for crypto, stock sectors, forex, commodities, and indices."""
     with ThreadPoolExecutor(max_workers=6) as pool:
         fut_us = pool.submit(_fetch_us_stocks)
@@ -231,3 +231,14 @@ def generate_heatmap_data() -> Dict[str, Any]:
             "sectors": fut_sectors.result(),
             "indices": fut_indices.result(),
         }
+
+
+def generate_heatmap_data() -> Dict[str, Any]:
+    """Generate heatmap data through the unified routing policy."""
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+    return dict(get_routed_external_data_gateway().execute(
+        "market.global_heatmap",
+        {"operation": "heatmap"},
+        constraints={"market": "GLOBAL"},
+    ).data or {})

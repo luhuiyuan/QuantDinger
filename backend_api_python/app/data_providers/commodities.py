@@ -1,4 +1,4 @@
-"""Commodity price data fetchers with multi-source fallback."""
+"""Single-provider commodity transports and routed facade."""
 from __future__ import annotations
 
 import requests
@@ -7,7 +7,6 @@ from typing import Any, Dict, List
 
 from app.utils.logger import get_logger
 from app.data_providers import safe_float
-from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -27,11 +26,10 @@ COMMODITIES = [
 ]
 
 
-def _fetch_td(commodities: list) -> List[Dict[str, Any]]:
+def _fetch_td(commodities: list, api_key: str = "") -> List[Dict[str, Any]]:
     """Fetch commodity quotes from Twelve Data."""
     try:
-        from app.config import APIKeys
-        api_key = (APIKeys.TWELVE_DATA_API_KEY or "").strip()
+        api_key = str(api_key or "").strip()
         if not api_key:
             return []
         result = []
@@ -66,7 +64,7 @@ def _fetch_td(commodities: list) -> List[Dict[str, Any]]:
 
 
 def _fetch_yf(commodities: list) -> List[Dict[str, Any]]:
-    """Fetch commodity prices from yfinance (fallback)."""
+    """Fetch commodity prices from yfinance."""
     result = []
     try:
         import yfinance as yf
@@ -112,11 +110,11 @@ def _fetch_yf(commodities: list) -> List[Dict[str, Any]]:
     return result
 
 
-def _fetch_tiingo(commodities: list) -> List[Dict[str, Any]]:
+def _fetch_tiingo(commodities: list, api_key: str = "") -> List[Dict[str, Any]]:
     """Fetch precious metal commodity prices via Tiingo FX (gold/silver only)."""
     try:
-        from app.config import TiingoConfig, APIKeys
-        api_key = APIKeys.TIINGO_API_KEY
+        from app.config import TiingoConfig
+        api_key = str(api_key or "").strip()
         if not api_key:
             return []
         result = []
@@ -160,33 +158,11 @@ def _fetch_tiingo(commodities: list) -> List[Dict[str, Any]]:
 
 
 def fetch_commodities() -> List[Dict[str, Any]]:
-    """Fetch commodity prices.  Priority: Twelve Data → yfinance → Tiingo."""
-    commodities = COMMODITIES
-    result: List[Dict[str, Any]] = []
-    for fallback_index, (provider, fetcher) in enumerate((
-        ("twelvedata", _fetch_td), ("yfinance", _fetch_yf), ("tiingo", _fetch_tiingo),
-    )):
-        try:
-            with ProviderAttempt(provider=provider, data_domain="quote", operation="commodities", call_source="global_market", subject_summary={"instrument_count": len(commodities)}, fallback_index=fallback_index) as attempt:
-                batch = fetcher(commodities)
-                if not batch:
-                    attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no usable commodity quotes")
-        except Exception as e:
-            logger.debug("Commodities fetcher %s failed: %s", fetcher.__name__, e)
-            batch = []
-        if batch:
-            existing = {r["symbol"] for r in result}
-            for r in batch:
-                if r["symbol"] not in existing:
-                    result.append(r)
-        if len(result) >= len(commodities) // 2:
-            break
+    """Fetch commodity prices through the unified routing policy."""
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-    if not result:
-        logger.warning("Commodities fetch all tiers failed, returning placeholder data")
-        for c in commodities:
-            result.append({
-                "symbol": c["yf"], "name_cn": c["name_cn"], "name_en": c["name_en"],
-                "price": 0, "change": 0, "unit": c["unit"], "category": "commodity",
-            })
-    return result
+    return list(get_routed_external_data_gateway().execute(
+        "market.commodities.overview",
+        {"operation": "overview", "commodities": COMMODITIES},
+        constraints={"market": "GLOBAL"},
+    ).data or [])

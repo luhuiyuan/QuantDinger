@@ -326,6 +326,14 @@ def _is_connection_healthy(conn) -> bool:
         return True
     except Exception:
         return False
+    finally:
+        # psycopg2 starts a transaction for the probe query.  Return pooled
+        # connections idle so callers can safely issue transaction-level
+        # settings (for example SET TRANSACTION) as their first statement.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def _acquire_conn_with_wait(pg_pool):

@@ -190,13 +190,13 @@ def _resolve_name_from_yfinance(symbol: str) -> Optional[str]:
         return None
 
 
-def _resolve_name_from_finnhub(symbol: str) -> Optional[str]:
+def _resolve_name_from_finnhub(symbol: str, *, api_key: str = '') -> Optional[str]:
     """
     Finnhub company profile (requires FINNHUB_API_KEY).
     https://finnhub.io/docs/api/company-profile2
     """
     try:
-        api_key = (os.getenv('FINNHUB_API_KEY') or '').strip()
+        api_key = str(api_key or '').strip()
         if not api_key:
             return None
         url = "https://finnhub.io/api/v1/stock/profile2"
@@ -235,53 +235,18 @@ def resolve_symbol_name(market: str, symbol: str) -> Optional[str]:
     # written back to the seed table so the next request for the same symbol
     # can short-circuit through step 1 instead of paying for the network call
     # again. Writes are best-effort (failures swallowed inside persist_seed_name).
-    if m == 'USStock':
-        ext = _resolve_name_from_finnhub(s) or _resolve_name_from_yfinance(s)
+    if m in {'USStock', 'CNStock', 'HKStock', 'MOEX'}:
+        from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+        result = get_routed_external_data_gateway().execute(
+            'market.symbol_name',
+            {'market': m, 'symbol': s},
+            constraints={'market': m},
+        )
+        ext = str(result.data or '').strip() or None
         if ext:
             persist_seed_name(m, s, ext)
         return ext
-
-    if m in ('CNStock', 'HKStock'):
-        try:
-            from app.data_sources.tencent import fetch_quote
-            parts = fetch_quote(s)
-            if parts and len(parts) > 1 and parts[1]:
-                ext = str(parts[1]).strip()
-                if ext:
-                    persist_seed_name(m, s, ext)
-                    return ext
-        except Exception:
-            pass
-        ext = _resolve_name_from_yfinance(s)
-        if ext:
-            persist_seed_name(m, s, ext)
-        return ext
-
-    # MOEX (Russian equities): try MOEX ISS securities description for a name.
-    if m == 'MOEX':
-        try:
-            from app.data_sources.moex import MOEXDataSource, ISS_BASE
-            sym = MOEXDataSource._normalize_symbol(s)
-            url = f"{ISS_BASE}/securities/{sym}.json"
-            resp = requests.get(url, params={"iss.meta": "off"}, timeout=8)
-            if resp.status_code == 200:
-                payload = resp.json() or {}
-                desc = (payload.get('description') or {})
-                cols = desc.get('columns') or []
-                data = desc.get('data') or []
-                if cols and data:
-                    name_idx = cols.index('name') if 'name' in cols else None
-                    val_idx = cols.index('value') if 'value' in cols else None
-                    if name_idx is not None and val_idx is not None:
-                        for row in data:
-                            if row[name_idx] in ('SHORTNAME', 'SECNAME'):
-                                v = (row[val_idx] or '').strip()
-                                if v:
-                                    persist_seed_name(m, s, v)
-                                    return v
-        except Exception as e:
-            logger.debug(f"MOEX name resolve failed: {symbol}: {e}")
-        return s
 
     # Crypto/Forex/Futures: fall back to returning the symbol itself. We
     # intentionally do NOT cache these — persist_seed_name skips name==symbol

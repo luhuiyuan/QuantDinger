@@ -1064,23 +1064,22 @@ def _macro_release_lookup(message: str, profile: dict, events: list[dict], paylo
         result["provider_status"]["bls"] = bls_value
 
     if indicator == "US_NONFARM_PAYROLLS":
-        bls_value = _fetch_bls_nonfarm_payrolls()
-        result["source_chain"].append("bls_public_api")
-        if bls_value.get("status") == "ok":
-            result.update(bls_value)
+        try:
+            from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+            routed = get_routed_external_data_gateway().execute(
+                "ai_chat.macro_nonfarm_context",
+                {"indicator": indicator},
+                constraints={"market": "US"},
+            )
+            result.update(dict(routed.data))
+            result["source_chain"].append(routed.provider_public_name)
             if result.get("forecast") is None and calendar_value.get("forecast") is not None:
                 result["forecast"] = calendar_value.get("forecast")
             result["answerable"] = True
             return result
-        result["provider_status"]["bls"] = bls_value
-
-        akshare_value = _fetch_akshare_nonfarm_payrolls()
-        result["source_chain"].append("akshare_macro_usa_non_farm")
-        if akshare_value.get("status") == "ok":
-            result.update(akshare_value)
-            result["answerable"] = True
-            return result
-        result["provider_status"]["akshare_non_farm"] = akshare_value
+        except Exception as exc:
+            result["provider_status"]["nonfarm_router"] = {"status": "unavailable", "message": str(exc)}
 
     search_value = _macro_search_lookup(message, profile)
     result["source_chain"].append("web_search")
@@ -2721,5 +2720,4 @@ def save_chat_history():
 
 # openapi-compat: legacy import name
 ai_chat_bp = ai_chat_blp
-
 

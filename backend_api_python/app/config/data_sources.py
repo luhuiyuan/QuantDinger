@@ -89,11 +89,11 @@ class MetaTradingEconomicsConfig(type):
 
     @property
     def CLIENT(cls):
-        return _config_str('tradingeconomics', 'client', 'TRADING_ECONOMICS_CLIENT')
+        return ''
 
     @property
     def KEY(cls):
-        return _config_str('tradingeconomics', 'key', 'TRADING_ECONOMICS_KEY')
+        return ''
 
     @property
     def TIMEOUT(cls):
@@ -127,7 +127,7 @@ class MetaFredConfig(type):
 
     @property
     def API_KEY(cls):
-        return _config_str('fred', 'api_key', 'FRED_API_KEY')
+        return ''
 
     @property
     def TIMEOUT(cls):
@@ -150,7 +150,7 @@ class MetaBLSConfig(type):
 
     @property
     def API_KEY(cls):
-        return _config_str('bls', 'api_key', 'BLS_API_KEY')
+        return ''
 
     @property
     def TIMEOUT(cls):
@@ -173,7 +173,7 @@ class MetaBEAConfig(type):
 
     @property
     def API_KEY(cls):
-        return _config_str('bea', 'api_key', 'BEA_API_KEY')
+        return ''
 
     @property
     def TIMEOUT(cls):
@@ -250,7 +250,7 @@ class MetaAlphaVantageConfig(type):
 
     @property
     def API_KEY(cls):
-        return _config_str('alpha_vantage', 'api_key', 'ALPHA_VANTAGE_API_KEY')
+        return ''
 
     @property
     def TIMEOUT(cls):

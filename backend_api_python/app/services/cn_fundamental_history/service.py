@@ -6,7 +6,6 @@ from datetime import date
 
 import requests
 
-from app.data_sources.cn_fundamental_history import fetch_eastmoney_annual_reports
 from app.services.cn_market_history.disk_guard import DiskGuard
 from app.services.cn_market_history.config import load_cn_market_history_settings
 
@@ -14,6 +13,7 @@ from .industry import is_interest_coverage_exempt
 from .metrics import FORMULA_VERSION, FundamentalMetricCalculator
 from .quality import reconcile_values, screen_metrics
 from .repository import CNFundamentalHistoryRepository
+from .routed_provider import RoutedCNFundamentalFetcher
 
 REQUIRED_FIELDS = (
     "parent_net_income", "parent_equity_begin", "parent_equity_end",
@@ -31,10 +31,15 @@ def _is_temporary_provider_error(exc: Exception) -> bool:
 
 
 class CNFundamentalHistoryService:
-    def __init__(self, repository=None, fetcher=fetch_eastmoney_annual_reports, calculator=None):
+    def __init__(self, repository=None, fetcher=None, calculator=None):
         self.repository = repository or CNFundamentalHistoryRepository()
-        self.fetcher = fetcher
+        self.fetcher = fetcher or RoutedCNFundamentalFetcher()
         self.calculator = calculator or FundamentalMetricCalculator()
+
+    def start_stream(self, run_id: str) -> None:
+        start = getattr(self.fetcher, "start_stream", None)
+        if callable(start):
+            start(run_id)
 
     def sync_instrument(self, instrument: str, *, as_of: date | None = None) -> dict:
         as_of = as_of or date.today()
@@ -135,6 +140,9 @@ class CNFundamentalRunService:
             if not acquired:
                 return {"runId": run_id, "skipped": True, "reason": "active_fundamental_run"}
             self.repository.set_run_status(run_id, "running")
+            start_stream = getattr(self.history_service, "start_stream", None)
+            if callable(start_stream):
+                start_stream(run_id)
             succeeded = failed = temporary_failed = 0
             for target in run["targets"]:
                 if target["status"] == "succeeded":

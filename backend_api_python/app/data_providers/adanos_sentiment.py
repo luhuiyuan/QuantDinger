@@ -8,7 +8,6 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import requests
 
-from app.config import APIKeys
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -132,7 +131,7 @@ def _timeout() -> int:
         return DEFAULT_TIMEOUT
 
 
-def fetch_adanos_market_sentiment(
+def _fetch_adanos_transport(
     tickers: str | Iterable[str] | None,
     *,
     source: Optional[str] = None,
@@ -166,7 +165,7 @@ def fetch_adanos_market_sentiment(
         result["error"] = "No valid stock tickers provided"
         return result
 
-    selected_key = str(api_key if api_key is not None else APIKeys.ADANOS_API_KEY).strip()
+    selected_key = str(api_key or "").strip()
     if not selected_key:
         result["error"] = "ADANOS_API_KEY is not configured"
         return result
@@ -202,3 +201,20 @@ def fetch_adanos_market_sentiment(
         if normalized is not None
     ]
     return result
+
+
+def fetch_adanos_market_sentiment(
+    tickers: str | Iterable[str] | None,
+    *,
+    source: Optional[str] = None,
+    days: int = DEFAULT_DAYS,
+    **_: Any,
+) -> Dict[str, Any]:
+    """Fetch Adanos sentiment through the unified routing policy."""
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+    return dict(get_routed_external_data_gateway().execute(
+        "analysis.sentiment.adanos",
+        {"operation": "sentiment", "tickers": parse_tickers(tickers), "source": normalize_source(source), "days": max(1, min(int(days or DEFAULT_DAYS), 365))},
+        constraints={"market": "US"},
+    ).data or {})

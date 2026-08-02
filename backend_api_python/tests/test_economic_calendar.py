@@ -1,6 +1,8 @@
 """Tests for the free-first economic calendar providers."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app.data_providers.economic_calendar import (
     _fetch_finnhub_calendar,
     _fetch_tradingeconomics_calendar,
@@ -57,16 +59,8 @@ def test_normalize_finnhub_event_maps_gb_to_uk():
 
 
 def test_get_economic_calendar_without_api_key(monkeypatch):
-    monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
-    monkeypatch.setenv("FINNHUB_FREE_ONLY", "true")
-    monkeypatch.setattr(
-        "app.data_providers.economic_calendar._fetch_tradingeconomics_calendar",
-        lambda: [],
-    )
-    monkeypatch.setattr(
-        "app.data_providers.economic_calendar._fallback_calendar_payload",
-        lambda *args, **kwargs: None,
-    )
+    gateway = SimpleNamespace(execute=lambda *args, **kwargs: SimpleNamespace(data={"events": []}))
+    monkeypatch.setattr("app.services.data_routing.gateway.get_routed_external_data_gateway", lambda: gateway)
     events = get_economic_calendar()
     assert events == []
 
@@ -94,14 +88,12 @@ def test_get_economic_calendar_fetches_from_tradingeconomics(monkeypatch):
         def raise_for_status():
             return None
 
-    monkeypatch.setenv("TRADING_ECONOMICS_CLIENT", "test_client")
-    monkeypatch.setenv("TRADING_ECONOMICS_KEY", "test_key")
     monkeypatch.setattr(
         "app.data_providers.economic_calendar.requests.get",
         lambda *args, **kwargs: FakeResponse(),
     )
 
-    events = get_economic_calendar()
+    events = _fetch_tradingeconomics_calendar("test_client:test_key")
     assert len(events) == 1
     assert events[0]["name_en"] == "US CPI m/m"
     assert events[0]["country"] == "US"
@@ -135,22 +127,12 @@ def test_get_economic_calendar_fetches_from_finnhub(monkeypatch):
         def raise_for_status():
             return None
 
-    monkeypatch.setenv("FINNHUB_API_KEY", "test_finnhub_key")
-    monkeypatch.setenv("FINNHUB_FREE_ONLY", "false")
-    monkeypatch.setattr(
-        "app.data_providers.economic_calendar._fetch_tradingeconomics_calendar",
-        lambda: [],
-    )
-    monkeypatch.setattr(
-        "app.data_providers.economic_calendar._fallback_calendar_payload",
-        lambda *args, **kwargs: None,
-    )
     monkeypatch.setattr(
         "app.data_providers.economic_calendar.requests.get",
         lambda *args, **kwargs: FakeResponse(),
     )
 
-    events = get_economic_calendar()
+    events = _fetch_finnhub_calendar("test_finnhub_key")
     assert len(events) == 1
     assert events[0]["name_en"] == "Non Farm Payrolls"
     assert events[0]["forecast"] == "180K"

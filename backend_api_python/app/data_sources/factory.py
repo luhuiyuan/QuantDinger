@@ -103,21 +103,11 @@ class DataSourceFactory:
         """
         Normalize a market category string.
 
-        IMPORTANT: empty / unknown input used to silently degrade to "Crypto",
-        which made stock symbols like TSLA quietly route to CCXT/Coinbase. We
-        keep that fallback for backward compatibility (some callers still rely
-        on it) but emit a loud WARNING so the misroute is no longer invisible.
-        Always pass a real market category from the caller.
+        Empty and unknown values are rejected so callers cannot silently route
+        a stock symbol to the crypto capability.
         """
         if not market:
-            logger.warning(
-                "DataSourceFactory.normalize_market(): empty market category — "
-                "falling back to 'Crypto'. Caller MUST supply an explicit market "
-                "(USStock / Forex / Futures / Crypto / CNStock / HKStock / MOEX). "
-                "This fallback is deprecated and will become a hard error.",
-                stack_info=False,
-            )
-            return "Crypto"
+            raise ValueError("market category is required")
         raw = str(market).strip()
         if raw in cls._CANONICAL_MARKETS:
             return raw
@@ -128,12 +118,6 @@ class DataSourceFactory:
             "warning",
             f"unknown-market:{raw}",
             "DataSourceFactory.normalize_market(): unknown market %r; "
-            "passing through as-is; downstream get_source() will likely fail.",
-            raw,
-        )
-        return raw
-        logger.warning(
-            "DataSourceFactory.normalize_market(): unknown market %r — "
             "passing through as-is; downstream get_source() will likely fail.",
             raw,
         )
@@ -172,15 +156,7 @@ class DataSourceFactory:
             return cls.get_source("Forex")
         if key in ("usstock", "us_stocks", "stock", "stocks", "ibkr", "alpaca"):
             return cls.get_source("USStock")
-        # Unknown alias — log and default to Crypto (legacy behavior). Callers
-        # should migrate to the explicit `get_source(market)` API.
-        logger.warning(
-            "DataSourceFactory.get_data_source(%r): unknown alias — falling back "
-            "to Crypto. Migrate caller to get_source(market) with an explicit "
-            "market category.",
-            name,
-        )
-        return cls.get_source("Crypto")
+        raise ValueError(f"Unknown data source alias: {name!r}")
     
     @classmethod
     def _create_source(cls, market: str) -> BaseDataSource:
@@ -343,4 +319,3 @@ class DataSourceFactory:
                 str(e),
             )
             return {'last': 0, 'symbol': symbol}
-

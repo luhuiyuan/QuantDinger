@@ -18,9 +18,11 @@ from .official_adjustments import (
     relevant_corporate_actions,
     verify_corporate_action_references,
 )
+from .routed_official_adjustments import RoutedOfficialAdjustmentReferenceProvider
 from .operations_repository import CNMarketHistoryOperationsRepository
 from .repository import CNMarketHistoryRepository
-from .tdx_provider import PROVIDER_NAME, TDXProvider, TDXProviderError
+from .tdx_provider import PROVIDER_NAME, TDXProviderError
+from .routed_tdx_provider import RoutedTDXProvider
 from .quality import CNHistoryQualityError, CNMarketHistoryQualityService
 from .adjustments import calculate_adjustment_factors
 
@@ -58,8 +60,8 @@ class CNMarketHistorySyncService:
         settings: CNMarketHistorySettings | None = None,
         data_repository: CNMarketHistoryRepository | None = None,
         operations_repository: CNMarketHistoryOperationsRepository | None = None,
-        provider_factory=TDXProvider,
-        official_provider_factory=OfficialAdjustmentReferenceProvider,
+        provider_factory=RoutedTDXProvider,
+        official_provider_factory=None,
         disk_guard: DiskGuard | None = None,
         lock_factory=cn_history_advisory_lock,
         quality_service: CNMarketHistoryQualityService | None = None,
@@ -68,6 +70,12 @@ class CNMarketHistorySyncService:
         self.data_repository = data_repository or CNMarketHistoryRepository()
         self.operations_repository = operations_repository or CNMarketHistoryOperationsRepository()
         self.provider_factory = provider_factory
+        if official_provider_factory is None:
+            official_provider_factory = (
+                RoutedOfficialAdjustmentReferenceProvider
+                if provider_factory is RoutedTDXProvider
+                else OfficialAdjustmentReferenceProvider
+            )
         self.official_provider = official_provider_factory(self.settings)
         self.disk_guard = disk_guard or DiskGuard(self.settings)
         self.lock_factory = lock_factory
@@ -279,6 +287,12 @@ class CNMarketHistorySyncService:
 
         provider = self.provider_factory(self.settings)
         try:
+            start_streams = getattr(provider, "start_streams", None)
+            if callable(start_streams):
+                start_streams(run_id)
+            start_official_stream = getattr(self.official_provider, "start_stream", None)
+            if callable(start_official_stream):
+                start_official_stream(run_id)
             probes = provider.probe_hosts()
             for probe in probes:
                 self.operations_repository.upsert_provider_probe(

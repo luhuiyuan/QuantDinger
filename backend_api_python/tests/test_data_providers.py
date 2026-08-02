@@ -23,9 +23,11 @@ def test_cache_round_trip():
 
 
 def test_economic_calendar_not_empty(monkeypatch):
-    from app.data_providers.economic_calendar import get_economic_calendar
+    from app.data_providers.economic_calendar import _fetch_tradingeconomics_calendar
 
     class FakeResponse:
+        status_code = 200
+
         @staticmethod
         def raise_for_status():
             return None
@@ -44,14 +46,11 @@ def test_economic_calendar_not_empty(monkeypatch):
                 }
             ]
 
-    monkeypatch.setenv("TRADING_ECONOMICS_CLIENT", "test_client")
-    monkeypatch.setenv("TRADING_ECONOMICS_KEY", "test_key")
-    monkeypatch.setattr("app.utils.config_loader.load_addon_config", lambda: {})
     monkeypatch.setattr(
         "app.data_providers.economic_calendar.requests.get",
         lambda *args, **kwargs: FakeResponse(),
     )
-    events = get_economic_calendar()
+    events = _fetch_tradingeconomics_calendar("test_client:test_key")
     assert isinstance(events, list)
     assert len(events) > 0
     assert "name" in events[0]
@@ -59,9 +58,9 @@ def test_economic_calendar_not_empty(monkeypatch):
 
 
 def test_adanos_sentiment_disabled_without_key():
-    from app.data_providers.adanos_sentiment import fetch_adanos_market_sentiment
+    from app.data_providers.adanos_sentiment import _fetch_adanos_transport
 
-    result = fetch_adanos_market_sentiment("AAPL, TSLA", api_key="")
+    result = _fetch_adanos_transport("AAPL, TSLA", api_key="")
 
     assert result["enabled"] is False
     assert result["tickers"] == ["AAPL", "TSLA"]
@@ -70,7 +69,7 @@ def test_adanos_sentiment_disabled_without_key():
 
 
 def test_adanos_sentiment_fetches_and_normalizes(monkeypatch):
-    from app.data_providers.adanos_sentiment import fetch_adanos_market_sentiment
+    from app.data_providers.adanos_sentiment import _fetch_adanos_transport
 
     calls = []
 
@@ -102,12 +101,12 @@ def test_adanos_sentiment_fetches_and_normalizes(monkeypatch):
             calls.append((url, kwargs))
             return FakeResponse()
 
-    monkeypatch.setenv("ADANOS_API_KEY", "adanos_test_key")
-    result = fetch_adanos_market_sentiment(
+    result = _fetch_adanos_transport(
         ["$aapl", "AAPL", "bad ticker"],
         source="reddit",
         days=14,
         base_url="https://api.example.test",
+        api_key="adanos_test_key",
         session=FakeSession,
     )
 
@@ -140,7 +139,7 @@ def test_adanos_sentiment_fetches_and_normalizes(monkeypatch):
 
 
 def test_adanos_sentiment_fail_open_on_http_error(monkeypatch):
-    from app.data_providers.adanos_sentiment import fetch_adanos_market_sentiment
+    from app.data_providers.adanos_sentiment import _fetch_adanos_transport
 
     class FakeResponse:
         status_code = 429
@@ -151,7 +150,7 @@ def test_adanos_sentiment_fail_open_on_http_error(monkeypatch):
             return FakeResponse()
 
     monkeypatch.setenv("ADANOS_API_KEY", "adanos_test_key")
-    result = fetch_adanos_market_sentiment("NVDA", session=FakeSession)
+    result = _fetch_adanos_transport("NVDA", session=FakeSession, api_key="test")
 
     assert result["enabled"] is True
     assert result["stocks"] == []
@@ -159,7 +158,7 @@ def test_adanos_sentiment_fail_open_on_http_error(monkeypatch):
 
 
 def test_adanos_sentiment_handles_list_payload_and_non_finite_numbers():
-    from app.data_providers.adanos_sentiment import fetch_adanos_market_sentiment
+    from app.data_providers.adanos_sentiment import _fetch_adanos_transport
 
     class FakeResponse:
         status_code = 200
@@ -186,7 +185,7 @@ def test_adanos_sentiment_handles_list_payload_and_non_finite_numbers():
         def get(url, **kwargs):
             return FakeResponse()
 
-    result = fetch_adanos_market_sentiment(
+    result = _fetch_adanos_transport(
         None,
         api_key="adanos_test_key",
         session=FakeSession,
@@ -194,7 +193,7 @@ def test_adanos_sentiment_handles_list_payload_and_non_finite_numbers():
     assert result["stocks"] == []
     assert result["error"] == "No valid stock tickers provided"
 
-    result = fetch_adanos_market_sentiment(
+    result = _fetch_adanos_transport(
         "MSFT",
         api_key="adanos_test_key",
         session=FakeSession,

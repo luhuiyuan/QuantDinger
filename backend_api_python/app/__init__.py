@@ -140,6 +140,26 @@ def create_app(config_name='default', *, register_http_routes: bool = True):
 
         init_http_observability(app)
 
+        @app.before_request
+        def enforce_cutover_maintenance():
+            from flask import jsonify, request
+            from app.services.data_routing.maintenance import maintenance_active
+            from app.services.data_routing.provenance_context import clear_routed_result
+
+            clear_routed_result()
+
+            allowed = ("/health", "/api/health", "/api/auth/", "/api/data-sources/")
+            if request.path != "/" and not request.path.startswith(allowed) and maintenance_active():
+                return jsonify({"code": 0, "msg": "Application is in data routing cutover maintenance", "data": {"error_code": "cutover_maintenance"}}), 503
+
+        @app.after_request
+        def add_routed_data_provenance(response):
+            from app.services.data_routing.provenance_context import safe_provenance_headers
+
+            for name, value in safe_provenance_headers().items():
+                response.headers[name] = value
+            return response
+
     from app.utils.auth import _configure_jwt_secret_warnings
     _configure_jwt_secret_warnings()
 

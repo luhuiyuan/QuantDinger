@@ -42,55 +42,12 @@ def fetch_fear_greed_index() -> Dict[str, Any]:
     return {"value": 50, "classification": "Neutral", "timestamp": 0, "source": "N/A"}
 
 
-def fetch_vix() -> Dict[str, Any]:
-    """Fetch VIX (CBOE Volatility Index) with multiple fallbacks."""
+def _format_vix(current: float, change: float) -> Dict[str, Any]:
     DEFAULT_VIX = {
         "value": 18, "change": 0, "level": "low",
         "interpretation": "低波动 - 市场稳定",
         "interpretation_en": "Low - Market Stable",
     }
-
-    current = 0.0
-    change = 0.0
-
-    try:
-        import yfinance as yf
-        logger.debug("Fetching VIX from yfinance")
-        ticker = yf.Ticker("^VIX")
-
-        try:
-            hist = ticker.history(period="5d")
-        except Exception as hist_err:
-            logger.warning("yfinance VIX failed: %s", hist_err)
-            hist = None
-
-        if hist is not None and not hist.empty and len(hist) >= 1:
-            current = float(hist["Close"].iloc[-1])
-            if current > 0:
-                prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else current
-                change = ((current - prev_close) / prev_close) * 100 if prev_close else 0
-            else:
-                raise ValueError("VIX value is 0")
-        else:
-            raise ValueError("VIX history empty")
-
-    except Exception as e:
-        logger.warning("yfinance VIX failed, trying akshare: %s", e)
-
-        try:
-            import akshare as ak
-            vix_df = ak.index_vix()
-            if vix_df is not None and len(vix_df) > 0:
-                current = float(vix_df.iloc[-1]["close"])
-                prev_close = float(vix_df.iloc[-2]["close"]) if len(vix_df) >= 2 else current
-                change = ((current - prev_close) / prev_close) * 100 if prev_close else 0
-                logger.info("VIX from akshare: %.2f", current)
-            else:
-                raise ValueError("Akshare VIX empty")
-        except Exception as ak_err:
-            logger.warning("Akshare VIX also failed: %s", ak_err)
-            return DEFAULT_VIX
-
     if current <= 0:
         return DEFAULT_VIX
 
@@ -111,55 +68,44 @@ def fetch_vix() -> Dict[str, Any]:
     }
 
 
-def fetch_dollar_index() -> Dict[str, Any]:
-    """Fetch US Dollar Index (DXY) with multiple fallbacks."""
+def fetch_vix() -> Dict[str, Any]:
+    """Fetch VIX from yfinance only."""
+    try:
+        import yfinance as yf
+
+        hist = yf.Ticker("^VIX").history(period="5d")
+        if hist is None or hist.empty:
+            raise ValueError("VIX history empty")
+        current = float(hist["Close"].iloc[-1])
+        previous = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else current
+        return _format_vix(current, ((current - previous) / previous) * 100 if previous else 0)
+    except Exception as exc:
+        logger.warning("yfinance VIX failed: %s", exc)
+        return _format_vix(0, 0)
+
+
+def fetch_vix_akshare() -> Dict[str, Any]:
+    """Fetch VIX from AkShare only."""
+    try:
+        import akshare as ak
+
+        frame = ak.index_vix()
+        if frame is None or frame.empty:
+            raise ValueError("AkShare VIX history empty")
+        current = float(frame.iloc[-1]["close"])
+        previous = float(frame.iloc[-2]["close"]) if len(frame) >= 2 else current
+        return _format_vix(current, ((current - previous) / previous) * 100 if previous else 0)
+    except Exception as exc:
+        logger.warning("AkShare VIX failed: %s", exc)
+        return _format_vix(0, 0)
+
+
+def _format_dollar_index(current: float, change: float) -> Dict[str, Any]:
     DEFAULT_DXY = {
         "value": 104, "change": 0, "level": "moderate_strong",
         "interpretation": "美元偏强 - 关注资金流向",
         "interpretation_en": "Moderately Strong - Watch capital flows",
     }
-
-    current = 0.0
-    change = 0.0
-
-    try:
-        import yfinance as yf
-        logger.debug("Fetching DXY from yfinance")
-        ticker = yf.Ticker("DX-Y.NYB")
-
-        try:
-            hist = ticker.history(period="5d")
-        except Exception as hist_err:
-            logger.warning("yfinance DXY failed: %s", hist_err)
-            hist = None
-
-        if hist is not None and not hist.empty and len(hist) >= 1:
-            current = float(hist["Close"].iloc[-1])
-            if current > 0:
-                prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else current
-                change = ((current - prev_close) / prev_close) * 100 if prev_close else 0
-                logger.info("DXY from yfinance: %.2f", current)
-            else:
-                raise ValueError("DXY value is 0")
-        else:
-            raise ValueError("DXY history empty")
-
-    except Exception as e:
-        logger.warning("yfinance DXY failed, trying akshare: %s", e)
-        try:
-            import akshare as ak
-            fx_df = ak.currency_boc_sina(symbol="美元")
-            if fx_df is not None and len(fx_df) > 0:
-                usd_cny = float(fx_df.iloc[-1]["中行汇买价"]) / 100
-                current = usd_cny * 14.5
-                change = 0
-                logger.info("DXY estimated from akshare: %.2f", current)
-            else:
-                raise ValueError("Akshare DXY empty")
-        except Exception as ak_err:
-            logger.warning("Akshare DXY also failed: %s", ak_err)
-            return DEFAULT_DXY
-
     if current <= 0:
         return DEFAULT_DXY
 
@@ -179,6 +125,37 @@ def fetch_dollar_index() -> Dict[str, Any]:
         "value": round(current, 2), "change": round(change, 2),
         "level": level, "interpretation": cn, "interpretation_en": en,
     }
+
+
+def fetch_dollar_index() -> Dict[str, Any]:
+    """Fetch DXY from yfinance only."""
+    try:
+        import yfinance as yf
+
+        hist = yf.Ticker("DX-Y.NYB").history(period="5d")
+        if hist is None or hist.empty:
+            raise ValueError("DXY history empty")
+        current = float(hist["Close"].iloc[-1])
+        previous = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else current
+        return _format_dollar_index(current, ((current - previous) / previous) * 100 if previous else 0)
+    except Exception as exc:
+        logger.warning("yfinance DXY failed: %s", exc)
+        return _format_dollar_index(0, 0)
+
+
+def fetch_dollar_index_akshare() -> Dict[str, Any]:
+    """Fetch the AkShare USD/CNY-derived dollar indicator only."""
+    try:
+        import akshare as ak
+
+        frame = ak.currency_boc_sina(symbol="美元")
+        if frame is None or frame.empty:
+            raise ValueError("AkShare USD/CNY history empty")
+        current = (float(frame.iloc[-1]["中行汇买价"]) / 100) * 14.5
+        return _format_dollar_index(current, 0)
+    except Exception as exc:
+        logger.warning("AkShare dollar indicator failed: %s", exc)
+        return _format_dollar_index(0, 0)
 
 
 def fetch_yield_curve() -> Dict[str, Any]:

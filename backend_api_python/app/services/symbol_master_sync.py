@@ -21,7 +21,6 @@ from app.data_sources.tencent import normalize_hk_code
 from app.services.symbol_name import normalize_crypto_symbol
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
-from app.services.external_data_request_logs import ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -172,11 +171,16 @@ def fetch_cn_stock_symbols() -> List[SymbolMasterRow]:
 
 
 def fetch_hk_stock_symbols() -> List[SymbolMasterRow]:
-    """Fetch Hong Kong stock code/name rows from HKEX, with AkShare fallback."""
-    rows = fetch_hk_stock_symbols_hkex()
-    if rows:
-        return rows
-    return fetch_hk_stock_symbols_akshare()
+    """Compatibility facade for the routed HK symbol-master capability."""
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+    payload = get_routed_external_data_gateway().execute(
+        "task.symbol_master_sync",
+        {"operation": "full_sync", "market": "HKStock"},
+        constraints={"market": "HKStock"},
+        mode="background",
+    ).data or []
+    return [item if isinstance(item, SymbolMasterRow) else SymbolMasterRow(**item) for item in payload]
 
 
 def fetch_hk_stock_symbols_hkex() -> List[SymbolMasterRow]:
@@ -276,26 +280,24 @@ def fetch_crypto_symbols_with_diagnostics():
 
     rows: List[SymbolMasterRow] = []
     contexts = []
-    fallback_index = 0
     for exchange_id in PUBLIC_KLINE_EXCHANGE_IDS:
         for market_type in ("spot", "swap"):
             context_rows: List[SymbolMasterRow] = []
             try:
-                with ProviderAttempt(provider=exchange_id, data_domain="market_catalog", operation="load_markets", call_source="symbol_catalog_sync", subject_summary={"market_type": market_type}, fallback_index=fallback_index, retry_count=1) as attempt:
-                    ccxt_id, options = resolve_ccxt_for_live_trading(exchange_id, market_type)
-                    config = {"enableRateLimit": True, "timeout": max(int(CCXTConfig.TIMEOUT or 0), 30000)}
-                    if options:
-                        config["options"] = options
-                    config = apply_public_ccxt_endpoint_config(config, exchange_id)
-                    exchange = getattr(ccxt, ccxt_id)(config)
-                    _load_ccxt_markets_with_retry(exchange)
-                    for symbol, info in exchange.markets.items():
-                        is_target = bool(info.get("spot")) if market_type == "spot" else bool(info.get("swap"))
-                        quote = _clean_symbol(info.get("quote"))
-                        base = _clean_symbol(info.get("base"))
-                        if not info.get("active") or not is_target or quote != "USDT" or not base:
-                            continue
-                        context_rows.append(SymbolMasterRow("Crypto", normalize_crypto_symbol(symbol), _clean_text(info.get("displayName") or info.get("name") or base), exchange_id, "USDT", market_type, _clean_text(info.get("id") or symbol), _clean_symbol(info.get("settle") or quote), _classify_asset(info)))
+                ccxt_id, options = resolve_ccxt_for_live_trading(exchange_id, market_type)
+                config = {"enableRateLimit": True, "timeout": max(int(CCXTConfig.TIMEOUT or 0), 30000)}
+                if options:
+                    config["options"] = options
+                config = apply_public_ccxt_endpoint_config(config, exchange_id)
+                exchange = getattr(ccxt, ccxt_id)(config)
+                _load_ccxt_markets_with_retry(exchange)
+                for symbol, info in exchange.markets.items():
+                    is_target = bool(info.get("spot")) if market_type == "spot" else bool(info.get("swap"))
+                    quote = _clean_symbol(info.get("quote"))
+                    base = _clean_symbol(info.get("base"))
+                    if not info.get("active") or not is_target or quote != "USDT" or not base:
+                        continue
+                    context_rows.append(SymbolMasterRow("Crypto", normalize_crypto_symbol(symbol), _clean_text(info.get("displayName") or info.get("name") or base), exchange_id, "USDT", market_type, _clean_text(info.get("id") or symbol), _clean_symbol(info.get("settle") or quote), _classify_asset(info)))
                 rows.extend(context_rows)
                 contexts.append({
                     "exchange": exchange_id,
@@ -307,8 +309,7 @@ def fetch_crypto_symbols_with_diagnostics():
             except Exception as e:
                 if exchange_id == "okx":
                     try:
-                        with ProviderAttempt(provider="okx_official", data_domain="market_catalog", operation="load_instruments", call_source="symbol_catalog_sync", subject_summary={"market_type": market_type}, fallback_index=fallback_index + 1) as attempt:
-                            context_rows = _fetch_okx_public_symbol_rows(market_type, _classify_asset)
+                        context_rows = _fetch_okx_public_symbol_rows(market_type, _classify_asset)
                         rows.extend(context_rows)
                         contexts.append({
                             "exchange": exchange_id,
@@ -316,12 +317,12 @@ def fetch_crypto_symbols_with_diagnostics():
                             "ok": True,
                             "rows": len(context_rows),
                             "source": "official_public_api",
-                            "fallback": True,
+                            "transport_retry": True,
                             "primary_error": str(e)[:500],
                         })
                         continue
-                    except Exception as fallback_error:
-                        e = RuntimeError(f"{e}; official fallback failed: {fallback_error}")
+                    except Exception as retry_error:
+                        e = RuntimeError(f"{e}; official transport retry failed: {retry_error}")
                 logger.warning("crypto catalog unavailable exchange=%s type=%s: %s", exchange_id, market_type, e)
                 contexts.append({
                     "exchange": exchange_id,
@@ -330,8 +331,6 @@ def fetch_crypto_symbols_with_diagnostics():
                     "rows": 0,
                     "error": str(e),
                 })
-            finally:
-                fallback_index += 1
     return _unique_rows(rows), contexts
 
 
@@ -475,26 +474,23 @@ def fetch_futures_symbols() -> List[SymbolMasterRow]:
 
 
 def fetch_moex_symbols() -> List[SymbolMasterRow]:
-    """Fetch MOEX TQBR shares, with a static blue-chip fallback."""
-    rows = _static_rows("MOEX")
-    try:
-        resp = requests.get(
-            "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json",
-            params={"iss.meta": "off"},
-            timeout=20,
-            headers={"User-Agent": "QuantDinger/1.0"},
-        )
-        resp.raise_for_status()
-        data = resp.json().get("securities", {})
-        columns = data.get("columns") or []
-        for values in data.get("data") or []:
-            item = dict(zip(columns, values))
-            symbol = _clean_symbol(item.get("SECID"))
-            name = _clean_text(item.get("SECNAME") or item.get("SHORTNAME"))
-            if symbol and name:
-                rows.append(SymbolMasterRow("MOEX", symbol, name, "MOEX", "RUB"))
-    except Exception as e:
-        logger.warning("moex symbol source unavailable, using static fallback: %s", e)
+    """Fetch MOEX TQBR shares from the MOEX adapter transport."""
+    rows: List[SymbolMasterRow] = []
+    resp = requests.get(
+        "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json",
+        params={"iss.meta": "off"},
+        timeout=20,
+        headers={"User-Agent": "QuantDinger/1.0"},
+    )
+    resp.raise_for_status()
+    data = resp.json().get("securities", {})
+    columns = data.get("columns") or []
+    for values in data.get("data") or []:
+        item = dict(zip(columns, values))
+        symbol = _clean_symbol(item.get("SECID"))
+        name = _clean_text(item.get("SECNAME") or item.get("SHORTNAME"))
+        if symbol and name:
+            rows.append(SymbolMasterRow("MOEX", symbol, name, "MOEX", "RUB"))
     return _unique_rows(rows)
 
 
@@ -571,7 +567,18 @@ def sync_symbol_master(markets: Optional[Sequence[str]] = None) -> Dict[str, Dic
             stats[market] = {"ok": False, "error": "unsupported market", "rows": 0}
             continue
         try:
-            rows = fetcher()
+            if market in {"Forex", "Futures"}:
+                rows = fetcher()
+            else:
+                from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+                payload = get_routed_external_data_gateway().execute(
+                    "task.symbol_master_sync",
+                    {"operation": "full_sync", "market": market},
+                    constraints={"market": market},
+                    mode="background",
+                ).data or []
+                rows = [item if isinstance(item, SymbolMasterRow) else SymbolMasterRow(**item) for item in payload]
             written = upsert_symbol_master(rows)
             stats[market] = {"ok": True, "rows": len(rows), "upserted": written}
         except Exception as e:

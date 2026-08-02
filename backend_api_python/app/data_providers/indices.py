@@ -27,16 +27,16 @@ def _safe_round(v, n=2):
     return 0 if math.isnan(f) or math.isinf(f) else round(f, n)
 
 
-def fetch_stock_indices() -> List[Dict[str, Any]]:
+def _fetch_stock_indices_yfinance(indices: list) -> List[Dict[str, Any]]:
     """Fetch major stock indices using yfinance."""
     try:
         import yfinance as yf
 
-        symbols = [idx["symbol"] for idx in INDICES]
+        symbols = [idx["symbol"] for idx in indices]
         tickers = yf.Tickers(" ".join(symbols))
 
         result = []
-        for idx in INDICES:
+        for idx in indices:
             try:
                 ticker = tickers.tickers.get(idx["symbol"])
                 if ticker:
@@ -85,3 +85,14 @@ def fetch_stock_indices() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error("Failed to fetch stock indices: %s", e)
         return []
+
+
+def fetch_stock_indices() -> List[Dict[str, Any]]:
+    """Fetch major stock indices through the unified routing policy."""
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+    return list(get_routed_external_data_gateway().execute(
+        "market.indices.overview",
+        {"operation": "overview", "indices": INDICES},
+        constraints={"market": "GLOBAL"},
+    ).data or [])

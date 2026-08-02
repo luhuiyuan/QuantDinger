@@ -1,16 +1,6 @@
-"""
-A-share / H-share chart K-lines — multi-tier fallback.
+"""A/H-share provider-specific K-line transports.
 
-Priority order (when TWELVE_DATA_API_KEY is configured):
-  ALL timeframes → Twelve Data (paid, globally stable) → Tencent daily/weekly → yfinance → AkShare
-
-Without API key:
-  Daily / Weekly → Tencent fqkline (fast, no key) → yfinance → AkShare
-  Minute / Hour → yfinance → AkShare (Eastmoney, fragile overseas)
-
-Tencent ``fqkline`` only reliably supports day/week/month.
-yfinance supports CN (.SS/.SZ) and HK (.HK) at all common intervals.
-Twelve Data (https://twelvedata.com) supports XSHG/XSHE/XHKG at all intervals.
+Cross-provider ordering is owned by the unified routing policy.
 """
 
 from __future__ import annotations
@@ -27,7 +17,6 @@ import requests
 
 from app.utils.logger import get_logger
 from app.utils.resource_guard import ResourceExhaustedError, assert_fd_available, record_exception
-from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -129,14 +118,7 @@ def ak_hk_code_from_tencent(tencent_code: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _get_twelve_data_api_key() -> str:
-    try:
-        from app.utils.config_loader import load_addon_config
-        key = load_addon_config().get("twelve_data", {}).get("api_key", "")
-        if key:
-            return key
-    except Exception:
-        pass
-    return (os.getenv("TWELVE_DATA_API_KEY") or "").strip()
+    return ""
 
 
 _TD_INTERVAL_MAP = {
@@ -212,6 +194,7 @@ def fetch_twelvedata_klines(
     timeframe: str,
     limit: int,
     before_time: Optional[int],
+    api_key: str = "",
 ) -> List[Dict[str, Any]]:
     """Fetch K-lines from Twelve Data REST API. Requires TWELVE_DATA_API_KEY."""
     try:
@@ -220,7 +203,7 @@ def fetch_twelvedata_klines(
         logger.warning(str(e))
         return []
 
-    api_key = _get_twelve_data_api_key()
+    api_key = str(api_key or "").strip()
     if not api_key:
         return []
 
@@ -451,42 +434,37 @@ def fetch_yfinance_klines(
     start = end - timedelta(days=days)
 
     df: Any = None
-    with ProviderAttempt(provider="yfinance", data_domain="kline", operation="history", call_source="market_kline", subject_summary={"symbol": yf_sym, "timeframe": timeframe}, fallback_index=2, retry_count=max(0, _MAX_ATTEMPTS - 1)) as provider_attempt:
-        for attempt in range(_MAX_ATTEMPTS):
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            ticker = yf.Ticker(yf_sym)
+            df = ticker.history(
+                start=start.strftime("%Y-%m-%d"),
+                end=(end + timedelta(days=1)).strftime("%Y-%m-%d"),
+                interval=interval,
+            )
+            break
+        except Exception as e:
             try:
-                ticker = yf.Ticker(yf_sym)
-                df = ticker.history(
-                    start=start.strftime("%Y-%m-%d"),
-                    end=(end + timedelta(days=1)).strftime("%Y-%m-%d"),
-                    interval=interval,
-                )
-                break
-            except Exception as e:
-                try:
-                    record_exception(e, scope="yfinance K-line")
-                except ResourceExhaustedError as guarded:
-                    logger.warning(str(guarded))
-                    provider_attempt.fail(ExternalDataRequestResult.SKIPPED, guarded)
-                    return []
-                if attempt + 1 < _MAX_ATTEMPTS and _is_transient(e):
-                    delay = min(_BACKOFF_CAP_SEC, _BACKOFF_BASE_SEC * (2 ** attempt))
-                    logger.debug(
-                        "yfinance transient error %s tf=%s (attempt %s/%s), retry in %.1fs: %s",
-                        yf_sym, timeframe, attempt + 1, _MAX_ATTEMPTS, delay, e,
-                    )
-                    time.sleep(delay)
-                    continue
-                logger.warning("yfinance K-line failed %s tf=%s: %s", yf_sym, timeframe, e)
-                provider_attempt.fail(ExternalDataRequestResult.PROVIDER_ERROR, e)
+                record_exception(e, scope="yfinance K-line")
+            except ResourceExhaustedError as guarded:
+                logger.warning(str(guarded))
                 return []
+            if attempt + 1 < _MAX_ATTEMPTS and _is_transient(e):
+                delay = min(_BACKOFF_CAP_SEC, _BACKOFF_BASE_SEC * (2 ** attempt))
+                logger.debug(
+                    "yfinance transient error %s tf=%s (attempt %s/%s), retry in %.1fs: %s",
+                    yf_sym, timeframe, attempt + 1, _MAX_ATTEMPTS, delay, e,
+                )
+                time.sleep(delay)
+                continue
+            logger.warning("yfinance K-line failed %s tf=%s: %s", yf_sym, timeframe, e)
+            return []
 
-        bars = _bars_from_yfinance_df(df)
-        if merge_factor > 1 and bars:
-            bars = _merge_every_n_sorted_bars(bars, merge_factor)
-        if not bars:
-            provider_attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no usable kline bars")
-        logger.debug("yfinance returned %d bars for %s tf=%s", len(bars), yf_sym, timeframe)
-        return bars
+    bars = _bars_from_yfinance_df(df)
+    if merge_factor > 1 and bars:
+        bars = _merge_every_n_sorted_bars(bars, merge_factor)
+    logger.debug("yfinance returned %d bars for %s tf=%s", len(bars), yf_sym, timeframe)
+    return bars
 
 
 # ---------------------------------------------------------------------------

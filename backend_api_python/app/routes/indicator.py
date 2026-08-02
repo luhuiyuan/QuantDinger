@@ -44,7 +44,6 @@ from app.services.indicator_translator import (
     translate_indicator,
     SUPPORTED_LANGUAGES as _SUPPORTED_LANGUAGES_FOR_TRANSLATE,
 )
-import requests
 
 logger = get_logger(__name__)
 

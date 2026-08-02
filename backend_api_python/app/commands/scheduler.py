@@ -19,6 +19,7 @@ def main() -> None:
     from app.services.task_control.repository import TaskControlRepository
     from app.services.task_control.scheduler import TaskScheduler
     from app.services.task_control.executor import TaskExecutor
+    from app.services.data_routing.maintenance import maintenance_active
     from app.utils.logger import get_logger
     from app.workers.trading import build_worker_id
 
@@ -53,6 +54,12 @@ def main() -> None:
             else:
                 logger.warning("Task Registry is empty; finite Task Scheduler remains disabled")
             while not shutdown.event.is_set():
+                if maintenance_active():
+                    logger.warning("Data routing cutover maintenance is active; stopping scheduler and task executor")
+                    task_executor_stop.set()
+                    if task_executor is not None:
+                        task_executor.stop()
+                    break
                 if not leader:
                     leader = repository.acquire_process_lease(
                         lease_key=lease_key,

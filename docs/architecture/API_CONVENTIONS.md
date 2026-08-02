@@ -150,3 +150,30 @@ The current high-risk contract set covers authentication, strategy lifecycle,
 credential creation and deletion, billing order creation, and quick-trade order
 and close operations. Remaining read models and lower-risk mutations should be
 migrated incrementally without changing compatibility paths.
+
+---
+
+## 9. Routed external-data provenance
+
+Existing business payloads remain backward compatible. When a request uses the
+unified external-data Router, the backend may add these response headers:
+
+| Header | Meaning |
+| --- | --- |
+| `X-Routed-Data-Request-ID` | Stable identifier for the routed request |
+| `X-Data-Provider` | Safe public provider display name |
+| `X-Data-Acquired-At` | Provider/cache acquisition timestamp |
+| `X-Data-Freshness` | `fresh` or `stale` result state |
+| `X-Data-Quality-Warning-Count` | Optional non-sensitive warning count |
+
+Do not expose Provider Instance IDs, policy revisions, route order, quotas,
+health evidence, Attempt errors, raw parameters, or credentials in business
+responses. Those fields belong to administrator-only Data Source Operations and
+External Data Request Logs APIs. New clients must treat provenance fields and
+headers as optional; old clients must not require a synchronized upgrade.
+
+Data Source Operations mutations use the existing human envelope and require
+the relevant `data_sources:*` permission. Credential, permission, retirement,
+and cutover operations additionally require recent Step-up proof. High-impact
+mutations require a non-empty operator reason and fail closed if management
+audit persistence fails.

@@ -1,33 +1,14 @@
-"""
-市场数据采集服务 - AI分析专用
-
-设计理念：
-1. 数据为王 - 先把数据获取做好、做稳定
-2. 统一数据源 - 完全复用 DataSourceFactory 和 kline_service
-3. 复用全球金融板块 - 宏观数据、情绪数据复用 global_market.py 的缓存
-4. 快速稳定 - 不依赖慢速外部服务（如Jina Reader）
-
-数据源映射：
-- 价格/K线: DataSourceFactory (已验证，与K线模块、自选列表一致)
-- 宏观数据: 复用 global_market.py (VIX, DXY, TNX, Fear&Greed等，带缓存)
-- 新闻: Finnhub API (结构化数据，无需深度阅读)
-- 基本面: Finnhub (美股) / 固定描述 (加密)
-"""
+"""AI analysis market-data collection through unified routing facades."""
 
 import time
 from typing import Dict, List, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
-
-import yfinance as yf
-import pandas as pd
-import requests
 
 from app.data_sources import DataSourceFactory
 from app.services.kline import KlineService
 from app.services.market.technical_indicators import calculate_indicators
 from app.utils.logger import get_logger
-from app.config import APIKeys, FinnhubConfig
 
 logger = get_logger(__name__)
 
@@ -61,22 +42,7 @@ class MarketDataCollector:
         self._init_clients()
     
     def _init_clients(self):
-        """初始化外部API客户端"""
-        # Finnhub
-        finnhub_key = APIKeys.FINNHUB_API_KEY
-        if finnhub_key:
-            try:
-                import finnhub
-                self._finnhub_client = finnhub.Client(api_key=finnhub_key)
-            except Exception as e:
-                logger.warning(f"Finnhub client init failed: {e}")
-        
-        # akshare (optional, for supplementary data)
-        try:
-            import akshare as ak
-            self._ak = ak
-        except ImportError:
-            logger.info("akshare not installed")
+        """External data clients are resolved only inside registered Adapters."""
     
     def collect_all(
         self,
@@ -232,31 +198,6 @@ class MarketDataCollector:
                 }
         except Exception as e:
             logger.warning(f"Price fetch failed for {market}:{symbol}: {e}")
-        
-        try:
-            klines = DataSourceFactory.get_kline(market, symbol, "1D", 2)
-            if klines and len(klines) > 0:
-                latest = klines[-1]
-                price = float(latest.get('close', 0))
-                if price > 0:
-                    prev_close = float(klines[-2].get('close', price)) if len(klines) > 1 else price
-                    change = price - prev_close
-                    change_pct = (change / prev_close * 100) if prev_close > 0 else 0
-                    
-                    logger.info(f"Price fetched from K-line fallback for {market}:{symbol}: ${price}")
-                    return {
-                        "price": price,
-                        "change": round(change, 6),
-                        "changePercent": round(change_pct, 2),
-                        "high": float(latest.get('high', price)),
-                        "low": float(latest.get('low', price)),
-                        "open": float(latest.get('open', price)),
-                        "previousClose": prev_close,
-                        "source": "kline_fallback"
-                    }
-        except Exception as e:
-            logger.warning(f"K-line fallback price fetch also failed for {market}:{symbol}: {e}")
-        
         return None
     
     def _get_kline(
@@ -294,37 +235,21 @@ class MarketDataCollector:
         return None
 
     def _get_cn_hk_fundamental(self, market: str, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        CN/HK fundamentals — multi-tier:
-          Tier 1: Twelve Data /statistics (globally stable, paid)
-          Tier 2: AkShare / Eastmoney (fragile overseas)
-          Tier 3: AkShare financial statements (revenue growth, debt, FCF)
-          + Tencent quote for live price fields
-        """
+        """Fetch CN/HK quote and fundamentals through independent Capabilities."""
         try:
-            from app.data_sources.tencent import (
-                normalize_cn_code,
-                normalize_hk_code,
-                fetch_quote,
-                parse_quote_to_ticker,
-            )
-            from app.data_sources.cn_hk_fundamentals import (
-                fetch_twelvedata_fundamental,
-                fetch_twelvedata_statements,
-                fetch_twelvedata_earnings,
-                fetch_cn_fundamental_akshare,
-                fetch_hk_fundamental_akshare,
-                fetch_cn_financial_indicators,
-                fetch_cn_financial_statements,
-                fetch_hk_financial_indicators,
-                fetch_hk_financial_statements,
-            )
+            from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-            code = normalize_cn_code(symbol) if market == 'CNStock' else normalize_hk_code(symbol)
-            is_hk = market == 'HKStock'
-
-            parts = fetch_quote(code)
-            t = parse_quote_to_ticker(parts) if parts else {}
+            gateway = get_routed_external_data_gateway()
+            quote = gateway.execute(
+                "market.cn_hk.quote_snapshot",
+                {"market": market, "symbol": symbol},
+                constraints={"market": market},
+            ).data or {}
+            fundamental = gateway.execute(
+                "market.cn_hk.fundamentals",
+                {"market": market, "symbol": symbol},
+                constraints={"market": market},
+            ).data or {}
             result: Dict[str, Any] = {
                 "pe_ratio": None,
                 "pb_ratio": None,
@@ -341,118 +266,14 @@ class MarketDataCollector:
                 "debt_to_equity": None,
                 "current_ratio": None,
                 "free_cash_flow": None,
-                "last": t.get("last"),
-                "previous_close": t.get("previousClose"),
-                "change_percent": t.get("changePercent"),
-                "source": "tencent_quote",
+                "last": quote.get("last"),
+                "previous_close": quote.get("previousClose"),
+                "change_percent": quote.get("changePercent"),
+                "source": fundamental.get("source"),
             }
-
-            # Tier 1: Twelve Data
-            td = {}
-            try:
-                td = fetch_twelvedata_fundamental(code, is_hk)
-            except Exception as e:
-                logger.debug("TwelveData fundamental failed %s:%s: %s", market, symbol, e)
-
-            if td:
-                result["source"] = "tencent_quote+twelvedata"
-                for k, v in td.items():
-                    if k == "source":
-                        continue
-                    if v is not None:
-                        result[k] = v
-
-            # Tier 2: AkShare valuation (fill any remaining None fields)
-            has_valuation = result.get("pe_ratio") is not None or result.get("pb_ratio") is not None
-            if not has_valuation:
-                try:
-                    ak_data = fetch_cn_fundamental_akshare(code) if not is_hk else fetch_hk_fundamental_akshare(code)
-                except Exception as e:
-                    logger.debug("AkShare CN/HK fundamental failed %s:%s: %s", market, symbol, e)
-                    ak_data = {}
-                if ak_data:
-                    if "twelvedata" not in result.get("source", ""):
-                        result["source"] = "tencent_quote+akshare_em"
-                    else:
-                        result["source"] += "+akshare_em"
-                    for k, v in ak_data.items():
-                        if k == "source":
-                            continue
-                        if v is not None and result.get(k) is None:
-                            result[k] = v
-
-            # Tier 3: Twelve Data financial statements (globally stable, priority for overseas)
-            _growth_keys = ("revenue_growth", "debt_to_equity", "current_ratio", "free_cash_flow")
-            needs_financials = any(result.get(k) is None for k in _growth_keys)
-            has_statements = "financial_statements" in result
-            if needs_financials or not has_statements:
-                try:
-                    td_stmts = fetch_twelvedata_statements(code, is_hk)
-                except Exception as e:
-                    logger.debug("TwelveData statements failed %s:%s: %s", market, symbol, e)
-                    td_stmts = {}
-                if td_stmts:
-                    stmts_obj = td_stmts.pop("financial_statements", None)
-                    if stmts_obj and not has_statements:
-                        result["financial_statements"] = stmts_obj
-                        result["source"] += "+twelvedata_stmts"
-                    for k, v in td_stmts.items():
-                        if v is not None and result.get(k) is None:
-                            result[k] = v
-                    filled_td = sum(1 for k in _growth_keys if result.get(k) is not None)
-                    logger.info("TwelveData statements for %s:%s: %d/%d growth keys filled",
-                                market, symbol, filled_td, len(_growth_keys))
-
-            # Tier 4: AkShare financial indicators (fallback for domestic servers)
-            needs_financials = any(result.get(k) is None for k in _growth_keys)
-            if needs_financials:
-                try:
-                    if is_hk:
-                        fin_data = fetch_hk_financial_indicators(code)
-                    else:
-                        fin_data = fetch_cn_financial_indicators(code)
-                except Exception as e:
-                    logger.debug("AkShare CN/HK financial indicators failed %s:%s: %s", market, symbol, e)
-                    fin_data = {}
-                if fin_data:
-                    result["source"] += "+akshare_financials"
-                    for k, v in fin_data.items():
-                        if v is not None and result.get(k) is None:
-                            result[k] = v
-                    filled = sum(1 for k in _growth_keys if result.get(k) is not None)
-                    logger.info("CN/HK AkShare financial indicators for %s:%s: %d/%d growth keys filled",
-                                market, symbol, filled, len(_growth_keys))
-
-            # Tier 5: Structured financial statements via AkShare (if Twelve Data didn't fill)
-            if "financial_statements" not in result:
-                try:
-                    if is_hk:
-                        stmts = fetch_hk_financial_statements(code)
-                    else:
-                        stmts = fetch_cn_financial_statements(code)
-                    if stmts:
-                        result["financial_statements"] = stmts
-                        result["source"] += "+akshare_stmts"
-                        logger.debug("CN/HK financial statements (AkShare) for %s: %s", symbol, list(stmts.keys()))
-                except Exception as e:
-                    logger.debug("CN/HK financial statements (AkShare) failed %s: %s", symbol, e)
-
-            # Tier 6: Earnings data (quarterly EPS history) — Twelve Data /earnings
-            if "earnings" not in result:
-                try:
-                    td_earnings = fetch_twelvedata_earnings(code, is_hk)
-                    if td_earnings:
-                        result["earnings"] = td_earnings
-                        result["source"] += "+twelvedata_earnings"
-                except Exception as e:
-                    logger.debug("TwelveData earnings failed %s:%s: %s", market, symbol, e)
-
-            # Fallback: build earnings from financial_statements if /earnings failed
-            if "earnings" not in result and "financial_statements" in result:
-                result["earnings"] = self._build_earnings_from_statements(result["financial_statements"])
-
-            if not parts and not td and not has_valuation:
-                return None
+            for key, value in fundamental.items():
+                if key != "source" and value is not None:
+                    result[key] = value
             return result
         except Exception as e:
             logger.debug(f"CN/HK fundamental failed: {market}:{symbol}: {e}")
@@ -498,232 +319,16 @@ class MarketDataCollector:
         return earnings if earnings else {}
 
     def _get_us_fundamental(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        美股基本面 - Finnhub + yfinance
-        包括：基础财务指标 + 财报数据（资产负债表、利润表、现金流量表）
-        """
-        result = {}
-        
-        if self._finnhub_client:
-            try:
-                metrics = self._finnhub_client.company_basic_financials(symbol, 'all')
-                if metrics and metrics.get('metric'):
-                    m = metrics['metric']
-                    result.update({
-                        'pe_ratio': m.get('peBasicExclExtraTTM'),
-                        'pb_ratio': m.get('pbQuarterly'),
-                        'ps_ratio': m.get('psTTM'),
-                        'market_cap': m.get('marketCapitalization'),
-                        'dividend_yield': m.get('dividendYieldIndicatedAnnual'),
-                        'beta': m.get('beta'),
-                        '52w_high': m.get('52WeekHigh'),
-                        '52w_low': m.get('52WeekLow'),
-                        'roe': m.get('roeTTM'),
-                        'eps': m.get('epsBasicExclExtraItemsTTM'),
-                        'revenue_growth': m.get('revenueGrowthTTMYoy'),
-                        'profit_margin': m.get('netProfitMarginTTM'),
-                        'debt_to_equity': m.get('totalDebtToEquityQuarterly'),
-                        'current_ratio': m.get('currentRatioQuarterly'),
-                        'quick_ratio': m.get('quickRatioQuarterly'),
-                    })
-            except Exception as e:
-                logger.debug(f"Finnhub fundamental failed for {symbol}: {e}")
-        
-        try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.info or {}
-            
-            if not result.get('pe_ratio'):
-                result['pe_ratio'] = info.get('trailingPE') or info.get('forwardPE')
-            if not result.get('pb_ratio'):
-                result['pb_ratio'] = info.get('priceToBook')
-            if not result.get('market_cap'):
-                result['market_cap'] = info.get('marketCap')
-            if not result.get('dividend_yield'):
-                result['dividend_yield'] = info.get('dividendYield')
-            if not result.get('beta'):
-                result['beta'] = info.get('beta')
-            if not result.get('52w_high'):
-                result['52w_high'] = info.get('fiftyTwoWeekHigh')
-            if not result.get('52w_low'):
-                result['52w_low'] = info.get('fiftyTwoWeekLow')
-            if not result.get('roe'):
-                result['roe'] = info.get('returnOnEquity')
-            if not result.get('eps'):
-                result['eps'] = info.get('trailingEps')
-            
-            result.update({
-                'revenue': info.get('totalRevenue'),
-                'gross_profit': info.get('grossProfits'),
-                'operating_margin': info.get('operatingMargins'),
-                'profit_margin': result.get('profit_margin') or info.get('profitMargins'),
-                'ebitda': info.get('ebitda'),
-                'debt': info.get('totalDebt'),
-                'cash': info.get('totalCash'),
-                'free_cash_flow': info.get('freeCashflow'),
-                'operating_cash_flow': info.get('operatingCashflow'),
-                'book_value': info.get('bookValue'),
-                'enterprise_value': info.get('enterpriseValue'),
-            })
-        except Exception as e:
-            logger.debug(f"yfinance fundamental failed for {symbol}: {e}")
-        
-        financial_statements = self._get_financial_statements(symbol)
-        if financial_statements:
-            result['financial_statements'] = financial_statements
-        
-        earnings_data = self._get_earnings_data(symbol)
-        if earnings_data:
-            result['earnings'] = earnings_data
-        
-        return result if result else None
+        """Fetch US fundamentals through the unified routing policy."""
+        from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+        return dict(get_routed_external_data_gateway().execute(
+            "analysis.us_fundamentals",
+            {"market": "USStock", "symbol": symbol},
+            constraints={"market": "USStock"},
+        ).data or {})
     
-    def _get_financial_statements(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        获取财务报表数据（资产负债表、利润表、现金流量表）
-        
-        使用 yfinance 获取，包含最近几个季度的数据
-        """
-        try:
-            ticker = yf.Ticker(symbol)
-            statements = {}
-            
-            try:
-                balance_sheet = ticker.balance_sheet
-                if balance_sheet is not None and not balance_sheet.empty:
-                    latest_quarters = balance_sheet.columns[:4] if len(balance_sheet.columns) >= 4 else balance_sheet.columns
-                    statements['balance_sheet'] = {
-                        'latest_date': str(latest_quarters[0]) if len(latest_quarters) > 0 else None,
-                        'total_assets': float(balance_sheet.loc['Total Assets', latest_quarters[0]]) if 'Total Assets' in balance_sheet.index and len(latest_quarters) > 0 else None,
-                        'total_liabilities': float(balance_sheet.loc['Total Liab', latest_quarters[0]]) if 'Total Liab' in balance_sheet.index and len(latest_quarters) > 0 else None,
-                        'total_equity': float(balance_sheet.loc['Stockholders Equity', latest_quarters[0]]) if 'Stockholders Equity' in balance_sheet.index and len(latest_quarters) > 0 else None,
-                        'cash': float(balance_sheet.loc['Cash', latest_quarters[0]]) if 'Cash' in balance_sheet.index and len(latest_quarters) > 0 else None,
-                        'debt': float(balance_sheet.loc['Total Debt', latest_quarters[0]]) if 'Total Debt' in balance_sheet.index and len(latest_quarters) > 0 else None,
-                        'current_assets': float(balance_sheet.loc['Current Assets', latest_quarters[0]]) if 'Current Assets' in balance_sheet.index and len(latest_quarters) > 0 else None,
-                        'current_liabilities': float(balance_sheet.loc['Current Liabilities', latest_quarters[0]]) if 'Current Liabilities' in balance_sheet.index and len(latest_quarters) > 0 else None,
-                    }
-            except Exception as e:
-                logger.debug(f"Balance sheet fetch failed for {symbol}: {e}")
-            
-            try:
-                income_stmt = ticker.financials
-                if income_stmt is not None and not income_stmt.empty:
-                    latest_quarters = income_stmt.columns[:4] if len(income_stmt.columns) >= 4 else income_stmt.columns
-                    statements['income_statement'] = {
-                        'latest_date': str(latest_quarters[0]) if len(latest_quarters) > 0 else None,
-                        'total_revenue': float(income_stmt.loc['Total Revenue', latest_quarters[0]]) if 'Total Revenue' in income_stmt.index and len(latest_quarters) > 0 else None,
-                        'gross_profit': float(income_stmt.loc['Gross Profit', latest_quarters[0]]) if 'Gross Profit' in income_stmt.index and len(latest_quarters) > 0 else None,
-                        'operating_income': float(income_stmt.loc['Operating Income', latest_quarters[0]]) if 'Operating Income' in income_stmt.index and len(latest_quarters) > 0 else None,
-                        'net_income': float(income_stmt.loc['Net Income', latest_quarters[0]]) if 'Net Income' in income_stmt.index and len(latest_quarters) > 0 else None,
-                        'eps': float(income_stmt.loc['Basic EPS', latest_quarters[0]]) if 'Basic EPS' in income_stmt.index and len(latest_quarters) > 0 else None,
-                    }
-            except Exception as e:
-                logger.debug(f"Income statement fetch failed for {symbol}: {e}")
-            
-            try:
-                cashflow = ticker.cashflow
-                if cashflow is not None and not cashflow.empty:
-                    latest_quarters = cashflow.columns[:4] if len(cashflow.columns) >= 4 else cashflow.columns
-                    statements['cash_flow'] = {
-                        'latest_date': str(latest_quarters[0]) if len(latest_quarters) > 0 else None,
-                        'operating_cash_flow': float(cashflow.loc['Operating Cash Flow', latest_quarters[0]]) if 'Operating Cash Flow' in cashflow.index and len(latest_quarters) > 0 else None,
-                        'investing_cash_flow': float(cashflow.loc['Capital Expenditure', latest_quarters[0]]) if 'Capital Expenditure' in cashflow.index and len(latest_quarters) > 0 else None,
-                        'financing_cash_flow': float(cashflow.loc['Financing Cash Flow', latest_quarters[0]]) if 'Financing Cash Flow' in cashflow.index and len(latest_quarters) > 0 else None,
-                        'free_cash_flow': float(cashflow.loc['Free Cash Flow', latest_quarters[0]]) if 'Free Cash Flow' in cashflow.index and len(latest_quarters) > 0 else None,
-                    }
-            except Exception as e:
-                logger.debug(f"Cash flow statement fetch failed for {symbol}: {e}")
-            
-            return statements if statements else None
-            
-        except Exception as e:
-            logger.debug(f"Financial statements fetch failed for {symbol}: {e}")
-            return None
-    
-    def _get_earnings_data(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        获取盈利报告数据（Earnings）
 
-        使用 quarterly_income_stmt 替代已弃用的 Ticker.earnings / quarterly_earnings，
-        历史季度摘要从利润表推导；盈利日历仍用 ticker.calendar（若可用）。
-        """
-        def _pick_float(stmt: pd.DataFrame, row_names: tuple, col) -> Optional[float]:
-            for name in row_names:
-                if name in stmt.index:
-                    raw = stmt.loc[name, col]
-                    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
-                        continue
-                    try:
-                        return float(raw)
-                    except (TypeError, ValueError):
-                        continue
-            return None
-
-        try:
-            ticker = yf.Ticker(symbol)
-            earnings_data: Dict[str, Any] = {}
-
-            try:
-                q_inc = ticker.quarterly_income_stmt
-                if q_inc is not None and not q_inc.empty and len(q_inc.columns) > 0:
-                    cols = list(q_inc.columns)[:4]
-                    latest_q = cols[0]
-
-                    rev = _pick_float(
-                        q_inc,
-                        ("Total Revenue", "Revenue", "Total Revenues", "Net Sales"),
-                        latest_q,
-                    )
-                    ni = _pick_float(
-                        q_inc,
-                        (
-                            "Net Income",
-                            "Net Income Common Stockholders",
-                            "Net Income Continuous Operations",
-                            "Net Income Including Noncontrolling Interests",
-                        ),
-                        latest_q,
-                    )
-                    earnings_data["quarterly"] = {
-                        "latest_quarter": str(latest_q),
-                        "revenue": rev,
-                        "earnings": ni,
-                    }
-
-                    earnings_data["history"] = []
-                    for col in cols:
-                        eps = _pick_float(q_inc, ("Diluted EPS", "Basic EPS"), col)
-                        earnings_data["history"].append({
-                            "date": str(col),
-                            "eps_actual": eps,
-                            "eps_estimate": None,
-                            "surprise": None,
-                        })
-            except Exception as e:
-                logger.debug(f"Quarterly income statement (earnings) fetch failed for {symbol}: {e}")
-
-            try:
-                earnings_calendar = ticker.calendar
-                if earnings_calendar is not None and not earnings_calendar.empty:
-                    idx0 = earnings_calendar.index[0]
-                    earnings_data["upcoming"] = {
-                        "next_earnings_date": str(idx0),
-                        "eps_estimate": float(earnings_calendar.loc[idx0, "Earnings Estimate"])
-                        if "Earnings Estimate" in earnings_calendar.columns
-                        else None,
-                        "revenue_estimate": float(earnings_calendar.loc[idx0, "Revenue Estimate"])
-                        if "Revenue Estimate" in earnings_calendar.columns
-                        else None,
-                    }
-            except Exception as e:
-                logger.debug(f"Earnings calendar fetch failed for {symbol}: {e}")
-
-            return earnings_data if earnings_data else None
-
-        except Exception as e:
-            logger.debug(f"Earnings data fetch failed for {symbol}: {e}")
-            return None
-    
     def _get_crypto_info(self, symbol: str) -> Optional[Dict[str, Any]]:
         """加密货币信息 (固定描述为主)"""
         crypto_info = {
@@ -851,56 +456,6 @@ class MarketDataCollector:
         }
         return value
 
-    def _coinglass_get(self, path: str, params: Dict[str, Any], ttl_sec: int = 120) -> Optional[Dict[str, Any]]:
-        api_key = (APIKeys.COINGLASS_API_KEY or "").strip()
-        if not api_key:
-            return None
-
-        clean_params = {k: v for k, v in (params or {}).items() if v not in (None, "", [])}
-        cache_key = f"coinglass|{path}|{tuple(sorted(clean_params.items()))}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached
-
-        try:
-            resp = requests.get(
-                f"https://open-api-v4.coinglass.com{path}",
-                params=clean_params,
-                headers={"CG-API-KEY": api_key},
-                timeout=8,
-            )
-            resp.raise_for_status()
-            payload = resp.json() or {}
-            return self._cache_set(cache_key, payload, ttl_sec)
-        except Exception as e:
-            logger.debug(f"Coinglass request failed {path}: {e}")
-            return None
-
-    def _cryptoquant_get(self, path: str, params: Dict[str, Any], ttl_sec: int = 300) -> Optional[Dict[str, Any]]:
-        api_key = (APIKeys.CRYPTOQUANT_API_KEY or "").strip()
-        if not api_key:
-            return None
-
-        clean_params = {k: v for k, v in (params or {}).items() if v not in (None, "", [])}
-        cache_key = f"cryptoquant|{path}|{tuple(sorted(clean_params.items()))}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached
-
-        try:
-            resp = requests.get(
-                f"https://api.cryptoquant.com{path}",
-                params=clean_params,
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=8,
-            )
-            resp.raise_for_status()
-            payload = resp.json() or {}
-            return self._cache_set(cache_key, payload, ttl_sec)
-        except Exception as e:
-            logger.debug(f"CryptoQuant request failed {path}: {e}")
-            return None
-
     def _extract_latest_items(self, payload: Any) -> List[Dict[str, Any]]:
         if isinstance(payload, list):
             return [x for x in payload if isinstance(x, dict)]
@@ -971,198 +526,41 @@ class MarketDataCollector:
         except Exception:
             pass
 
-        cg_cache_key = f"coingecko|coin|{symbol}"
-        cached = self._cache_get(cg_cache_key)
-        coin = cached
-        if coin is None:
+        if out["volume_24h"] is None or out["volume_change_24h"] is None:
             try:
-                resp = requests.get(
-                    "https://api.coingecko.com/api/v3/coins/markets",
-                    params={
-                        "vs_currency": "usd",
-                        "symbols": symbol.lower(),
-                        "price_change_percentage": "24h",
-                    },
-                    timeout=8,
-                )
-                resp.raise_for_status()
-                data = resp.json() or []
-                coin = data[0] if data and isinstance(data[0], dict) else {}
-                self._cache_set(cg_cache_key, coin, 180)
-            except Exception as e:
-                logger.debug(f"CoinGecko volume fetch failed for {symbol}: {e}")
-                coin = {}
+                from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-        if isinstance(coin, dict):
-            if out["volume_24h"] is None:
-                out["volume_24h"] = self._safe_num(coin.get("total_volume"))
-                if out["volume_24h"] is not None:
-                    out["source"] = "coingecko"
-            if out["volume_change_24h"] is None:
-                market_cap = self._safe_num(coin.get("market_cap"))
-                total_volume = self._safe_num(coin.get("total_volume"))
-                if total_volume is not None and market_cap and market_cap > 0:
-                    out["volume_change_24h"] = (total_volume / market_cap) * 100.0
-                    out["source"] = "coingecko+proxy"
+                routed = dict(get_routed_external_data_gateway().execute(
+                    "analysis.market_data_collection",
+                    {"operation": "crypto_market_structure", "symbol": symbol},
+                    constraints={"market": "Crypto"},
+                ).data or {})
+                if out["volume_24h"] is None:
+                    out["volume_24h"] = self._safe_num(routed.get("volume_24h"))
+                if out["volume_change_24h"] is None:
+                    out["volume_change_24h"] = self._safe_num(routed.get("volume_change_24h"))
+                out["source"] = routed.get("source") or out["source"]
+            except Exception as exc:
+                logger.debug("Routed crypto market structure unavailable for %s: %s", symbol, exc)
         return out
 
     def _get_crypto_derivatives_metrics(self, symbol: str) -> Dict[str, Any]:
-        result = {
-            "funding_rate": None,
-            "open_interest": None,
-            "open_interest_change_24h": None,
-            "long_short_ratio": None,
-            "source": "",
-        }
+        from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-        payload = self._coinglass_get("/api/futures/fundingRate/exchange-list", {"symbol": symbol}, ttl_sec=90)
-        latest = self._pick_latest_item(payload)
-        result["funding_rate"] = self._pick_number(latest or payload, "oi_weighted_funding_rate", "funding_rate", "fundingRate")
-        if result["funding_rate"] is not None:
-            result["source"] = "coinglass"
-
-        payload = self._coinglass_get("/api/futures/open-interest/exchange-list", {"symbol": symbol}, ttl_sec=90)
-        latest = self._pick_latest_item(payload)
-        result["open_interest"] = self._pick_number(
-            latest or payload,
-            "open_interest_usd",
-            "openInterestUsd",
-            "open_interest",
-            "openInterest",
-        )
-        result["open_interest_change_24h"] = self._pick_number(
-            latest or payload,
-            "open_interest_change_percent_24h",
-            "openInterestCh24h",
-            "openInterestChangePercent24h",
-            "open_interest_change_24h",
-        )
-        if result["open_interest"] is not None:
-            result["source"] = "coinglass"
-
-        payload = self._coinglass_get(
-            "/api/futures/global-long-short-account-ratio/history",
-            {"symbol": symbol, "interval": "1d", "limit": 1},
-            ttl_sec=120,
-        )
-        latest = self._pick_latest_item(payload)
-        result["long_short_ratio"] = self._pick_number(
-            latest or payload,
-            "long_short_ratio",
-            "longShortRatio",
-            "global_account_long_short_ratio",
-        )
-        if result["long_short_ratio"] is not None:
-            result["source"] = "coinglass"
-
-        if result["funding_rate"] is None or result["open_interest"] is None or result["long_short_ratio"] is None:
-            pair = f"{symbol}USDT"
-            result = self._fill_crypto_derivatives_from_binance(pair, result)
-        return result
-
-    def _fill_crypto_derivatives_from_binance(self, pair: str, result: Dict[str, Any]) -> Dict[str, Any]:
-        cache_key = f"binance_derivatives|{pair}"
-        cached = self._cache_get(cache_key)
-        if isinstance(cached, dict):
-            merged = dict(result)
-            for k, v in cached.items():
-                if merged.get(k) is None and v is not None:
-                    merged[k] = v
-            if any(merged.get(k) is not None for k in ("funding_rate", "open_interest", "long_short_ratio")) and not merged.get("source"):
-                merged["source"] = "binance_public"
-            return merged
-
-        fallback = {}
-        try:
-            funding_resp = requests.get(
-                "https://fapi.binance.com/fapi/v1/fundingRate",
-                params={"symbol": pair, "limit": 1},
-                timeout=8,
-            )
-            funding_resp.raise_for_status()
-            items = funding_resp.json() or []
-            if items:
-                fallback["funding_rate"] = self._safe_num(items[-1].get("fundingRate"))
-        except Exception as e:
-            logger.debug(f"Binance funding fallback failed for {pair}: {e}")
-
-        try:
-            oi_resp = requests.get(
-                "https://fapi.binance.com/futures/data/openInterestHist",
-                params={"symbol": pair, "period": "1d", "limit": 2},
-                timeout=8,
-            )
-            oi_resp.raise_for_status()
-            items = oi_resp.json() or []
-            if items:
-                latest = items[-1]
-                fallback["open_interest"] = self._safe_num(latest.get("sumOpenInterestValue"))
-                if len(items) >= 2:
-                    prev = self._safe_num(items[-2].get("sumOpenInterestValue"), 0.0) or 0.0
-                    curr = self._safe_num(latest.get("sumOpenInterestValue"), 0.0) or 0.0
-                    if prev > 0:
-                        fallback["open_interest_change_24h"] = ((curr - prev) / prev) * 100.0
-        except Exception as e:
-            logger.debug(f"Binance open interest fallback failed for {pair}: {e}")
-
-        try:
-            ratio_resp = requests.get(
-                "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
-                params={"symbol": pair, "period": "1d", "limit": 1},
-                timeout=8,
-            )
-            ratio_resp.raise_for_status()
-            items = ratio_resp.json() or []
-            if items:
-                fallback["long_short_ratio"] = self._safe_num(items[-1].get("longShortRatio"))
-        except Exception as e:
-            logger.debug(f"Binance long/short fallback failed for {pair}: {e}")
-
-        self._cache_set(cache_key, fallback, 120)
-        merged = dict(result)
-        for k, v in fallback.items():
-            if merged.get(k) is None and v is not None:
-                merged[k] = v
-        if any(merged.get(k) is not None for k in ("funding_rate", "open_interest", "long_short_ratio")) and not merged.get("source"):
-            merged["source"] = "binance_public"
-        return merged
+        return dict(get_routed_external_data_gateway().execute(
+            "analysis.market_data_collection",
+            {"operation": "crypto_derivatives", "symbol": symbol},
+            constraints={"market": "Crypto"},
+        ).data or {})
 
     def _get_crypto_capital_flow(self, symbol: str) -> Dict[str, Any]:
-        result = {
-            "exchange_netflow": None,
-            "stablecoin_netflow": None,
-            "source": "",
-        }
+        from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-        payload = self._coinglass_get("/api/futures/coin/netflow", {"symbol": symbol}, ttl_sec=180)
-        latest = self._pick_latest_item(payload)
-        inflow = self._pick_number(latest or payload, "inflow", "inflowUsd", "inflow_usd")
-        outflow = self._pick_number(latest or payload, "outflow", "outflowUsd", "outflow_usd")
-        if inflow is not None and outflow is not None:
-            result["exchange_netflow"] = inflow - outflow
-            result["source"] = "coinglass"
-        else:
-            result["exchange_netflow"] = self._pick_number(latest or payload, "netflow", "netFlow", "net_flow")
-            if result["exchange_netflow"] is not None:
-                result["source"] = "coinglass"
-
-        payload = self._cryptoquant_get(
-            "/v1/stablecoin/exchange-flows/netflow",
-            {"exchange": "all_exchange", "symbol": "all", "window": "day", "limit": 1},
-            ttl_sec=600,
-        )
-        latest = self._pick_latest_item(payload)
-        result["stablecoin_netflow"] = self._pick_number(
-            latest or payload,
-            "netflow",
-            "netFlow",
-            "exchange_netflow_total",
-            "value",
-        )
-        if result["stablecoin_netflow"] is not None:
-            result["source"] = (result["source"] + "+cryptoquant").strip("+")
-
-        return result
+        return dict(get_routed_external_data_gateway().execute(
+            "analysis.market_data_collection",
+            {"operation": "crypto_capital_flow", "symbol": symbol},
+            constraints={"market": "Crypto"},
+        ).data or {})
 
     def _derive_derivatives_bias(self, funding_rate: Optional[float], oi_change: Optional[float], long_short_ratio: Optional[float]) -> str:
         score = 0
@@ -1264,437 +662,69 @@ class MarketDataCollector:
         return f"{base}，整体{outlook}，{risk_text}"
     
     def _get_company(self, market: str, symbol: str) -> Optional[Dict[str, Any]]:
-        """获取公司信息"""
-        try:
-            if market == 'USStock' and self._finnhub_client:
-                profile = self._finnhub_client.company_profile2(symbol=symbol)
-                if profile:
-                    return {
-                        'name': profile.get('name'),
-                        'industry': profile.get('finnhubIndustry'),
-                        'country': profile.get('country'),
-                        'exchange': profile.get('exchange'),
-                        'ipo_date': profile.get('ipo'),
-                        'market_cap': profile.get('marketCapitalization'),
-                        'website': profile.get('weburl'),
-                    }
-            if market in ('CNStock', 'HKStock'):
-                return self._get_cn_hk_company(market, symbol)
-            
-        except Exception as e:
-            logger.debug(f"Company info fetch failed for {market}:{symbol}: {e}")
-        
-        return None
-
-    def _get_cn_hk_company(self, market: str, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        CN/HK company info — multi-tier:
-          Tier 1: Twelve Data /profile (globally stable)
-          Tier 2: AkShare / Eastmoney (fragile overseas)
-          + Tencent quote for Chinese name
-        """
-        try:
-            from app.data_sources.tencent import (
-                normalize_cn_code,
-                normalize_hk_code,
-                fetch_quote,
-            )
-            from app.data_sources.cn_hk_fundamentals import (
-                fetch_twelvedata_profile,
-                fetch_cn_company_extras,
-                fetch_hk_company_extras,
-            )
-
-            code = normalize_cn_code(symbol) if market == 'CNStock' else normalize_hk_code(symbol)
-            is_hk = market == 'HKStock'
-
-            parts = fetch_quote(code)
-            cn_name = ""
-            if parts:
-                cn_name = (parts[1] or "").strip() if len(parts) > 1 else ""
-
-            row: Dict[str, Any] = {
-                "name": cn_name or code,
-                "country": "CN" if market == "CNStock" else "HK",
-                "exchange": "SSE/SZSE" if market == "CNStock" else "HKEX",
-                "symbol": code,
-                "source": "tencent_quote",
-            }
-
-            # Tier 1: Twelve Data /profile
-            td_profile = {}
-            try:
-                td_profile = fetch_twelvedata_profile(code, is_hk)
-            except Exception as e:
-                logger.debug("TwelveData profile failed %s:%s: %s", market, symbol, e)
-
-            if td_profile:
-                row["source"] = "tencent_quote+twelvedata"
-                for k in ("industry", "sector", "website", "description", "employees", "full_name"):
-                    v = td_profile.get(k)
-                    if v is not None:
-                        row[k] = v
-                if not cn_name and td_profile.get("name"):
-                    row["name"] = td_profile["name"]
-
-            # Tier 2: AkShare (fill remaining gaps)
-            if not row.get("industry"):
-                try:
-                    ex = fetch_cn_company_extras(code) if not is_hk else fetch_hk_company_extras(code)
-                except Exception:
-                    ex = {}
-                if ex:
-                    if "twelvedata" not in row.get("source", ""):
-                        row["source"] = "tencent_quote+akshare_em"
-                    else:
-                        row["source"] += "+akshare_em"
-                    for k in ("industry", "ipo_date", "website", "full_name"):
-                        if ex.get(k) and not row.get(k):
-                            row[k] = ex[k]
-
-            if not parts and not td_profile and not row.get("industry"):
-                return None
-            return row
-        except Exception:
+        """Derive company metadata from the routed fundamentals result."""
+        fundamental = self._get_fundamental(market, symbol) or {}
+        if not fundamental:
             return None
-    
-    
+        keys = ("name", "full_name", "industry", "sector", "country", "exchange", "ipo_date", "market_cap", "website", "description")
+        company = {key: fundamental.get(key) for key in keys if fundamental.get(key) is not None}
+        return company or None
+
     def _get_macro_data(self, market: str, timeout: int = 10) -> Dict[str, Any]:
-        """
-        获取宏观经济数据 - 复用 global_market.py 的函数和缓存
-        
-        优势：
-        1. 数据与全球金融页面一致
-        2. 复用30秒/5分钟缓存，降低API调用
-        3. 已有完整的数据解读和级别判断
-        """
-        try:
-            from app.data_providers import get_cached as _get_cached, set_cached as _set_cached
-            from app.data_providers.sentiment import (
-                fetch_vix as _fetch_vix,
-                fetch_dollar_index as _fetch_dollar_index,
-                fetch_yield_curve as _fetch_yield_curve,
-                fetch_fear_greed_index as _fetch_fear_greed_index,
-            )
-            
-            result = {}
-            
-            MACRO_CACHE_TTL = 21600  # 6 hours
-            cached_sentiment = _get_cached("market_sentiment", MACRO_CACHE_TTL)
-            if cached_sentiment:
-                logger.info("Using cached sentiment data from global_market (6h cache)")
-                if cached_sentiment.get('vix'):
-                    vix = cached_sentiment['vix']
-                    result['VIX'] = {
-                        'name': 'VIX恐慌指数',
-                        'description': vix.get('interpretation', ''),
-                        'price': vix.get('value', 0),
-                        'change': vix.get('change', 0),
-                        'changePercent': vix.get('change', 0),
-                        'level': vix.get('level', 'unknown'),
-                    }
-                
-                if cached_sentiment.get('dxy'):
-                    dxy = cached_sentiment['dxy']
-                    result['DXY'] = {
-                        'name': '美元指数',
-                        'description': dxy.get('interpretation', ''),
-                        'price': dxy.get('value', 0),
-                        'change': dxy.get('change', 0),
-                        'changePercent': dxy.get('change', 0),
-                        'level': dxy.get('level', 'unknown'),
-                    }
-                
-                if cached_sentiment.get('yield_curve'):
-                    yc = cached_sentiment['yield_curve']
-                    result['TNX'] = {
-                        'name': '美债10年收益率',
-                        'description': yc.get('interpretation', ''),
-                        'price': yc.get('yield_10y', 0),
-                        'change': yc.get('change', 0),
-                        'changePercent': 0,
-                        'spread': yc.get('spread', 0),
-                        'level': yc.get('level', 'unknown'),
-                    }
-                
-                if cached_sentiment.get('fear_greed'):
-                    fg = cached_sentiment['fear_greed']
-                    result['FEAR_GREED'] = {
-                        'name': '恐惧贪婪指数',
-                        'description': fg.get('classification', 'Neutral'),
-                        'price': fg.get('value', 50),
-                        'change': 0,
-                        'changePercent': 0,
-                    }
-                
-                if result:
-                    return result
-            
-            logger.info("Fetching macro data from global_market functions")
-            
-            with NonBlockingThreadPoolExecutor(max_workers=4) as executor:
-                futures = {
-                    executor.submit(_fetch_vix): "VIX",
-                    executor.submit(_fetch_dollar_index): "DXY",
-                    executor.submit(_fetch_yield_curve): "TNX",
-                    executor.submit(_fetch_fear_greed_index): "FEAR_GREED",
-                }
-                
-                try:
-                    for future in as_completed(futures, timeout=timeout):
-                        key = futures[future]
-                        try:
-                            data = future.result(timeout=5)
-                            if data:
-                                if key == 'VIX':
-                                    result[key] = {
-                                        'name': 'VIX恐慌指数',
-                                        'description': data.get('interpretation', ''),
-                                        'price': data.get('value', 0),
-                                        'change': data.get('change', 0),
-                                        'changePercent': data.get('change', 0),
-                                        'level': data.get('level', 'unknown'),
-                                    }
-                                elif key == 'DXY':
-                                    result[key] = {
-                                        'name': '美元指数',
-                                        'description': data.get('interpretation', ''),
-                                        'price': data.get('value', 0),
-                                        'change': data.get('change', 0),
-                                        'changePercent': data.get('change', 0),
-                                        'level': data.get('level', 'unknown'),
-                                    }
-                                elif key == 'TNX':
-                                    result[key] = {
-                                        'name': '美债10年收益率',
-                                        'description': data.get('interpretation', ''),
-                                        'price': data.get('yield_10y', 0),
-                                        'change': data.get('change', 0),
-                                        'changePercent': 0,
-                                        'spread': data.get('spread', 0),
-                                        'level': data.get('level', 'unknown'),
-                                    }
-                                elif key == 'FEAR_GREED':
-                                    result[key] = {
-                                        'name': '恐惧贪婪指数',
-                                        'description': data.get('classification', 'Neutral'),
-                                        'price': data.get('value', 50),
-                                        'change': 0,
-                                        'changePercent': 0,
-                                    }
-                        except Exception as e:
-                            logger.debug(f"Macro indicator {key} fetch failed: {e}")
-                except TimeoutError:
-                    logger.warning("Macro data fetch timed out")
-            
-            pass
-            
-            return result
-            
-        except ImportError as e:
-            logger.warning(f"Could not import from global_market: {e}")
-            return {}
-        except Exception as e:
-            logger.error(f"_get_macro_data failed: {e}")
-            return {}
-    
-    
+        """Fetch macro sentiment through the unified routing policy."""
+        from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+        payload = dict(get_routed_external_data_gateway().execute(
+            "analysis.market_sentiment",
+            {"operation": "aggregate", "market": market},
+            constraints={"market": market or "GLOBAL"},
+        ).data or {})
+        mapping = {
+            "vix": ("VIX", "VIX volatility index"),
+            "dxy": ("DXY", "US dollar index"),
+            "yield_curve": ("TNX", "US Treasury yield curve"),
+            "fear_greed": ("FEAR_GREED", "Fear and Greed index"),
+        }
+        result = {}
+        for source_key, (target_key, name) in mapping.items():
+            item = payload.get(source_key)
+            if not isinstance(item, dict):
+                continue
+            result[target_key] = {
+                "name": name,
+                "description": item.get("interpretation") or item.get("classification") or "",
+                "price": item.get("value", item.get("yield_10y", 0)),
+                "change": item.get("change", 0),
+                "changePercent": item.get("change", 0),
+                "level": item.get("level", "unknown"),
+            }
+        return result
+
     def _get_news(
         self, market: str, symbol: str, company_name: str = None, timeout: int = 8
     ) -> Dict[str, Any]:
-        """
-        获取新闻和情绪数据
-        
-        策略（按优先级）：
-        1. 结构化API (Finnhub) - 美股首选
-        2. 搜索引擎 (Tavily/Google/Bing/SerpAPI) - 补充搜索
-        3. 情绪分析 - Finnhub 社交媒体情绪
-        """
-        news_list = []
-        sentiment = {}
-        
-        if self._finnhub_client:
-            try:
-                end_date = datetime.now().strftime('%Y-%m-%d')
-                start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-                
-                raw_news = []
-                
-                if market == 'USStock':
-                    raw_news = self._finnhub_client.company_news(symbol, _from=start_date, to=end_date)
-                elif market == 'Crypto':
-                    raw_news = self._finnhub_client.general_news('crypto', min_id=0)
-                else:
-                    raw_news = self._finnhub_client.general_news('general', min_id=0)
-                
-                if raw_news:
-                    for item in raw_news[:10]:
-                        if not item.get('headline'):
-                            continue
-                        news_list.append({
-                            "datetime": datetime.fromtimestamp(item.get('datetime', 0)).strftime('%Y-%m-%d %H:%M'),
-                            "headline": item.get('headline', ''),
-                            "summary": item.get('summary', '')[:300] if item.get('summary') else '',
-                            "source": item.get('source', 'Finnhub'),
-                            "url": item.get('url', ''),
-                            "sentiment": item.get('sentiment', 'neutral'),
-                        })
-                    logger.info(f"Finnhub 新闻获取成功: {len(news_list)} 条")
-            except Exception as e:
-                logger.debug(f"Finnhub news fetch failed: {e}")
-        
-        if self._finnhub_client and market == 'USStock' and not FinnhubConfig.FREE_ONLY:
-            try:
-                social = self._finnhub_client.stock_social_sentiment(symbol)
-                if social:
-                    sentiment['reddit'] = social.get('reddit', {})
-                    sentiment['twitter'] = social.get('twitter', {})
-            except Exception as e:
-                logger.debug(f"Finnhub sentiment fetch failed: {e}")
-        elif self._finnhub_client and market == 'USStock':
-            sentiment['finnhub_social_skipped'] = {
-                'reason': 'FINNHUB_FREE_ONLY=true',
-                'message': 'Finnhub social sentiment is skipped in free-only mode.',
+        """Fetch news through the unified search routing policy."""
+        from app.services.search import get_search_service
+
+        response = get_search_service().search_stock_news(
+            stock_code=symbol,
+            stock_name=company_name or symbol,
+            market=market,
+            max_results=15,
+        )
+        rows = [
+            {
+                "datetime": item.published_date or "",
+                "headline": item.title,
+                "summary": (item.snippet or "")[:300],
+                "source": item.source,
+                "url": item.url,
+                "sentiment": item.sentiment,
             }
-        
-        if len(news_list) < 5:
-            search_news = self._get_news_from_search(market, symbol, company_name)
-            news_list.extend(search_news)
-        
-        global_events = self._get_global_major_events()
-        if global_events:
-            news_list.extend(global_events)
-            logger.info(f"Added {len(global_events)} global major events to news list")
-        
-        seen_titles = set()
-        unique_news = []
-        for item in news_list:
-            title = item.get('headline', '')
-            if title and title not in seen_titles:
-                seen_titles.add(title)
-                unique_news.append(item)
-        
-        unique_news.sort(key=lambda x: x.get('datetime', ''), reverse=True)
-        
-        return {
-            "news": unique_news[:15],  # 最多15条
-            "sentiment": sentiment,
-        }
-    
-    def _get_news_from_search(
-        self, market: str, symbol: str, company_name: str = None
-    ) -> List[Dict[str, Any]]:
-        """
-        从搜索引擎获取新闻
-        
-        使用增强的搜索服务 (Tavily/Google/Bing/SerpAPI)
-        """
-        news_list = []
-        
-        try:
-            from app.services.search import get_search_service
-            search_service = get_search_service()
-            
-            if not search_service.is_available:
-                return news_list
-            
-            search_name = company_name or symbol
-            
-            response = search_service.search_stock_news(
-                stock_code=symbol,
-                stock_name=search_name,
-                market=market,
-                max_results=5
-            )
-            
-            if response.success and response.results:
-                for result in response.results:
-                    news_list.append({
-                        "datetime": result.published_date or datetime.now().strftime('%Y-%m-%d'),
-                        "headline": result.title,
-                        "summary": result.snippet[:200] if result.snippet else '',
-                        "source": f"搜索:{result.source}",
-                        "url": result.url,
-                        "sentiment": result.sentiment,
-                    })
-                logger.info(f"搜索引擎新闻补充: {len(news_list)} 条 (来源: {response.provider})")
-        except Exception as e:
-            logger.debug(f"搜索引擎新闻获取失败: {e}")
-        
-        return news_list
-    
-    def _get_global_major_events(self) -> List[Dict]:
-        """
-        获取全球重大事件新闻（地缘政治、战争、重大政策等）
-        这些事件会影响所有市场，特别是加密货币
-        
-        Returns:
-            全球重大事件新闻列表
-        """
-        news_list = []
-        
-        try:
-            from app.services.search import get_search_service
-            search_service = get_search_service()
-            
-            if not search_service.is_available:
-                return news_list
-            
-            global_event_queries = [
-                "war conflict breaking news today"  # 只搜索最重要的查询，减少API调用
-            ]
-            
-            for query in global_event_queries:
-                try:
-                    response = search_service.search_with_fallback(
-                        query=query,
-                        max_results=2,
-                        days=1  # 只搜索最近1天的新闻
-                    )
-                    
-                    if response.success and response.results:
-                        for result in response.results:
-                            title_lower = result.title.lower()
-                            snippet_lower = (result.snippet or "").lower()
-                            text = f"{title_lower} {snippet_lower}"
-                            
-                            major_event_keywords = [
-                                "war", "conflict", "military", "attack", "strike", "sanctions",
-                                "geopolitical", "crisis", "tension", "iran", "israel", "russia",
-                                "ukraine", "middle east", "nato", "united states",
-                                "战争", "冲突", "军事", "袭击", "制裁", "地缘政治", "危机"
-                            ]
-                            
-                            if any(keyword in text for keyword in major_event_keywords):
-                                news_list.append({
-                                    "datetime": result.published_date or datetime.now().strftime('%Y-%m-%d %H:%M'),
-                                    "headline": result.title,
-                                    "summary": result.snippet[:300] if result.snippet else '',
-                                    "source": f"全球事件:{result.source}",
-                                    "url": result.url,
-                                    "sentiment": "negative" if any(kw in text for kw in ["war", "conflict", "attack", "战争", "冲突", "袭击"]) else "neutral",
-                                    "is_global_event": True  # 标记为全球事件
-                                })
-                                logger.info(f"Found global major event: {result.title[:60]}")
-                except Exception as e:
-                    logger.debug(f"Failed to search global events with query '{query}': {e}")
-                    continue
-            
-            seen_titles = set()
-            unique_events = []
-            for item in news_list:
-                title = item.get('headline', '')
-                if title and title not in seen_titles:
-                    seen_titles.add(title)
-                    unique_events.append(item)
-            
-            return unique_events[:5]  # 最多返回5条全球重大事件
-            
-        except Exception as e:
-            logger.debug(f"Failed to get global major events: {e}")
-            return []
-    
-_collector: Optional[MarketDataCollector] = None
+            for item in response.results
+        ]
+        return {"news": rows, "sentiment": {}}
+
 
 def get_market_data_collector() -> MarketDataCollector:
     """获取市场数据采集器单例"""

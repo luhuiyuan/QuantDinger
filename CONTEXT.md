@@ -6,12 +6,72 @@ QuantDinger provides market data, analysis, strategy operation, and trading-adja
 
 ### Data observability
 
+**Data Source Operations Console**:
+An administrator-only control surface for inspecting and operating configured external data providers, their routing policies, and their health. It is distinct from end-user data provenance and from the raw External Data Request Log stream.
+_Avoid_: data-source settings form, public provider dashboard
+
+**Data Source Settings**:
+The administrator settings surface for shared non-secret transport parameters and legacy-configuration migration status. Provider Instance credentials belong to the instance lifecycle and are not edited here; this surface is reached from the Data Source Operations Console but is not the place to manage routing or observe provider health.
+_Avoid_: Data Source Operations Console
+
+**Data Capability**:
+A code-defined kind of external data qualified by its market and only the additional characteristics required for provider compatibility, such as intraday versus daily K-lines or spot versus swap instruments. It is not defined by a frontend page or Calling Feature.
+_Avoid_: page data type, endpoint capability, provider feature
+
+**Provider Adapter**:
+A code-registered integration contract for one external provider type. It declares supported Data Capabilities and configuration requirements but does not represent deployment credentials, health, quota, or routing priority.
+_Avoid_: provider account, provider configuration, routing entry
+
+**Provider Instance**:
+A deployment-specific, administrator-managed use of one Provider Adapter with its own identity, settings, quota, health, and routing eligibility. Before activation its draft may be discarded; after activation its identity and history are preserved, so it may be disabled or permanently retired but not deleted. Multiple instances of one adapter represent distinct verified upstream accounts; the same upstream account may not back more than one non-retired instance.
+_Avoid_: adapter type, API key when referring to the configured provider as a whole
+
+**Provider Account Identity**:
+A stable, non-secret upstream account or quota-owner identity established through Provider Adapter validation and used to prevent duplicate Provider Instances for the same account. When a provider cannot establish such an identity, QuantDinger cannot claim that separately entered credentials have independent quota.
+_Avoid_: API key, credential ciphertext, Provider Instance ID
+
+**Data Routing Policy**:
+An administrator-managed, deployment-wide validated ordered list of Provider Instances for one Data Capability. It applies consistently to user requests, strategies, backtests, and background tasks, and determines eligible primary and fallback Provider Attempts; it never contains arbitrary endpoints, executable code, secrets, or per-user overrides.
+_Avoid_: provider URL list, custom request script
+
+**Data Eligibility Constraint**:
+A non-relaxable requirement attached to a data request, such as execution venue, adjustment mode, maximum delay, or backtest eligibility. Automatic fallback may only select Provider Instances that satisfy every constraint; it does not weaken constraints to obtain some data.
+_Avoid_: provider preference, fallback priority, user routing override
+
+**Runtime Data Quality Gate**:
+The minimum validity contract a provider result must pass before routing may accept it, including capability-specific structural, temporal, and semantic checks. A gate failure rejects that Provider Attempt and permits fallback; lesser quality warnings may accompany accepted data, while cross-provider reconciliation and correction remain outside this runtime gate.
+_Avoid_: full data governance, provider health check, informational validation warning
+
+**Routing Cache**:
+QuantDinger's reusable copy of a previously accepted routed-data result, keyed by the request characteristics that determine its meaning and retaining its original provider provenance and acquisition time. Freshness and stale eligibility are evaluated against the current request; managed historical or backtest datasets and provider-side caches are not Routing Cache entries.
+_Avoid_: historical data store, backtest dataset, provider CDN cache
+
+**Data Request Mode**:
+The execution posture of a routed data request. An interactive request permits only a short quota wait before cache use or fallback, while a background batch may wait or defer within a bounded task budget to preserve source consistency; neither mode permits unbounded retries.
+_Avoid_: Data Capability, Calling Feature, provider priority
+
+**Provider Health**:
+The routing-relevant availability state of a Provider Instance, represented at both instance scope and instance-plus-capability scope. Capability failures normally affect only that capability; transport, authentication, account, or provider-wide failures may affect the whole instance.
+_Avoid_: one undifferentiated provider status, individual request result, data quality score
+
+**Provider Capability Test**:
+An administrator-triggered diagnostic of one Provider Instance and one Data Capability that bypasses routing and fallback while preserving normal credentials, quotas, normalization, quality gates, sanitization, and logging. Its result is recorded separately and does not directly alter production circuit state; recovery probing is an explicit operation.
+_Avoid_: routed data request, automatic health probe, unrestricted provider call
+
+**Routed Data Request**:
+One request to QuantDinger's data routing capability for a dataset under a Data Capability, Data Eligibility Constraints, and Data Request Mode. It owns the complete routing outcome and contains zero or more ordered Provider Attempts.
+_Avoid_: inbound API request, individual provider call, trading request
+
+**Routed Data Request ID**:
+The immutable identifier shared by the routing summary and every Provider Attempt in that fallback chain. It is the preferred reference for explaining why a particular provider or cache result was selected.
+_Avoid_: External Data Request Log ID, provider request ID
+
 **External Data Request**:
-A request initiated by the QuantDinger backend to an external market-data, macro-data, news, or market-catalog provider. It excludes inbound client API calls, broker/exchange trading requests, and Agent audit events.
+A logical outbound request initiated by the QuantDinger backend to an external market-data, macro-data, news, or market-catalog provider. It belongs to one Provider Attempt and excludes inbound client API calls, broker/exchange trading requests, and Agent audit events.
 _Avoid_: API request, user request, trading request
 
 **External Data Request Log**:
-One durable record of an External Data Request and its classified outcome, including successful and failed requests in the same chronological stream. It contains a sanitized request summary only and excludes cache hits. An External Data Request has zero or one log record.
+One durable record of a Provider Attempt and its classified outcome, including successful, failed, disabled, and skipped attempts in the same chronological stream. It contains a sanitized summary only and excludes cache hits; attempts that perform outbound work correspond to one logical External Data Request.
 _Avoid_: normal log, error log
 
 **External Data Request Log ID**:
@@ -23,7 +83,7 @@ The user-facing QuantDinger feature that initiated an External Data Request, sto
 _Avoid_: call source when referring to a technical module, provider name
 
 **Provider Attempt**:
-One logical attempt by an External Data Request to obtain a dataset from one named provider. Fallback attempts are separate Provider Attempts, rather than hidden retries inside one record.
+One ordered attempt within a Routed Data Request to obtain a dataset from one Provider Instance. Fallback attempts are separate Provider Attempts, while bounded transport retries remain summarized inside the attempt.
 _Avoid_: HTTP packet, transport trace
 
 ### Task execution

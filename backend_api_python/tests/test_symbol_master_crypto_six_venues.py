@@ -111,7 +111,7 @@ def test_okx_public_payload_parser_keeps_only_live_usdt_instruments():
     assert [(row.symbol, row.instrument_id) for row in swap_rows] == [("BTC/USDT", "BTC-USDT-SWAP")]
 
 
-def test_okx_catalog_uses_official_public_fallback_when_ccxt_fails(monkeypatch):
+def test_okx_catalog_uses_official_transport_retry_when_ccxt_fails(monkeypatch):
     class FailingExchange:
         def __init__(self, config):
             self.markets = {}
@@ -141,4 +141,4 @@ def test_okx_catalog_uses_official_public_fallback_when_ccxt_fails(monkeypatch):
 
     assert len(rows) == 12
     assert len(okx_contexts) == 2
-    assert all(context["ok"] and context["fallback"] for context in okx_contexts)
+    assert all(context["ok"] and context["transport_retry"] for context in okx_contexts)

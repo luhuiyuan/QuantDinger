@@ -1,4 +1,4 @@
-"""Crypto price data fetchers with multi-source fallback."""
+"""Single-provider crypto transports and routed facade."""
 from __future__ import annotations
 
 import requests
@@ -66,7 +66,7 @@ def fetch_crypto_prices_ccxt() -> List[Dict[str, Any]]:
 
 
 def fetch_crypto_prices_yfinance() -> List[Dict[str, Any]]:
-    """Fetch crypto prices using yfinance as fallback."""
+    """Fetch crypto prices using yfinance."""
     try:
         import yfinance as yf
 
@@ -119,55 +119,13 @@ def fetch_crypto_prices_yfinance() -> List[Dict[str, Any]]:
 
 def fetch_crypto_prices(*, fast: bool = False) -> List[Dict[str, Any]]:
     """Fetch top crypto prices — try CCXT → yfinance → CoinGecko."""
-    if not fast:
-        result = fetch_crypto_prices_ccxt()
-        if result and len(result) >= 5:
-            logger.info("Fetched %d crypto prices via CCXT", len(result))
-            return result
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-    result = fetch_crypto_prices_yfinance()
-    if result and len(result) >= 5:
-        logger.info("Fetched %d crypto prices via yfinance", len(result))
-        return result
-
-    try:
-        url = "https://api.coingecko.com/api/v3/coins/markets"
-        params = {
-            "vs_currency": "usd",
-            "order": "market_cap_desc",
-            "per_page": 30,
-            "page": 1,
-            "sparkline": False,
-            "price_change_percentage": "24h,7d",
-        }
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-
-        result = []
-        for coin in data:
-            result.append({
-                "symbol": coin.get("symbol", "").upper(),
-                "name": coin.get("name", ""),
-                "price": safe_float(coin.get("current_price")),
-                "change_24h": safe_float(coin.get("price_change_percentage_24h")),
-                "change_7d": safe_float(coin.get("price_change_percentage_7d_in_currency")),
-                "market_cap": safe_float(coin.get("market_cap")),
-                "volume_24h": safe_float(coin.get("total_volume")),
-                "image": coin.get("image", ""),
-                "category": "crypto",
-            })
-        logger.info("Fetched %d crypto prices via CoinGecko", len(result))
-        return result
-    except Exception as e:
-        logger.error("Failed to fetch crypto prices from CoinGecko: %s", e)
-
-    logger.warning("All crypto data sources failed, returning placeholder data")
-    return [
-        {"symbol": s["symbol"], "name": s["name"], "price": 0, "change_24h": 0, "change_7d": 0,
-         "market_cap": 0, "volume_24h": 0, "image": "", "category": "crypto"}
-        for s in TOP_CRYPTO_SYMBOLS
-    ]
+    return list(get_routed_external_data_gateway().execute(
+        "market.crypto.overview",
+        {"operation": "overview", "fast": bool(fast)},
+        constraints={"market": "CRYPTO"},
+    ).data or [])
 
 
 # ---------- Heatmap-specific fetchers ----------

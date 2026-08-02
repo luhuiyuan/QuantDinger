@@ -30,6 +30,8 @@ BUILTIN_SCHEDULES = (
     BuiltinSchedule("runtime_metadata_cleanup", "0 2 * * *"),
     BuiltinSchedule("external_data_request_log_cleanup", "10 2 * * *"),
     BuiltinSchedule("task_event_cleanup", "20 2 * * *", parameters={"retention_days": 90, "batch_size": 10000}),
+    BuiltinSchedule("provider_capability_revalidation", "45 4 * * *", parameters={"limit": 10}),
+    BuiltinSchedule("provider_health_maintenance", "*/15 * * * *", parameters={"limit": 5}),
     # The scheduler-worker writes a process heartbeat every scan.  This
     # registered task remains available for an auditable manual health probe,
     # but is intentionally not scheduled to avoid duplicate heartbeat rows.

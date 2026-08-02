@@ -72,7 +72,12 @@ class UserService:
         'viewer': ['dashboard', 'view'],
         'user': ['dashboard', 'view', 'indicator', 'backtest', 'strategy', 'portfolio'],
         'manager': ['dashboard', 'view', 'indicator', 'backtest', 'strategy', 'portfolio', 'settings'],
-        'admin': ['dashboard', 'view', 'indicator', 'backtest', 'strategy', 'portfolio', 'settings', 'user_manage', 'credentials'],
+        'admin': [
+            'dashboard', 'view', 'indicator', 'backtest', 'strategy', 'portfolio',
+            'settings', 'user_manage', 'credentials',
+            'data_sources:view', 'data_sources:instances', 'data_sources:credentials',
+            'data_sources:routing', 'data_sources:diagnostics', 'data_sources:cutover',
+        ],
     }
     
     def ensure_password_changed_column(self) -> None:

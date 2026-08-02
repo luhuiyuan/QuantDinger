@@ -66,6 +66,11 @@ BUILD_INFO = Gauge(
     ("version", "role"),
     multiprocess_mode="max",
 )
+DATA_ROUTING_OBSERVABILITY_FAILURES = Counter(
+    "quantdinger_data_routing_observability_failures_total",
+    "Fail-open Routed Data Request or Provider Attempt persistence failures.",
+    ("operation",),
+)
 BUILD_INFO.labels(version=APP_VERSION, role=current_process_role().value).set(1)
 
 

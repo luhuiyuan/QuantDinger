@@ -1,0 +1,17 @@
+{
+  "artifact_version": 1,
+  "passed": true,
+  "completed_at": "2026-08-02T01:05:48+09:00",
+  "failed_groups": [],
+  "groups": {
+    "backend_targeted": "216 passed",
+    "mcp": "27 passed",
+    "vue_data_source_operations": "6 passed",
+    "vue_lint": "passed",
+    "backend_image": "built and healthy",
+    "frontend_image": "built and healthy",
+    "compose_configs": "normal, GHCR, and local UI override passed",
+    "static_checks": "version, mojibake, OpenSpec strict validation, and diff check passed"
+  },
+  "notes": "Verification ran sequentially under the repository low-memory policy. Integration-marked live-provider tests and Mobile/H5 builds were intentionally excluded."
+}

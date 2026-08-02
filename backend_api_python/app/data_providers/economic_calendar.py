@@ -1,4 +1,4 @@
-"""Economic calendar from free-first providers with optional Finnhub fallback."""
+"""Single-provider economic-calendar transports and routed facade."""
 from __future__ import annotations
 
 import hashlib
@@ -10,10 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from app.config.api_keys import APIKeys
 from app.config.data_sources import FinnhubConfig, TradingEconomicsConfig
 from app.utils.logger import get_logger
-from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -177,139 +175,17 @@ _EVENT_TYPE_RULES: Tuple[Tuple[Tuple[str, ...], str, Tuple[str, ...]], ...] = (
 
 
 def get_economic_calendar_payload() -> Dict[str, Any]:
-    """Return macro calendar events plus status metadata for UI diagnostics.
+    """Return routed macro calendar events plus UI status metadata."""
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-    Free deployments should not touch Finnhub's paid Economic Calendar endpoint
-    by default. We use AkShare's WallstreetCN adapter as the no-key free source,
-    optionally try Trading Economics when credentials are configured, and only
-    attempt Finnhub when FINNHUB_FREE_ONLY=false.
-    """
-    finnhub_free_only_override = os.getenv("FINNHUB_FREE_ONLY")
-    finnhub_api_key_override = os.getenv("FINNHUB_API_KEY")
-    if TradingEconomicsConfig.CONFIGURED:
-        try:
-            events = _fetch_tradingeconomics_calendar()
-            if events:
-                logger.info("Economic calendar loaded from Trading Economics: %d events", len(events))
-                return {
-                    "events": events,
-                    "status": "ok",
-                    "source": "tradingeconomics",
-                    "config_key": "TRADING_ECONOMICS_CLIENT",
-                    "message": "",
-                }
-            logger.warning("Trading Economics economic calendar returned no events")
-            fallback = _fallback_calendar_payload(
-                "empty", "Trading Economics returned no economic calendar events.",
-                fallback_from="tradingeconomics",
-            )
-            if fallback:
-                return fallback
-        except requests.exceptions.RequestException as exc:
-            public_message = _public_request_error_message(exc)
-            status_code = _request_status_code(exc)
-            logger.warning("Trading Economics economic calendar request failed: %s", public_message)
-            fallback = _fallback_calendar_payload(
-                f"http_{status_code}" if status_code else "upstream_error",
-                public_message,
-                fallback_from="tradingeconomics",
-            )
-            if fallback:
-                return fallback
-        except Exception as exc:
-            logger.warning("Trading Economics economic calendar failed: %s", exc, exc_info=True)
-            fallback = _fallback_calendar_payload(
-                "error",
-                str(exc),
-                fallback_from="tradingeconomics",
-            )
-            if fallback:
-                return fallback
-    else:
-        fallback = _fallback_calendar_payload(
-            "not_configured",
-            "Trading Economics credentials are not configured; using AkShare WallstreetCN calendar fallback.",
-            fallback_from="tradingeconomics",
-        )
-        if fallback:
-            return fallback
-
-    if _finnhub_free_only_enabled(finnhub_free_only_override):
-        return {
-            "events": [],
-            "status": "empty",
-            "source": "free_calendar_sources",
-            "config_key": "TRADING_ECONOMICS_CLIENT",
-            "message": "Free economic calendar sources returned no events. Finnhub paid calendar is skipped because FINNHUB_FREE_ONLY=true.",
-        }
-
-    if not (str(finnhub_api_key_override or "").strip() or APIKeys.is_configured("FINNHUB_API_KEY")):
-        return {
-            "events": [],
-            "status": "missing_config",
-            "source": "finnhub",
-            "config_key": "FINNHUB_API_KEY",
-            "message": "FINNHUB_API_KEY is not configured and free calendar sources returned no events.",
-        }
-
-    try:
-        events = _fetch_finnhub_calendar(finnhub_api_key_override)
-        if events:
-            logger.info("Economic calendar loaded from Finnhub: %d events", len(events))
-            return {
-                "events": events,
-                "status": "ok",
-                "source": "finnhub",
-                "config_key": "FINNHUB_API_KEY",
-                "message": "",
-            }
-        logger.warning("Finnhub economic calendar returned no events")
-        return {
-            "events": [],
-            "status": "empty",
-            "source": "finnhub",
-            "config_key": "FINNHUB_API_KEY",
-            "message": "Finnhub returned no economic calendar events for the current window.",
-        }
-    except requests.exceptions.RequestException as exc:
-        status_code = _request_status_code(exc)
-        public_message = _public_request_error_message(exc)
-        logger.error("Finnhub economic calendar request failed: %s", public_message)
-        if status_code in (401, 403):
-            return {
-                "events": [],
-                "status": "forbidden",
-                "source": "finnhub",
-                "config_key": "FINNHUB_API_KEY",
-                "message": (
-                    "Finnhub rejected the economic calendar request. "
-                    "Check whether the API key has access to the Economic Calendar endpoint."
-                ),
-            }
-        if status_code == 429:
-            return {
-                "events": [],
-                "status": "rate_limited",
-                "source": "finnhub",
-                "config_key": "FINNHUB_API_KEY",
-                "message": "Finnhub rate limit exceeded for the economic calendar endpoint.",
-            }
-        return {
-            "events": [],
-            "status": "upstream_error",
-            "source": "finnhub",
-            "config_key": "FINNHUB_API_KEY",
-            "message": public_message,
-        }
-    except Exception as exc:
-        logger.error("Failed to fetch Finnhub economic calendar: %s", exc, exc_info=True)
-        return {
-            "events": [],
-            "status": "error",
-            "source": "finnhub",
-            "config_key": "FINNHUB_API_KEY",
-            "message": str(exc),
-        }
+    data = get_routed_external_data_gateway().execute(
+        "market.economic_calendar",
+        {"operation": "calendar_payload"},
+        constraints={"market": "GLOBAL"},
+    ).data
+    if isinstance(data, dict):
+        return data
+    return {"events": list(data or []), "status": "ok", "source": "routed", "config_key": "", "message": ""}
 
 
 def get_economic_calendar() -> List[Dict[str, Any]]:
@@ -317,52 +193,6 @@ def get_economic_calendar() -> List[Dict[str, Any]]:
     payload = get_economic_calendar_payload()
     events = payload.get("events") if isinstance(payload, dict) else payload
     return events if isinstance(events, list) else []
-
-
-def _fallback_calendar_payload(
-    reason_status: str,
-    reason_message: str,
-    fallback_from: str = "finnhub",
-) -> Optional[Dict[str, Any]]:
-    """Use AkShare/WallstreetCN calendar when the primary source is unavailable."""
-    try:
-        events = _fetch_akshare_calendar()
-        if not events:
-            logger.warning("AkShare economic calendar fallback returned no events")
-            return None
-        logger.info(
-            "Economic calendar loaded from AkShare fallback: %d events (%s=%s)",
-            len(events),
-            fallback_from,
-            reason_status,
-        )
-        if reason_status == "not_configured":
-            message = (
-                f"{fallback_from} credentials are not configured; "
-                "using AkShare WallstreetCN calendar fallback."
-            )
-        else:
-            message = (
-                f"{fallback_from} economic calendar is unavailable; "
-                "using AkShare WallstreetCN calendar fallback."
-            )
-
-        return {
-            "events": events,
-            "status": "ok",
-            "source": "akshare_wallstreetcn",
-            "fallback_from": fallback_from,
-            "fallback_reason": reason_status,
-            "config_key": "",
-            "message": message,
-        }
-    except Exception as exc:
-        logger.warning(
-            "AkShare economic calendar fallback failed after %s: %s",
-            reason_status,
-            exc,
-        )
-        return None
 
 
 def _request_status_code(exc: requests.exceptions.RequestException) -> Optional[int]:
@@ -378,23 +208,20 @@ def _public_request_error_message(exc: requests.exceptions.RequestException) -> 
     return text
 
 
-def _fetch_tradingeconomics_calendar() -> List[Dict[str, Any]]:
+def _fetch_tradingeconomics_calendar(credentials: Optional[str] = None) -> List[Dict[str, Any]]:
     today = datetime.now().date()
     date_from = (today - timedelta(days=_TRADING_ECONOMICS_LOOKBACK_DAYS)).isoformat()
     date_to = (today + timedelta(days=_TRADING_ECONOMICS_LOOKAHEAD_DAYS)).isoformat()
 
-    with ProviderAttempt(provider="tradingeconomics", data_domain="calendar", operation="economic_calendar", call_source="economic_calendar", subject_summary={"from": date_from, "to": date_to}) as attempt:
-        resp = requests.get(
-            f"{TradingEconomicsConfig.BASE_URL}/calendar/country/All/{date_from}/{date_to}",
-            params={"c": TradingEconomicsConfig.CREDENTIALS, "f": "json"}, timeout=TradingEconomicsConfig.TIMEOUT,
-        )
-        attempt.set_http_status(resp.status_code)
-        resp.raise_for_status()
-        payload = resp.json()
-        rows: Any = payload.get("Calendar") if isinstance(payload, dict) else payload
-        if not isinstance(rows, list):
-            attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "calendar payload is not a list")
-            return []
+    resp = requests.get(
+        f"{TradingEconomicsConfig.BASE_URL}/calendar/country/All/{date_from}/{date_to}",
+        params={"c": str(credentials or ""), "f": "json"}, timeout=TradingEconomicsConfig.TIMEOUT,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    rows: Any = payload.get("Calendar") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return []
 
     events: List[Dict[str, Any]] = []
     seen_keys: set = set()
@@ -440,20 +267,17 @@ def _fetch_finnhub_calendar(api_key: Optional[str] = None) -> List[Dict[str, Any
     today = datetime.now().date()
     date_from = (today - timedelta(days=_CALENDAR_LOOKBACK_DAYS)).isoformat()
     date_to = (today + timedelta(days=_CALENDAR_LOOKAHEAD_DAYS)).isoformat()
-    token = str(api_key or APIKeys.FINNHUB_API_KEY or "").strip()
+    token = str(api_key or "").strip()
 
-    with ProviderAttempt(provider="finnhub", data_domain="calendar", operation="economic_calendar", call_source="economic_calendar", subject_summary={"from": date_from, "to": date_to}) as attempt:
-        resp = requests.get(
-            f"{FinnhubConfig.BASE_URL}/calendar/economic",
-            params={"from": date_from, "to": date_to, "token": token}, timeout=FinnhubConfig.TIMEOUT,
-        )
-        attempt.set_http_status(resp.status_code)
-        resp.raise_for_status()
-        payload = resp.json()
-        rows: Any = payload.get("economicCalendar") if isinstance(payload, dict) else payload
-        if not isinstance(rows, list):
-            attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "calendar payload is not a list")
-            return []
+    resp = requests.get(
+        f"{FinnhubConfig.BASE_URL}/calendar/economic",
+        params={"from": date_from, "to": date_to, "token": token}, timeout=FinnhubConfig.TIMEOUT,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    rows: Any = payload.get("economicCalendar") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return []
 
     events: List[Dict[str, Any]] = []
     seen_keys: set = set()
@@ -494,31 +318,30 @@ def _fetch_akshare_calendar() -> List[Dict[str, Any]]:
     seen_keys: set = set()
     idx_seq = 0
 
-    with ProviderAttempt(provider="akshare_wallstreetcn", data_domain="calendar", operation="economic_calendar", call_source="economic_calendar", subject_summary={"days": _AKSHARE_LOOKBACK_DAYS + _AKSHARE_LOOKAHEAD_DAYS + 1}) as attempt:
-        for day_offset in range(-_AKSHARE_LOOKBACK_DAYS, _AKSHARE_LOOKAHEAD_DAYS + 1):
-            day = today + timedelta(days=day_offset)
-            try:
-                df = ak.macro_info_ws(day.strftime("%Y%m%d"))
-            except Exception as exc:
-                logger.debug("AkShare macro_info_ws skipped %s: %s", day, exc)
+    for day_offset in range(-_AKSHARE_LOOKBACK_DAYS, _AKSHARE_LOOKAHEAD_DAYS + 1):
+        day = today + timedelta(days=day_offset)
+        try:
+            df = ak.macro_info_ws(day.strftime("%Y%m%d"))
+        except Exception as exc:
+            logger.debug("AkShare macro_info_ws skipped %s: %s", day, exc)
+            continue
+        if df is None or getattr(df, "empty", False):
+            continue
+        for _, series in df.iterrows():
+            row = series.to_dict()
+            normalized = _normalize_akshare_event(row, idx_seq)
+            idx_seq += 1
+            if not normalized:
                 continue
-            if df is None or getattr(df, "empty", False):
+            dedupe_key = (
+                f"{normalized['date']}|{normalized['time']}|"
+                f"{(normalized.get('name_en') or '').strip().lower()}|"
+                f"{normalized.get('country') or ''}"
+            )
+            if dedupe_key in seen_keys:
                 continue
-            for _, series in df.iterrows():
-                row = series.to_dict()
-                normalized = _normalize_akshare_event(row, idx_seq)
-                idx_seq += 1
-                if not normalized:
-                    continue
-                dedupe_key = (
-                    f"{normalized['date']}|{normalized['time']}|"
-                    f"{(normalized.get('name_en') or '').strip().lower()}|"
-                    f"{normalized.get('country') or ''}"
-                )
-                if dedupe_key in seen_keys:
-                    continue
-                seen_keys.add(dedupe_key)
-                events.append(normalized)
+            seen_keys.add(dedupe_key)
+            events.append(normalized)
 
     events.sort(
         key=lambda item: (

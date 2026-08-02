@@ -33,6 +33,7 @@ _PREFIX_TAGS: list[tuple[str, str]] = [
     ("/api/dashboard", "Dashboard"),
     ("/api/settings", "Settings"),
     ("/api/external-data-request-logs", "Settings"),
+    ("/api/data-sources", "DataSources"),
     ("/api/portfolio", "Portfolio"),
     ("/api/ibkr", "IBKR"),
     ("/api/alpaca", "Alpaca"),
@@ -77,6 +78,7 @@ def register_human_blueprints(api: Api) -> None:
     from app.routes.dashboard import dashboard_blp
     from app.routes.settings import settings_blp
     from app.routes.external_data_request_logs import external_data_request_logs_blp
+    from app.routes.data_source_operations import data_source_operations_blp
     from app.routes.portfolio import portfolio_blp
     from app.routes.ibkr import ibkr_blp
     from app.routes.alpaca import alpaca_blp
@@ -107,6 +109,7 @@ def register_human_blueprints(api: Api) -> None:
         (dashboard_blp, "/api/dashboard"),
         (settings_blp, "/api/settings"),
         (external_data_request_logs_blp, "/api/external-data-request-logs"),
+        (data_source_operations_blp, "/api/data-sources"),
         (portfolio_blp, "/api/portfolio"),
         (ibkr_blp, "/api/ibkr"),
         (alpaca_blp, "/api/alpaca"),
@@ -133,6 +136,7 @@ _SSE_PATHS = frozenset({
 })
 _PRIVATE_PATH_PREFIXES = (
     "/api/external-data-request-logs",
+    "/api/data-sources",
 )
 
 

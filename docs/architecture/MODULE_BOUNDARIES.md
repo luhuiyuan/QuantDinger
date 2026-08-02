@@ -10,11 +10,12 @@ immediate rewrite. It is the contract to follow as existing code is decomposed.
 | `routes` | HTTP parsing, auth checks, status codes, request/response mapping | trading loops, exchange-specific rules, long-running jobs |
 | `openapi` | schema registration, OpenAPI export, operation metadata | business logic |
 | `services` | business workflows and use-case orchestration | raw Flask request objects except at route boundary |
+| `services/data_routing` | registered external-data control plane and Router execution plane | Flask objects, arbitrary URLs/plugins, trading/account calls, feature-owned provider fallback |
 | `services/task_control` | registered finite-task definitions, schedules, Runs, leases, executor IPC, events, retry/cancel policy | arbitrary Shell/Python/SQL entrypoints, domain checkpoints, HTTP response shaping |
 | `services/live_trading` | exchange and broker adapters, order API normalization | strategy lifecycle, user auth, HTTP responses |
 | `services/grid` | grid engine, cell state, fill normalization, reconciliation | route parsing, frontend-specific formatting |
-| `data_sources` | market data adapters and fetch policy | strategy execution or account mutation |
-| `data_providers` | dashboard/global-market aggregation and cache policy | trading decisions or order placement |
+| `data_sources` | provider-specific protocol and normalization helpers plus routed compatibility facades | cross-provider ordering, secret lookup, strategy execution, account mutation |
+| `data_providers` | provider-specific global-data transports plus routed aggregation facades | provider priority, credential ownership, trading decisions, order placement |
 | `utils` | low-level auth, db, cache, logging, time, crypto helpers | feature workflows |
 | `config` | environment and settings resolution | runtime mutation side effects |
 | `migrations` | schema and seed data | Python runtime behavior |
@@ -70,6 +71,22 @@ These files mix multiple responsibilities and should be decomposed gradually:
 - Adapters should not know about Flask, users, or frontend response shapes.
 - Adapter methods should accept explicit `client_order_id` when the venue supports it.
 - Adapter-specific rate limits and retry rules should be isolated from business logic.
+- In-scope external-data credentials are resolved by a non-serializable `SecretHandle`; adapters must not read legacy environment keys.
+- A registered transport may retry the same provider within its bound, but it must not call another provider.
+- Only `services/data_routing` may select another Provider Instance, return routed stale cache, or record a routed Provider Attempt.
+
+## Data Routing Boundary
+
+- Code registries define stable Adapter and Capability keys and their schemas.
+- PostgreSQL owns Provider Instance lifecycle, encrypted credential versions,
+  capability eligibility, quota/health state, immutable policy revisions, and
+  cutover state.
+- Processes use validated immutable snapshots. A process without a valid
+  snapshot is not data-routing ready and must not consult old configuration.
+- Background workflows pin a Provider Instance per Capability stream and stop
+  at a commit-safe boundary when the instance becomes ineligible.
+- Data Source Operations management APIs are Step-up and permission protected;
+  ordinary business APIs expose only safe provenance for their own response.
 
 ## Startup Boundary
 

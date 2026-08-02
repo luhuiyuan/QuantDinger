@@ -46,6 +46,9 @@ def _cleanup_external_data_logs(parameters: dict[str, Any], reporter) -> dict[st
     if not settings.cleanup_enabled:
         return {"skipped": True, "reason": "disabled"}
     service = ExternalDataRequestLogService()
+    from app.services.data_routing.observability import PostgresRouterObservabilitySink
+
+    routed_sink = PostgresRouterObservabilitySink()
     run_id = service.start_cleanup_run()
     deleted = 0
     try:
@@ -58,8 +61,14 @@ def _cleanup_external_data_logs(parameters: dict[str, Any], reporter) -> dict[st
             deleted += count
             if count < settings.cleanup_batch_size:
                 break
+        routed_deleted = routed_sink.cleanup_expired(
+            success_days=settings.successful_retention_days,
+            abnormal_days=settings.error_retention_days,
+            summary_days=settings.error_retention_days,
+            batch_size=settings.cleanup_batch_size,
+        )
         service.finish_cleanup_run(run_id, deleted_count=deleted)
-        return {"deleted_count": deleted, "run_id": run_id}
+        return {"deleted_count": deleted, "routed": routed_deleted, "run_id": run_id}
     except Exception as exc:
         service.finish_cleanup_run(run_id, deleted_count=deleted, error=exc)
         return {"deleted_count": deleted, "run_id": run_id, "error": sanitize_summary(exc, max_length=300)}
@@ -73,6 +82,69 @@ def _cleanup_task_events(parameters: dict[str, Any], reporter) -> dict[str, Any]
         batch_size=max(1, min(int(parameters.get("batch_size") or 10000), 50000)),
     )
     return {"deleted_count": deleted, "retention_days": int(parameters.get("retention_days") or 90)}
+
+
+def _reencrypt_provider_credentials(parameters: dict[str, Any], reporter) -> dict[str, Any]:
+    from app.services.data_routing.key_rotation import (
+        PostgresCredentialKeyRotationRepository,
+        ProviderCredentialKeyRotationService,
+    )
+    from app.utils.credential_crypto import load_provider_credential_keyring
+
+    result = ProviderCredentialKeyRotationService(
+        PostgresCredentialKeyRotationRepository(),
+        load_provider_credential_keyring(),
+    ).run(
+        batch_size=int(parameters.get("batch_size") or 25),
+        max_batches=int(parameters.get("max_batches") or 10),
+        reporter=reporter,
+    )
+    return {
+        "migrated": result.migrated,
+        "batches": result.batches,
+        "remaining_by_key": dict(result.remaining_by_key),
+        "verified_current": result.verified_current,
+        "removable_previous_key_ids": list(result.removable_previous_key_ids),
+        "complete": result.complete,
+    }
+
+
+def _provider_health_maintenance(parameters: dict[str, Any], reporter) -> dict[str, Any]:
+    del reporter
+    from app.services.data_routing.health import run_provider_health_maintenance
+
+    return run_provider_health_maintenance(limit=int(parameters.get("limit") or 5))
+
+
+def _revalidate_provider_capabilities(parameters: dict[str, Any], reporter) -> dict[str, Any]:
+    import os
+
+    from app.services.data_routing.credential_repository import PostgresProviderCredentialRepository
+    from app.services.data_routing.credentials import ProviderCredentialService
+    from app.services.data_routing.bootstrap import load_default_data_routing_registry
+    from app.utils.credential_crypto import load_provider_credential_keyring
+
+    registry = load_default_data_routing_registry()
+    if not registry.adapters:
+        return {"skipped": True, "reason": "data_routing_registry_empty"}
+    service = ProviderCredentialService(
+        registry,
+        PostgresProviderCredentialRepository(),
+        keyring=load_provider_credential_keyring(),
+        comparison_pepper=str(os.getenv("DATA_PROVIDER_CREDENTIAL_COMPARISON_PEPPER") or ""),
+    )
+    results = service.revalidate_due(limit=int(parameters.get("limit") or 10))
+    reporter.progress(
+        stage="provider_capability_revalidation",
+        current=len(results),
+        total=len(results),
+        unit="instances",
+        message="Completed bounded Provider Capability revalidation",
+    )
+    return {
+        "instances_checked": len(results),
+        "capabilities_checked": sum(len(items) for items in results.values()),
+    }
 
 
 def _reflection(parameters: dict[str, Any], reporter) -> dict[str, Any]:
@@ -244,11 +316,32 @@ def register_phase_one_tasks(registry: TaskRegistry) -> None:
         },
         "additionalProperties": False,
     }
+    credential_reencrypt_schema = {
+        "type": "object",
+        "properties": {
+            "batch_size": {"type": "integer"},
+            "max_batches": {"type": "integer"},
+        },
+        "additionalProperties": False,
+    }
+    capability_revalidation_schema = {
+        "type": "object",
+        "properties": {"limit": {"type": "integer"}},
+        "additionalProperties": False,
+    }
+    provider_health_schema = {
+        "type": "object",
+        "properties": {"limit": {"type": "integer"}},
+        "additionalProperties": False,
+    }
     definitions = (
         TaskDefinition("worker_heartbeat", "1", _heartbeat, display_name="Worker heartbeat", priority=3),
         TaskDefinition("runtime_metadata_cleanup", "1", _cleanup_runtime_metadata, display_name="Runtime metadata cleanup", priority=3),
         TaskDefinition("external_data_request_log_cleanup", "1", _cleanup_external_data_logs, display_name="External request log cleanup", priority=3),
         TaskDefinition("task_event_cleanup", "1", _cleanup_task_events, parameter_schema=event_cleanup_schema, default_parameters={"retention_days": 90, "batch_size": 10000}, display_name="Task event cleanup", priority=3),
+        TaskDefinition("provider_credential_reencrypt", "1", _reencrypt_provider_credentials, parameter_schema=credential_reencrypt_schema, default_parameters={"batch_size": 25, "max_batches": 10}, display_name="Provider credential master-key reencryption", priority=3, max_concurrency=1, capabilities={"max_retries": 1}, exclusivity_key_builder=lambda p, o: "provider_credential_reencrypt"),
+        TaskDefinition("provider_capability_revalidation", "1", _revalidate_provider_capabilities, parameter_schema=capability_revalidation_schema, default_parameters={"limit": 10}, display_name="Provider Capability revalidation", priority=3, max_concurrency=1, capabilities={"max_retries": 1}, exclusivity_key_builder=lambda p, o: "provider_capability_revalidation"),
+        TaskDefinition("provider_health_maintenance", "1", _provider_health_maintenance, parameter_schema=provider_health_schema, default_parameters={"limit": 5}, display_name="Provider health and recovery probes", priority=3, max_concurrency=1, capabilities={"max_retries": 1}, exclusivity_key_builder=lambda p, o: "provider_health_maintenance"),
         TaskDefinition("reflection_cycle", "1", _reflection, display_name="Reflection cycle", priority=3),
         TaskDefinition("market_catalog_sync", "1", _market_catalog_sync, display_name="Market catalog sync", priority=3),
         TaskDefinition("cn_market_history_sync", "1", _cn_market_history_sync, parameter_schema=_RUN_ID_SCHEMA, display_name="CN market history sync", priority=3, capabilities={"cancel_grace_seconds": 60}, exclusivity_key_builder=lambda p, o: "cn_market_history", cancellation_handler=_cancel_cn_market_history, manual_retry_handler=_retry_cn_market_history),

@@ -72,22 +72,17 @@ class _RecordingService:
         return True
 
 
-def test_tencent_kline_provider_attempt_records_success_and_empty_response(monkeypatch):
+def test_tencent_transport_does_not_write_duplicate_legacy_attempts(monkeypatch):
     service = _RecordingService()
     monkeypatch.setattr(request_log_module, "ExternalDataRequestLogService", lambda: service)
     monkeypatch.setattr(tencent, "_fetch_kline_raw", lambda *args, **kwargs: [["2026-07-27", "1", "2", "1", "2", "10"]])
 
     assert tencent.fetch_kline("SZ000012", "day", count=260)
-    entry = service.entries[-1].normalized()
-    assert entry["provider"] == "tencent"
-    assert entry["data_domain"] == "kline"
-    assert entry["call_source"] == "market_kline"
-    assert entry["fallback_index"] == 1
-    assert entry["result"] == "success"
+    assert service.entries == []
 
     monkeypatch.setattr(tencent, "_fetch_kline_raw", lambda *args, **kwargs: [])
     assert tencent.fetch_kline("SZ000012", "day") == []
-    assert service.entries[-1].normalized()["result"] == "invalid_response"
+    assert service.entries == []
 
 
 def test_provider_attempt_records_timeout_without_suppressing_original_error():

@@ -93,6 +93,13 @@ class ExternalDataRequestLog:
     http_status: int | None = None
     error_summary: str = ""
     request_id: str = ""
+    routed_request_id: str = ""
+    provider_instance_id: int | None = None
+    policy_revision_id: int | None = None
+    attempt_order: int | None = None
+    skip_reason: str = ""
+    retry_summary: dict[str, Any] | None = None
+    quality_outcome: dict[str, Any] | None = None
 
     def normalized(self) -> dict[str, Any]:
         result = self.result.value if isinstance(self.result, ExternalDataRequestResult) else str(self.result)
@@ -111,6 +118,13 @@ class ExternalDataRequestLog:
             "http_status": int(self.http_status) if self.http_status is not None else None,
             "error_summary": sanitize_summary(self.error_summary, max_length=_MAX_ERROR),
             "request_id": sanitize_summary(self.request_id or request_id_context.get(), max_length=128),
+            "routed_request_id": sanitize_summary(self.routed_request_id, max_length=64),
+            "provider_instance_id": int(self.provider_instance_id) if self.provider_instance_id is not None else None,
+            "policy_revision_id": int(self.policy_revision_id) if self.policy_revision_id is not None else None,
+            "attempt_order": max(1, int(self.attempt_order)) if self.attempt_order is not None else None,
+            "skip_reason": sanitize_summary(self.skip_reason, max_length=120),
+            "retry_summary": dict(self.retry_summary or {}),
+            "quality_outcome": dict(self.quality_outcome or {}),
         }
 
 
@@ -135,12 +149,16 @@ class ExternalDataRequestLogService:
                         """INSERT INTO qd_external_data_request_logs
                            (provider, data_domain, operation, call_source, subject_summary,
                             fallback_index, retry_count, duration_ms, result, http_status,
-                            error_summary, request_id)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            error_summary, request_id,routed_request_id,provider_instance_id,
+                            policy_revision_id,attempt_order,skip_reason,retry_summary,quality_outcome)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)""",
                         (payload["provider"], payload["data_domain"], payload["operation"], payload["call_source"],
                          payload["subject_summary"], payload["fallback_index"], payload["retry_count"],
                          payload["duration_ms"], payload["result"], payload["http_status"],
-                         payload["error_summary"], payload["request_id"]),
+                         payload["error_summary"], payload["request_id"], payload["routed_request_id"],
+                         payload["provider_instance_id"], payload["policy_revision_id"], payload["attempt_order"],
+                         payload["skip_reason"], json.dumps(payload["retry_summary"], sort_keys=True),
+                         json.dumps(payload["quality_outcome"], sort_keys=True)),
                     )
                     db.commit()
                 finally:
@@ -197,6 +215,7 @@ class ExternalDataRequestLogService:
         data_domain: str = "",
         result: str = "",
         request_id: str = "",
+        routed_request_id: str = "",
         started_at: datetime | None = None,
         ended_at: datetime | None = None,
     ) -> dict[str, Any]:
@@ -206,6 +225,7 @@ class ExternalDataRequestLogService:
         for column, value, max_length in (
             ("provider", provider, 64), ("data_domain", data_domain, 48),
             ("result", result, 32), ("request_id", request_id, 128),
+            ("routed_request_id", routed_request_id, 64),
         ):
             value = sanitize_summary(value, max_length=max_length)
             if value:
@@ -228,7 +248,8 @@ class ExternalDataRequestLogService:
                 cur.execute(
                     f"""SELECT id, occurred_at, provider, data_domain, operation, call_source,
                                subject_summary, fallback_index, retry_count, duration_ms, result,
-                               http_status, error_summary, request_id
+                               http_status, error_summary, request_id,routed_request_id,provider_instance_id,
+                               policy_revision_id,attempt_order,skip_reason,quality_outcome
                         FROM qd_external_data_request_logs WHERE {where}
                         ORDER BY occurred_at DESC, id DESC LIMIT %s OFFSET %s""",
                     [*params, page_size, (page - 1) * page_size],
@@ -360,6 +381,13 @@ class ProviderAttempt:
         fallback_index: int = 0,
         retry_count: int = 0,
         service: ExternalDataRequestLogService | None = None,
+        routed_request_id: str = "",
+        provider_instance_id: int | None = None,
+        policy_revision_id: int | None = None,
+        attempt_order: int | None = None,
+        skip_reason: str = "",
+        retry_summary: dict[str, Any] | None = None,
+        quality_outcome: dict[str, Any] | None = None,
     ) -> None:
         self.provider = provider
         self.data_domain = data_domain
@@ -369,6 +397,13 @@ class ProviderAttempt:
         self.fallback_index = fallback_index
         self.retry_count = retry_count
         self.service = service or ExternalDataRequestLogService()
+        self.routed_request_id = routed_request_id
+        self.provider_instance_id = provider_instance_id
+        self.policy_revision_id = policy_revision_id
+        self.attempt_order = attempt_order
+        self.skip_reason = skip_reason
+        self.retry_summary = dict(retry_summary or {})
+        self.quality_outcome = dict(quality_outcome or {})
         self.http_status: int | None = None
         self.result: ExternalDataRequestResult = ExternalDataRequestResult.SUCCESS
         self.error_summary = ""
@@ -413,6 +448,13 @@ class ProviderAttempt:
             duration_ms=duration_ms,
             http_status=self.http_status,
             error_summary=self.error_summary,
+            routed_request_id=self.routed_request_id,
+            provider_instance_id=self.provider_instance_id,
+            policy_revision_id=self.policy_revision_id,
+            attempt_order=self.attempt_order,
+            skip_reason=self.skip_reason,
+            retry_summary=self.retry_summary,
+            quality_outcome=self.quality_outcome,
         ))
         return False
 

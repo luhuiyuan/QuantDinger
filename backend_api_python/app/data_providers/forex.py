@@ -1,4 +1,4 @@
-"""Forex pair data fetchers with multi-source fallback."""
+"""Single-provider forex transports and routed facade."""
 from __future__ import annotations
 
 import requests
@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 from app.utils.logger import get_logger
-from app.services.external_data_request_logs import ExternalDataRequestResult, ProviderAttempt
 
 logger = get_logger(__name__)
 
@@ -27,11 +26,10 @@ FOREX_PAIRS = [
 ]
 
 
-def _fetch_td(pairs: list) -> List[Dict[str, Any]]:
+def _fetch_td(pairs: list, api_key: str = "") -> List[Dict[str, Any]]:
     """Fetch forex quotes from Twelve Data."""
     try:
-        from app.config import APIKeys
-        api_key = (APIKeys.TWELVE_DATA_API_KEY or "").strip()
+        api_key = str(api_key or "").strip()
         if not api_key:
             return []
         result = []
@@ -68,7 +66,7 @@ def _fetch_td(pairs: list) -> List[Dict[str, Any]]:
 
 
 def _fetch_yf(pairs: list) -> List[Dict[str, Any]]:
-    """Fetch forex quotes from yfinance (fallback)."""
+    """Fetch forex quotes from yfinance."""
     try:
         import yfinance as yf
         symbols = [p["yf"] for p in pairs]
@@ -107,11 +105,11 @@ def _fetch_yf(pairs: list) -> List[Dict[str, Any]]:
         return []
 
 
-def _fetch_tiingo(pairs: list) -> List[Dict[str, Any]]:
-    """Fetch forex quotes from Tiingo FX (Tier 3 fallback)."""
+def _fetch_tiingo(pairs: list, api_key: str = "") -> List[Dict[str, Any]]:
+    """Fetch forex quotes from Tiingo FX."""
     try:
-        from app.config import TiingoConfig, APIKeys
-        api_key = APIKeys.TIINGO_API_KEY
+        from app.config import TiingoConfig
+        api_key = str(api_key or "").strip()
         if not api_key:
             return []
         result = []
@@ -157,40 +155,11 @@ def _fetch_tiingo(pairs: list) -> List[Dict[str, Any]]:
 
 
 def fetch_forex_pairs() -> List[Dict[str, Any]]:
-    """Fetch major forex pairs.  Priority: Twelve Data → yfinance → Tiingo."""
-    pairs = FOREX_PAIRS
-    result: List[Dict[str, Any]] = []
-    for fallback_index, (provider, fetcher) in enumerate((
-        ("twelvedata", _fetch_td), ("yfinance", _fetch_yf), ("tiingo", _fetch_tiingo),
-    )):
-        try:
-            with ProviderAttempt(provider=provider, data_domain="quote", operation="forex_pairs", call_source="global_market", subject_summary={"pair_count": len(pairs)}, fallback_index=fallback_index) as attempt:
-                batch = fetcher(pairs)
-                if not batch:
-                    attempt.fail(ExternalDataRequestResult.INVALID_RESPONSE, "provider returned no usable forex quotes")
-        except Exception as e:
-            logger.debug("Forex overview fetcher %s failed: %s", fetcher.__name__, e)
-            batch = []
-        if batch:
-            existing = {r["symbol"] for r in result}
-            for r in batch:
-                if r["symbol"] not in existing:
-                    result.append(r)
-        if len(result) >= len(pairs) // 2:
-            break
+    """Fetch major forex pairs through the unified routing policy."""
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
 
-    if not result:
-        logger.warning("Forex fetch all tiers failed, returning placeholder data")
-        for pair in pairs:
-            result.append({
-                "symbol": pair["td"],
-                "name": pair["td"],
-                "name_cn": pair["name_cn"],
-                "name_en": pair["name_en"],
-                "price": 0,
-                "change": 0,
-                "base": pair["base"],
-                "quote": pair["quote"],
-                "category": "forex",
-            })
-    return result
+    return list(get_routed_external_data_gateway().execute(
+        "market.forex.overview",
+        {"operation": "overview", "pairs": FOREX_PAIRS},
+        constraints={"market": "FX"},
+    ).data or [])

@@ -8,92 +8,6 @@ class MetaAPIKeys(type):
     """Metaclass that supports dynamic class-level API key lookup."""
     
     @property
-    def FINNHUB_API_KEY(cls):
-        env_val = os.getenv('FINNHUB_API_KEY', '').strip()
-        if env_val:
-            return env_val
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('finnhub', {}).get('api_key')
-        return val if val else os.getenv('FINNHUB_API_KEY', '')
-
-    @property
-    def COINGLASS_API_KEY(cls):
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('coinglass', {}).get('api_key')
-        return val if val else os.getenv('COINGLASS_API_KEY', '')
-
-    @property
-    def CRYPTOQUANT_API_KEY(cls):
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('cryptoquant', {}).get('api_key')
-        return val if val else os.getenv('CRYPTOQUANT_API_KEY', '')
-    
-    @property
-    def TIINGO_API_KEY(cls):
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('tiingo', {}).get('api_key')
-        return val if val else os.getenv('TIINGO_API_KEY', '')
-
-    @property
-    def TWELVE_DATA_API_KEY(cls):
-        env_val = os.getenv('TWELVE_DATA_API_KEY', '').strip()
-        if env_val:
-            return env_val
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('twelve_data', {}).get('api_key')
-        return val if val else ''
-
-    @property
-    def ADANOS_API_KEY(cls):
-        """Adanos Market Sentiment API key (optional)."""
-        env_val = os.getenv('ADANOS_API_KEY', '').strip()
-        if env_val:
-            return env_val
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('adanos', {}).get('api_key')
-        return val if val else ''
-
-    @property
-    def FRED_API_KEY(cls):
-        """FRED API key for US macro time series."""
-        env_val = os.getenv('FRED_API_KEY', '').strip()
-        if env_val:
-            return env_val
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('fred', {}).get('api_key')
-        return val if val else ''
-
-    @property
-    def BLS_API_KEY(cls):
-        """Optional BLS registration key for official US labor/CPI data."""
-        env_val = os.getenv('BLS_API_KEY', '').strip()
-        if env_val:
-            return env_val
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('bls', {}).get('api_key')
-        return val if val else ''
-
-    @property
-    def BEA_API_KEY(cls):
-        """BEA API key for official US national accounts data."""
-        env_val = os.getenv('BEA_API_KEY', '').strip()
-        if env_val:
-            return env_val
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('bea', {}).get('api_key')
-        return val if val else ''
-
-    @property
-    def ALPHA_VANTAGE_API_KEY(cls):
-        """Alpha Vantage key for NEWS_SENTIMENT company news data."""
-        env_val = os.getenv('ALPHA_VANTAGE_API_KEY', '').strip()
-        if env_val:
-            return env_val
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('alpha_vantage', {}).get('api_key')
-        return val if val else ''
-    
-    @property
     def OPENROUTER_API_KEY(cls):
         # Always check env var first to avoid stale cache issues
         env_val = os.getenv('OPENROUTER_API_KEY', '').strip()
@@ -203,30 +117,6 @@ class MetaAPIKeys(type):
         val = load_addon_config().get('litellm', {}).get('api_key')
         return val if val else ''
     
-    @property
-    def TAVILY_API_KEYS(cls):
-        """Tavily Search API keys (comma-separated for rotation)"""
-        env_val = os.getenv('TAVILY_API_KEYS', '').strip()
-        if env_val:
-            return [k.strip() for k in env_val.split(',') if k.strip()]
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('tavily', {}).get('api_keys', '')
-        if val:
-            return [k.strip() for k in val.split(',') if k.strip()]
-        return []
-    
-    @property
-    def SERPAPI_KEYS(cls):
-        """SerpAPI keys (comma-separated for rotation)"""
-        env_val = os.getenv('SERPAPI_KEYS', '').strip()
-        if env_val:
-            return [k.strip() for k in env_val.split(',') if k.strip()]
-        from app.utils.config_loader import load_addon_config
-        val = load_addon_config().get('serpapi', {}).get('api_keys', '')
-        if val:
-            return [k.strip() for k in val.split(',') if k.strip()]
-        return []
-
 
 class APIKeys(metaclass=MetaAPIKeys):
     """API key configuration."""

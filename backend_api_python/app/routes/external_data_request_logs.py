@@ -53,6 +53,7 @@ def list_logs():
             page=request.args.get("page", 1), page_size=request.args.get("page_size", 50),
             provider=str(request.args.get("provider") or ""), data_domain=str(request.args.get("data_domain") or ""),
             result=str(request.args.get("result") or ""), request_id=str(request.args.get("request_id") or ""),
+            routed_request_id=str(request.args.get("routed_request_id") or ""),
             started_at=_parse_datetime("started_at"), ended_at=_parse_datetime("ended_at"),
         )
         return jsonify({"code": 1, "msg": "success", "data": data})

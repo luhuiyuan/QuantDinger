@@ -83,6 +83,8 @@ def search_market_symbols(
             return []
         market_type = normalize_market_type(market_type, market=market)
         out = _search_cached_crypto_symbols(keyword, limit, exchange_id, market_type)
+        if not out:
+            out = _routed_external_symbols(market, keyword, limit, exchange_id=exchange_id, market_type=market_type)
         return dedupe_symbol_results(out, limit)
 
     out = dedupe_symbol_results(
@@ -126,6 +128,8 @@ def find_market_symbol(
             return None
         market_type = normalize_market_type(market_type, market=market)
         rows = _search_cached_crypto_symbols(symbol, 20, exchange_id, market_type)
+        if not rows:
+            rows = _routed_external_symbols(market, symbol, 20, exchange_id=exchange_id, market_type=market_type)
     elif market in {"USStock", "CNStock", "HKStock"}:
         local = dedupe_symbol_results(
             seed_search_symbols(market=market, keyword=lookup_symbol, limit=10),
@@ -470,7 +474,7 @@ def _search_us_yahoo(keyword: str, limit: int) -> list:
         return []
 
 
-def _search_external_symbols(market: str, keyword: str, limit: int, existing: set) -> list:
+def _transport_search_external_symbols(market: str, keyword: str, limit: int, existing: set) -> list:
     cache_key = f"symbol_search:{market}:{keyword.strip().upper()}:{limit}"
     cached = _market_cache.get(cache_key)
     if isinstance(cached, list):
@@ -489,3 +493,40 @@ def _search_external_symbols(market: str, keyword: str, limit: int, existing: se
     if rows:
         _market_cache.set(cache_key, rows, SYMBOL_SEARCH_CACHE_TTL_SEC)
     return [r for r in rows if r.get("symbol") not in existing][:limit]
+
+
+def _search_external_symbols(market: str, keyword: str, limit: int, existing: set) -> list:
+    return [
+        row for row in _routed_external_symbols(market, keyword, limit)
+        if row.get("symbol") not in existing
+    ][:limit]
+
+
+def _routed_external_symbols(
+    market: str,
+    keyword: str,
+    limit: int,
+    *,
+    exchange_id: str = "",
+    market_type: str = "",
+) -> list:
+    if limit <= 0:
+        return []
+    from app.services.data_routing.gateway import get_routed_external_data_gateway
+
+    result = get_routed_external_data_gateway().execute(
+        "market.symbol_search",
+        {
+            "market": market,
+            "query": keyword,
+            "limit": limit,
+            "exchange_id": exchange_id,
+            "market_type": market_type,
+        },
+        constraints={
+            "market": market,
+            **({"exchange_id": exchange_id} if exchange_id else {}),
+            **({"market_type": market_type} if market_type else {}),
+        },
+    )
+    return dedupe_symbol_results(list(result.data or []), limit)

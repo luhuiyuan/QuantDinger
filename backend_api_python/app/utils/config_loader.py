@@ -147,31 +147,23 @@ def load_addon_config() -> Dict[str, Any]:
         ('DATA_SOURCE_RETRY_BACKOFF', 'data_source.retry_backoff', 'float'),
 
         # Finnhub
-        ('FINNHUB_API_KEY', 'finnhub.api_key', 'string'),
         ('FINNHUB_TIMEOUT', 'finnhub.timeout', 'int'),
         ('FINNHUB_RATE_LIMIT', 'finnhub.rate_limit', 'int'),
         ('FINNHUB_FREE_ONLY', 'finnhub.free_only', 'bool'),
 
         # Trading Economics calendar (guest/free works without a paid key)
-        ('TRADING_ECONOMICS_CLIENT', 'tradingeconomics.client', 'string'),
-        ('TRADING_ECONOMICS_KEY', 'tradingeconomics.key', 'string'),
         ('TRADING_ECONOMICS_BASE_URL', 'tradingeconomics.base_url', 'string'),
         ('TRADING_ECONOMICS_TIMEOUT', 'tradingeconomics.timeout', 'int'),
 
         # Macro research sources
-        ('FRED_API_KEY', 'fred.api_key', 'string'),
         ('FRED_BASE_URL', 'fred.base_url', 'string'),
         ('FRED_TIMEOUT', 'fred.timeout', 'int'),
-        ('BLS_API_KEY', 'bls.api_key', 'string'),
         ('BLS_BASE_URL', 'bls.base_url', 'string'),
         ('BLS_TIMEOUT', 'bls.timeout', 'int'),
-        ('BEA_API_KEY', 'bea.api_key', 'string'),
         ('BEA_BASE_URL', 'bea.base_url', 'string'),
         ('BEA_TIMEOUT', 'bea.timeout', 'int'),
 
         # Crypto analytics
-        ('COINGLASS_API_KEY', 'coinglass.api_key', 'string'),
-        ('CRYPTOQUANT_API_KEY', 'cryptoquant.api_key', 'string'),
 
         # CCXT
         ('CCXT_DEFAULT_EXCHANGE', 'ccxt.default_exchange', 'string'),
@@ -180,16 +172,11 @@ def load_addon_config() -> Dict[str, Any]:
         # Other sources
         ('YFINANCE_TIMEOUT', 'yfinance.timeout', 'int'),
         ('AKSHARE_TIMEOUT', 'akshare.timeout', 'int'),
-        ('TIINGO_API_KEY', 'tiingo.api_key', 'string'),
         ('TIINGO_TIMEOUT', 'tiingo.timeout', 'int'),
-        ('TWELVE_DATA_API_KEY', 'twelve_data.api_key', 'string'),
 
         # Search (Google CSE / Bing)
         ('SEARCH_PROVIDER', 'search.provider', 'string'),
         ('SEARCH_MAX_RESULTS', 'search.max_results', 'int'),
-        ('SEARCH_GOOGLE_API_KEY', 'search.google.api_key', 'string'),
-        ('SEARCH_GOOGLE_CX', 'search.google.cx', 'string'),
-        ('SEARCH_BING_API_KEY', 'search.bing.api_key', 'string'),
         ('SEARCH_SEARXNG_BASE_URL', 'search.searxng.base_url', 'string'),
         ('SEARCH_SEARXNG_ENGINES', 'search.searxng.engines', 'string'),
         ('SEARCH_SEARXNG_CATEGORIES', 'search.searxng.categories', 'string'),
@@ -197,16 +184,13 @@ def load_addon_config() -> Dict[str, Any]:
         ('SEARCH_SEARXNG_TIMEOUT', 'search.searxng.timeout', 'int'),
         
         # Tavily (AI-optimized search)
-        ('TAVILY_API_KEYS', 'tavily.api_keys', 'string'),
         
         # SerpAPI (Google/Bing scraper)
-        ('SERPAPI_KEYS', 'serpapi.api_keys', 'string'),
 
         # Free/global news and company news/sentiment
         ('GDELT_BASE_URL', 'gdelt.base_url', 'string'),
         ('GDELT_TIMEOUT', 'gdelt.timeout', 'int'),
         ('GDELT_MAX_RESULTS', 'gdelt.max_results', 'int'),
-        ('ALPHA_VANTAGE_API_KEY', 'alpha_vantage.api_key', 'string'),
         ('ALPHA_VANTAGE_BASE_URL', 'alpha_vantage.base_url', 'string'),
         ('ALPHA_VANTAGE_TIMEOUT', 'alpha_vantage.timeout', 'int'),
         ('ALPHA_VANTAGE_NEWS_LIMIT', 'alpha_vantage.news_limit', 'int'),
@@ -312,4 +296,3 @@ def clear_config_cache():
     _config_cache = None
     _env_loaded = False
     logger.debug("Addon config cache cleared")
-

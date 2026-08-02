@@ -1,13 +1,6 @@
-"""
-A-share / HK share fundamentals — multi-tier fallback.
+"""A/H-share provider-specific fundamental transports.
 
-Priority (when TWELVE_DATA_API_KEY configured):
-  Twelve Data /statistics + /profile  →  AkShare (Eastmoney, fragile overseas)
-
-Without API key:
-  AkShare only (may fail from overseas servers)
-
-Keys are aligned with MarketDataCollector expectations (pe_ratio, pb_ratio, etc.).
+Cross-provider ordering is owned by the unified routing policy.
 """
 
 from __future__ import annotations
@@ -21,7 +14,6 @@ from typing import Any, Dict, Generator, Optional
 import requests
 
 from app.data_sources.asia_stock_kline import (
-    _get_twelve_data_api_key,
     _td_symbol_and_exchange,
     ak_a_code_from_tencent,
     ak_hk_code_from_tencent,
@@ -72,9 +64,9 @@ def _float_clean(x: Any) -> Optional[float]:
 # Twelve Data fundamentals (globally stable, paid)
 # ---------------------------------------------------------------------------
 
-def _td_request(endpoint: str, symbol: str, exchange: str) -> Optional[Dict[str, Any]]:
+def _td_request(endpoint: str, symbol: str, exchange: str, *, api_key: str = "") -> Optional[Dict[str, Any]]:
     """Generic Twelve Data GET with retry."""
-    api_key = _get_twelve_data_api_key()
+    api_key = str(api_key or "").strip()
     if not api_key:
         return None
     url = f"https://api.twelvedata.com{endpoint}"
@@ -100,10 +92,10 @@ def _td_request(endpoint: str, symbol: str, exchange: str) -> Optional[Dict[str,
     return None
 
 
-def fetch_twelvedata_fundamental(tencent_code: str, is_hk: bool) -> Dict[str, Any]:
+def fetch_twelvedata_fundamental(tencent_code: str, is_hk: bool, *, api_key: str = "") -> Dict[str, Any]:
     """Fetch PE/PB/PS/PEG/ROE/margin/market_cap/52w from Twelve Data /statistics."""
     symbol, exchange = _td_symbol_and_exchange(tencent_code, is_hk)
-    data = _td_request("/statistics", symbol, exchange)
+    data = _td_request("/statistics", symbol, exchange, api_key=api_key)
     if not data or "statistics" not in data:
         return {}
 
@@ -168,7 +160,7 @@ def fetch_twelvedata_fundamental(tencent_code: str, is_hk: bool) -> Dict[str, An
     return result
 
 
-def fetch_twelvedata_statements(tencent_code: str, is_hk: bool) -> Dict[str, Any]:
+def fetch_twelvedata_statements(tencent_code: str, is_hk: bool, *, api_key: str = "") -> Dict[str, Any]:
     """
     Fetch structured financial statements from Twelve Data
     /income_statement, /balance_sheet, /cash_flow endpoints.
@@ -183,7 +175,7 @@ def fetch_twelvedata_statements(tencent_code: str, is_hk: bool) -> Dict[str, Any
 
     # --- income statement ---
     try:
-        is_data = _td_request("/income_statement", symbol, exchange)
+        is_data = _td_request("/income_statement", symbol, exchange, api_key=api_key)
         items = (is_data or {}).get("income_statement") or []
         if items:
             curr = items[0]
@@ -211,7 +203,7 @@ def fetch_twelvedata_statements(tencent_code: str, is_hk: bool) -> Dict[str, Any
 
     # --- balance sheet ---
     try:
-        bs_data = _td_request("/balance_sheet", symbol, exchange)
+        bs_data = _td_request("/balance_sheet", symbol, exchange, api_key=api_key)
         items = (bs_data or {}).get("balance_sheet") or []
         if items:
             curr = items[0]
@@ -241,7 +233,7 @@ def fetch_twelvedata_statements(tencent_code: str, is_hk: bool) -> Dict[str, Any
 
     # --- cash flow ---
     try:
-        cf_data = _td_request("/cash_flow", symbol, exchange)
+        cf_data = _td_request("/cash_flow", symbol, exchange, api_key=api_key)
         items = (cf_data or {}).get("cash_flow") or []
         if items:
             curr = items[0]
@@ -268,10 +260,10 @@ def fetch_twelvedata_statements(tencent_code: str, is_hk: bool) -> Dict[str, Any
     return result
 
 
-def fetch_twelvedata_profile(tencent_code: str, is_hk: bool) -> Dict[str, Any]:
+def fetch_twelvedata_profile(tencent_code: str, is_hk: bool, *, api_key: str = "") -> Dict[str, Any]:
     """Fetch company info from Twelve Data /profile."""
     symbol, exchange = _td_symbol_and_exchange(tencent_code, is_hk)
-    data = _td_request("/profile", symbol, exchange)
+    data = _td_request("/profile", symbol, exchange, api_key=api_key)
     if not data or not data.get("name"):
         return {}
 
@@ -297,14 +289,14 @@ def fetch_twelvedata_profile(tencent_code: str, is_hk: bool) -> Dict[str, Any]:
     return out
 
 
-def fetch_twelvedata_earnings(tencent_code: str, is_hk: bool) -> Dict[str, Any]:
+def fetch_twelvedata_earnings(tencent_code: str, is_hk: bool, *, api_key: str = "") -> Dict[str, Any]:
     """
     Fetch quarterly earnings history from Twelve Data /earnings endpoint.
     Returns an 'earnings' dict compatible with the fast_analysis prompt format:
       { "history": [...], "quarterly": {...} }
     """
     symbol, exchange = _td_symbol_and_exchange(tencent_code, is_hk)
-    data = _td_request("/earnings", symbol, exchange)
+    data = _td_request("/earnings", symbol, exchange, api_key=api_key)
     if not data:
         return {}
 
@@ -343,7 +335,7 @@ def fetch_twelvedata_earnings(tencent_code: str, is_hk: bool) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# AkShare fundamentals (Eastmoney — fragile overseas, used as fallback)
+# AkShare fundamentals (Eastmoney transport)
 # ---------------------------------------------------------------------------
 
 def _eastmoney_a_em_symbol(tencent_code: str) -> str:
@@ -517,7 +509,7 @@ def fetch_cn_financial_indicators(tencent_code: str) -> Dict[str, Any]:
 
     Uses:
       - stock_financial_abstract_ths (同花顺财务摘要) for growth/profitability
-      - stock_financial_analysis_indicator (东财财务分析) as fallback
+      - stock_financial_analysis_indicator (Eastmoney financial analysis)
     """
     sym6 = ak_a_code_from_tencent(tencent_code)
     if not sym6:
