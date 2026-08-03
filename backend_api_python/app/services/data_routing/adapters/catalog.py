@@ -20,6 +20,44 @@ _transport_lock = RLock()
 _transports: dict[str, Transport] = {}
 
 
+_DIAGNOSTIC_REQUESTS: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+    "analysis_search": ({"query": "global markets", "max_results": 1, "days": 1}, {}),
+    "asia_equity_kline": ({"symbol": "600000", "market": "CNStock", "limit": 5}, {"timeframe": "1D"}),
+    "cn_corporate_actions": ({"instrument": "SH:600000", "operation": "corporate_actions"}, {}),
+    "cn_corporate_announcement": ({"instrument": "600000", "start_date": "2025-01-01", "end_date": "2025-12-31"}, {}),
+    "cn_equity_history": ({"instrument": "SH:600000", "operation": "metadata"}, {}),
+    "cn_fundamental_history": ({"symbol": "600000"}, {}),
+    "cn_hk_fundamentals": ({"symbol": "600000", "market": "CNStock"}, {}),
+    "cn_hk_quote": ({"symbol": "600000", "market": "CNStock"}, {}),
+    "cn_market_snapshot": ({"limit": 5}, {}),
+    "cn_official_adjustment_reference": ({"instrument": "SH:600000", "event_dates": []}, {}),
+    "commodity_quote": ({"symbol": "GC", "operation": "ticker"}, {}),
+    "crypto_derivatives_market_data": ({"symbol": "BTC/USDT", "operation": "ticker"}, {"exchange_id": "binance", "market_type": "swap"}),
+    "crypto_market_snapshot": ({"operation": "overview"}, {}),
+    "crypto_public_market_data": ({"symbol": "BTC/USDT", "operation": "ticker"}, {"exchange_id": "binance", "market_type": "spot"}),
+    "crypto_public_quote": ({"symbol": "BTC/USDT"}, {"market_type": "spot"}),
+    "economic_calendar": ({}, {}),
+    "equity_opportunity": ({"symbols": ["AAPL"]}, {}),
+    "forex_market_data": ({"symbol": "EURUSD", "operation": "ticker"}, {}),
+    "forex_quote": ({"symbol": "EURUSD", "operation": "ticker"}, {}),
+    "futures_market_data": ({"symbol": "GC", "operation": "ticker"}, {}),
+    "global_heatmap": ({}, {}),
+    "global_market_overview": ({"symbol": "BTC"}, {}),
+    "macro_series": ({"operation": "fred_series", "series_id": "GDP", "limit": 1}, {}),
+    "market_catalog": ({"query": "AAPL", "market": "USStock", "limit": 1}, {}),
+    "market_index_quote": ({"symbol": "^GSPC", "operation": "ticker"}, {}),
+    "market_sentiment": ({}, {}),
+    "moex_market_data": ({"symbol": "SBER", "operation": "ticker"}, {}),
+    "symbol_master": ({"query": "AAPL", "market": "USStock", "limit": 1}, {}),
+    "symbol_reference": ({"symbol": "AAPL"}, {}),
+    "us_equity_market_data": ({"symbol": "AAPL", "operation": "ticker"}, {}),
+    "us_equity_quote": ({"symbol": "AAPL", "operation": "ticker"}, {}),
+    "us_equity_sentiment": ({"tickers": ["AAPL"], "days": 1}, {}),
+    "us_fundamentals": ({"symbol": "AAPL"}, {}),
+    "us_macro_release": ({}, {}),
+}
+
+
 def bind_adapter_transport(adapter_key: str, transport: Transport) -> None:
     """Bind a trusted provider transport during application bootstrap or tests."""
 
@@ -40,7 +78,15 @@ class CatalogAdapterRuntime:
         return str(value).strip() if value else None
 
     def diagnose(self, capability_key, subject, config, credentials):
-        result = self.fetch(capability_key, subject, {}, config, credentials, datetime.now(timezone.utc))
+        sample_subject, sample_constraints = _DIAGNOSTIC_REQUESTS.get(capability_key, ({}, {}))
+        diagnostic_subject = {**sample_subject, **dict(subject or {})}
+        diagnostic_subject.pop("operation", None)
+        if sample_subject.get("operation"):
+            diagnostic_subject["operation"] = sample_subject["operation"]
+        result = self.fetch(
+            capability_key, diagnostic_subject, sample_constraints,
+            config, credentials, datetime.now(timezone.utc),
+        )
         return {"ok": result.payload is not None, "capability_key": capability_key}
 
     def normalize(self, capability_key, payload):

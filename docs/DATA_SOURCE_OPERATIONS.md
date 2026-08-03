@@ -25,6 +25,49 @@ Credentials never echo after submission. Rotation writes a pending version,
 verifies the same upstream account, atomically activates it, and destroys the
 old ciphertext. A different account requires a new Provider Instance.
 
+## New-environment default bootstrap
+
+After database migration and registry materialization, initialize safe default
+routes with the explicit idempotent command:
+
+```bash
+cd backend_api_python
+python -m app.commands.bootstrap_data_routing --dry-run
+python -m app.commands.bootstrap_data_routing --actor-user-id 1
+```
+
+For a Compose deployment where PostgreSQL is already running:
+
+```bash
+docker compose run --rm --no-deps backend \
+  python -m app.commands.bootstrap_data_routing --dry-run
+docker compose run --rm --no-deps backend \
+  python -m app.commands.bootstrap_data_routing --actor-user-id 1
+```
+
+The command creates only code-registered Provider Adapters whose credential
+schema has no required fields. It stores an encrypted credentialless marker so
+runtime snapshots use the same opaque `SecretHandle` path, runs bounded live
+Capability diagnostics, publishes policies only for verified eligible
+Instances, and explicitly disables Capabilities that have no verified default.
+It never imports API keys or reads legacy credential values.
+
+Repeated execution preserves configured Instances, effective policies,
+administrator drafts, and manually disabled policies. A Provider Instance that
+previously reached `validation_failed` is not probed again unless explicitly
+requested:
+
+```bash
+python -m app.commands.bootstrap_data_routing --retry-failed --actor-user-id 1
+```
+
+`--actor-user-id` is optional for installations that have not created their
+first administrator yet; audit rows then retain a null actor while preserving
+the bootstrap reason. `DATA_PROVIDER_CREDENTIAL_ACTIVE_KEY_ID`,
+`DATA_PROVIDER_CREDENTIAL_KEYS`, and
+`DATA_PROVIDER_CREDENTIAL_COMPARISON_PEPPER` must be configured for a writing
+run. `--dry-run` does not require those Provider credential settings.
+
 ## User provenance
 
 Ordinary users do not choose Providers. A routed business response may include

@@ -55,3 +55,18 @@
 #### Scenario: 旧客户端跨切换继续请求
 - **WHEN** 使用既有请求和响应字段的客户端在切换后调用同一路由
 - **THEN** 其原有功能继续工作且新增来源信息为可选内容
+
+### Requirement: 新环境默认路由幂等初始化
+系统 MUST 提供显式、幂等的默认数据路由初始化命令，在数据库迁移和注册表物化后创建代码注册的免密公共 Provider Instance，执行有界真实能力验证，仅为验证合格的 Instance 发布默认有序策略，并把无合格 Provider 的 Capability 显式停用。命令重复执行 MUST 保留管理员已发布、已起草或手工停用的策略，不得重复创建 Instance、覆盖凭据、伪造验证结果或写入真实秘密。
+
+#### Scenario: 全新数据库首次初始化
+- **WHEN** 注册表已物化但不存在 Provider Instance 或 Routing Policy
+- **THEN** 命令创建稳定 Key 的免密公共 Instance、记录真实验证证据、发布合格默认路由并显式停用其余 Capability
+
+#### Scenario: 重复执行初始化
+- **WHEN** 同一环境再次执行默认路由初始化命令
+- **THEN** 已配置 Instance、已发布策略和管理员草稿保持不变且不会产生重复记录
+
+#### Scenario: 管理员已修改策略
+- **WHEN** Capability 已存在管理员发布、草稿或非 bootstrap 原因的停用状态
+- **THEN** 初始化命令保留管理员状态且只在结果中报告跳过

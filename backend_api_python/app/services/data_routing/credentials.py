@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -202,10 +203,18 @@ class ProviderCredentialService:
         instance, adapter = self._instance_and_adapter(instance_id)
         secret = _validate_secret_schema(adapter.credential_schema, credentials)
         canonical = _canonical_secret(secret)
-        secret_tag = provider_credential_comparison_tag(canonical, pepper=self.comparison_pepper)
-        duplicate = self.repository.find_duplicate_secret_tag(secret_tag)
-        if duplicate is not None:
-            raise DuplicateProviderCredentialError("Provider credential bundle is already in use")
+        if secret:
+            secret_tag = provider_credential_comparison_tag(canonical, pepper=self.comparison_pepper)
+            duplicate = self.repository.find_duplicate_secret_tag(secret_tag)
+            if duplicate is not None:
+                raise DuplicateProviderCredentialError("Provider credential bundle is already in use")
+        else:
+            # Credentialless public Adapters still need an encrypted active
+            # credential row so snapshots have one uniform SecretHandle path.
+            # An empty object is not a reusable secret, so give each version a
+            # non-comparable unique marker instead of globally deduplicating
+            # every public Provider Instance against the same "{}" payload.
+            secret_tag = f"credentialless:{uuid.uuid4().hex}"
         encrypted = encrypt_provider_credential_blob(canonical, keyring=self.keyring)
         pending = self.repository.stage_pending_credential(
             instance_id=instance_id,

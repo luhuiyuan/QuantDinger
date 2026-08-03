@@ -56,7 +56,7 @@ class Runtime:
 def gate(value): return []
 
 
-def build_registry(runtime):
+def build_registry(runtime, *, credential_schema=None):
     registry = DataRoutingRegistry(trusted_module_prefixes=("tests.adapters",))
     for key in ("quote", "history"):
         registry.register_capability(CapabilityDefinition(
@@ -66,7 +66,7 @@ def build_registry(runtime):
     registry.register_adapter(AdapterDefinition(
         "example", "1", "Example", "tests.adapters.example",
         {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
-        {"type": "object", "properties": {"token": {"type": "string"}}, "required": ["token"], "additionalProperties": False},
+        credential_schema or {"type": "object", "properties": {"token": {"type": "string"}}, "required": ["token"], "additionalProperties": False},
         frozenset({"quote", "history"}), {"buckets": ["requests"]}, runtime,
     ))
     registry.freeze()
@@ -174,6 +174,28 @@ def test_exact_credential_reuse_is_rejected_even_for_same_instance(setup):
     service.submit_and_validate(1,{"token":"same"},actor_user_id=7,reason="initial")
     with pytest.raises(DuplicateProviderCredentialError):
         service.submit_and_validate(1,{"token":"same"},actor_user_id=7,reason="rotation")
+
+
+def test_credentialless_provider_does_not_treat_empty_bundle_as_reused_secret():
+    runtime = Runtime()
+    runtime.identity = None
+    repo = Repo()
+    empty_schema = {
+        "type": "object", "properties": {}, "required": [], "additionalProperties": False,
+    }
+    registry = build_registry(runtime, credential_schema=empty_schema)
+    keyring = ProviderCredentialKeyring("active", {"active": "encryption-secret"})
+    service = ProviderCredentialService(
+        registry, repo, keyring=keyring, comparison_pepper="comparison-pepper",
+    )
+    empty_tag = __import__(
+        "app.utils.credential_crypto", fromlist=["provider_credential_comparison_tag"]
+    ).provider_credential_comparison_tag("{}", pepper="comparison-pepper")
+    repo.tags[empty_tag] = 99
+
+    status = service.submit_and_validate(1, {}, actor_user_id=7, reason="public provider setup")
+
+    assert status.configured is True
 
 
 def test_failed_rotation_keeps_old_active_and_pending_for_correction(setup):

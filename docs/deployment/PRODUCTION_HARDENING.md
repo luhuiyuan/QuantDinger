@@ -24,6 +24,19 @@ then remove their values from Compose, service-manager, and host environment
 files. Trading, LLM, notification, payment, OAuth, and infrastructure secrets
 remain in their existing boundaries.
 
+Schema migration deliberately does not seed Provider eligibility or effective
+routing revisions because those facts require live validation in the target
+network. After migrations complete, run:
+
+```bash
+python -m app.commands.bootstrap_data_routing --dry-run
+python -m app.commands.bootstrap_data_routing
+```
+
+The command is idempotent and preserves administrator-managed policies. Use
+`--retry-failed` only during an explicit maintenance action because it performs
+new outbound diagnostics for credentialless Providers.
+
 ## Locked runtime
 
 The production override runs backend processes as UID/GID `10001`, drops Linux capabilities, makes the root filesystem read-only, constrains memory/CPU, and mounts the backend environment file read-only:

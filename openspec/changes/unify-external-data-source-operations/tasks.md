@@ -193,3 +193,10 @@
 - [x] 20.6 更新架构、模块边界、API conventions、External Data Request Logs、部署、数据源运维和用户来源说明文档
 - [x] 20.7 运行最终零绕过 inventory、全部启用 Capability preflight、非提交后台演练和不可绕过 Go/No-Go 报告生成
 - [x] 20.8 确认 Mobile/H5 未增加管理页面或本地构建，正式 easy_tdx/镜像发布来源仍留待发布阶段决定
+
+## 21. 新环境默认路由初始化
+
+- [x] 21.1 实现幂等默认路由 bootstrap 服务，创建免密公共 Provider、执行有界验证、发布合格策略并显式停用其余 Capability
+- [x] 21.2 新增 `app.commands.bootstrap_data_routing` CLI，支持安全重复执行、dry-run、失败 Provider 重试和结构化摘要
+- [x] 21.3 添加首次执行、重复执行、管理员状态保留、免密凭据与诊断样本回归测试
+- [x] 21.4 更新 Data Source Operations 与部署文档，记录新环境迁移后初始化顺序和凭据边界

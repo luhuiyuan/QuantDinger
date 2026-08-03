@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from app.services.data_routing.adapters.catalog import AdapterTransportUnavailable, CatalogAdapterRuntime
+from app.services.data_routing.adapters.catalog import (
+    AdapterTransportUnavailable,
+    CatalogAdapterRuntime,
+    bind_adapter_transport,
+)
 from app.services.data_routing.bootstrap import load_default_data_routing_registry
 
 
@@ -26,3 +30,22 @@ def test_unbound_catalog_transport_fails_closed_without_legacy_fallback():
     runtime = CatalogAdapterRuntime("not_bound")
     with pytest.raises(AdapterTransportUnavailable):
         runtime.fetch("us_equity_quote", {"symbol": "AAPL"}, {}, {}, {}, None)
+
+
+def test_catalog_diagnostic_uses_bounded_representative_request():
+    captured = {}
+
+    def transport(capability, subject, constraints, config, credentials, deadline):
+        captured.update(capability=capability, subject=subject, constraints=constraints)
+        return {"last": 1}
+
+    bind_adapter_transport("diagnostic_fixture", transport)
+
+    result = CatalogAdapterRuntime("diagnostic_fixture").diagnose(
+        "asia_equity_kline", {"operation": "credential_validation"}, {}, {},
+    )
+
+    assert result["ok"] is True
+    assert captured["subject"]["symbol"] == "600000"
+    assert captured["subject"]["limit"] == 5
+    assert captured["constraints"]["timeframe"] == "1D"
