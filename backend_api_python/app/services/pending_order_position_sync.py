@@ -21,7 +21,6 @@ from app.services.live_trading.bitget import BitgetMixClient
 from app.services.live_trading.bybit import BybitClient
 from app.services.live_trading.factory import create_client
 from app.services.live_trading.gate import GateUsdtFuturesClient
-from app.services.live_trading.kraken_futures import KrakenFuturesClient
 from app.services.live_trading.leg_context import credential_id_from_exchange_config
 from app.services.live_trading.okx import OkxClient
 from app.services.live_trading.records import normalize_strategy_symbol, strategy_allowed_symbols
@@ -433,7 +432,10 @@ class PendingOrderPositionSyncMixin:
                                 if not contract or abs(sz_ct) <= 0:
                                     continue
                                 hb_sym = contract.replace("_", "/")
-                                side = "long" if sz_ct > 0 else "short"
+                                from app.services.live_trading.position_row_parse import (
+                                    infer_position_side_from_row,
+                                )
+                                side = infer_position_side_from_row(p)
                                 # Convert contracts -> base using quanto_multiplier.
                                 qty_base = abs(sz_ct)
                                 try:
@@ -448,29 +450,6 @@ class PendingOrderPositionSyncMixin:
                                     ep = float(p.get("entry_price") or p.get("open_price") or 0.0)
                                     if ep > 0:
                                         exch_entry_price.setdefault(hb_sym, {"long": 0.0, "short": 0.0})[side] = ep
-                                except Exception:
-                                    pass
-
-                    elif isinstance(client, KrakenFuturesClient) and market_type == "swap":
-                        resp = client.get_open_positions()
-                        positions = (resp.get("openPositions") if isinstance(resp, dict) else None) or (resp.get("open_positions") if isinstance(resp, dict) else None) or []
-                        if isinstance(positions, list):
-                            for p in positions:
-                                if not isinstance(p, dict):
-                                    continue
-                                sym = str(p.get("symbol") or p.get("instrument") or "").strip()
-                                try:
-                                    sz = float(p.get("size") or p.get("positionSize") or 0.0)
-                                except Exception:
-                                    sz = 0.0
-                                if not sym or abs(sz) <= 0:
-                                    continue
-                                side = "long" if sz > 0 else "short"
-                                exch_size.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = abs(float(sz))
-                                try:
-                                    ep = float(p.get("price") or p.get("avgPrice") or 0.0)
-                                    if ep > 0:
-                                        exch_entry_price.setdefault(sym, {"long": 0.0, "short": 0.0})[side] = ep
                                 except Exception:
                                     pass
 

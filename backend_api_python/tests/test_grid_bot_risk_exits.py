@@ -14,11 +14,56 @@ correspond to anything meaningful for the user. Grid bots get
 """
 from __future__ import annotations
 
+import pytest
+
 from app.services.trading_executor import TradingExecutor
 
 
 def _make_executor() -> TradingExecutor:
     return TradingExecutor.__new__(TradingExecutor)
+
+
+def test_live_equity_uses_latest_prices_for_every_strategy_position(monkeypatch):
+    class Cursor:
+        def execute(self, *_args, **_kwargs):
+            return None
+
+        def fetchone(self):
+            return {"realized_pnl": 50.0}
+
+        def close(self):
+            return None
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    monkeypatch.setattr(
+        "app.services.trading_executor.get_db_connection",
+        lambda: Connection(),
+    )
+    ex = _make_executor()
+
+    equity = ex._calculate_current_equity(
+        1,
+        1000.0,
+        current_positions=[
+            {"symbol": "Crypto:BTC/USDT@swap", "side": "long", "size": 2, "entry_price": 100},
+            {"symbol": "Crypto:ETH/USDT@swap", "side": "short", "size": 1, "entry_price": 200},
+        ],
+        current_prices={
+            "Crypto:BTC/USDT@swap": 110,
+            "Crypto:ETH/USDT@swap": 180,
+        },
+    )
+
+    assert equity == 1090.0
 
 
 def test_generic_stop_loss_is_noop_for_grid_bot(monkeypatch):
@@ -124,6 +169,39 @@ def test_grid_equity_take_profit(monkeypatch):
     )
     assert exits and exits[0]['reason'] == 'grid_equity_take_profit'
     assert exits[0]['type'] == 'close_short'
+
+
+def test_grid_equity_trailing_take_profit_uses_persistable_peak_state(monkeypatch):
+    ex = _make_executor()
+    cfg = {
+        "bot_type": "grid",
+        "equity_take_profit_pct": 0,
+        "equity_stop_loss_pct": 0,
+        "equity_trailing_enabled": True,
+        "equity_trailing_activation_pct": 0.05,
+        "equity_trailing_callback_pct": 0.03,
+    }
+    monkeypatch.setattr(ex, "_get_current_positions", lambda *a, **k: [
+        {"side": "long", "entry_price": 90.0, "size": 1.0, "symbol": "BTC/USDT"},
+    ])
+    equity_values = iter([10600.0, 10250.0])
+    monkeypatch.setattr(ex, "_calculate_current_equity", lambda *a, **k: next(equity_values))
+    state = {}
+
+    assert ex._grid_bot_risk_exits(
+        strategy_id=1, symbol="BTC/USDT", current_price=95.0,
+        trading_config=cfg, timeframe_seconds=60, initial_capital=10000.0,
+        risk_state=state,
+    ) == []
+    assert state["peak_return"] == pytest.approx(0.06)
+    assert state["trailing_armed"] is True
+
+    exits = ex._grid_bot_risk_exits(
+        strategy_id=1, symbol="BTC/USDT", current_price=94.0,
+        trading_config=cfg, timeframe_seconds=60, initial_capital=10000.0,
+        risk_state=state,
+    )
+    assert exits and exits[0]["reason"] == "grid_equity_trailing_stop"
 
 
 def test_grid_no_exit_when_within_bounds_and_no_drawdown(monkeypatch):

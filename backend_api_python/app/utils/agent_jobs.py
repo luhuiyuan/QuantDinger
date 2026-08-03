@@ -310,51 +310,58 @@ def _gc_job_state(job_id: str) -> None:
         _progress_signals.pop(job_id, None)
 
 
-def _set_status(job_id: str, status: str, *, started_at: Optional[datetime] = None) -> None:
+def _set_status(job_id: str, status: str, *, started_at: Optional[datetime] = None) -> bool:
     with get_db_connection() as db:
         cur = db.cursor()
+        guard = " AND status <> 'cancelled'" if status == "running" else ""
         if started_at is not None:
             cur.execute(
-                "UPDATE qd_agent_jobs SET status = %s, started_at = %s WHERE job_id = %s",
+                f"UPDATE qd_agent_jobs SET status = %s, started_at = %s WHERE job_id = %s{guard}",
                 (status, started_at, job_id),
             )
         else:
             cur.execute(
-                "UPDATE qd_agent_jobs SET status = %s WHERE job_id = %s",
+                f"UPDATE qd_agent_jobs SET status = %s WHERE job_id = %s{guard}",
                 (status, job_id),
             )
         db.commit()
+        changed = bool(cur.rowcount)
         cur.close()
+    return changed
 
 
-def _set_result(job_id: str, result: Any) -> None:
+def _set_result(job_id: str, result: Any) -> bool:
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
             """
             UPDATE qd_agent_jobs
             SET status = 'succeeded', result = %s::jsonb, finished_at = NOW()
-            WHERE job_id = %s
+            WHERE job_id = %s AND status <> 'cancelled'
             """,
             (json.dumps(result, default=str), job_id),
         )
+        changed = bool(cur.rowcount)
         db.commit()
         cur.close()
+    return changed
 
 
-def _set_failure(job_id: str, error: str) -> None:
+def _set_failure(job_id: str, error: str) -> bool:
     with get_db_connection() as db:
         cur = db.cursor()
         cur.execute(
             """
             UPDATE qd_agent_jobs
             SET status = 'failed', error = %s, finished_at = NOW()
-            WHERE job_id = %s
+            WHERE job_id = %s AND status <> 'cancelled'
             """,
             (error[:6000], job_id),
         )
+        changed = bool(cur.rowcount)
         db.commit()
         cur.close()
+    return changed
 
 
 def get_job(job_id: str, *, user_id: int) -> Optional[dict]:
@@ -421,3 +428,58 @@ def list_jobs(*, user_id: int, kind: Optional[str] = None, limit: int = 50) -> l
         rows = cur.fetchall()
         cur.close()
     return rows or []
+
+
+def count_active_jobs(*, user_id: int, agent_token_id: Optional[int] = None) -> int:
+    with get_db_connection() as db:
+        cur = db.cursor()
+        if agent_token_id is None:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM qd_agent_jobs
+                WHERE user_id = %s AND status IN ('queued', 'running')
+                """,
+                (int(user_id),),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM qd_agent_jobs
+                WHERE user_id = %s AND agent_token_id = %s
+                  AND status IN ('queued', 'running')
+                """,
+                (int(user_id), int(agent_token_id)),
+            )
+        row = cur.fetchone() or {}
+        cur.close()
+    return int(row.get("count") or 0)
+
+
+def cancel_job(job_id: str, *, user_id: int) -> Optional[dict]:
+    """Request cancellation of a tenant-owned queued/running job.
+
+    Internal task runners may not be force-killed safely. The durable row is
+    marked immediately, and result/failure writers refuse to overwrite it.
+    """
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            UPDATE qd_agent_jobs
+            SET status = 'cancelled', finished_at = NOW(),
+                progress = '{"phase":"cancelled"}'::jsonb
+            WHERE job_id = %s AND user_id = %s
+              AND status IN ('queued', 'running')
+            RETURNING job_id, kind, status, created_at, started_at, finished_at
+            """,
+            (job_id, int(user_id)),
+        )
+        row = cur.fetchone()
+        db.commit()
+        cur.close()
+    if row:
+        _publish_progress(job_id, {"phase": "cancelled", "ts": time.time()}, terminal=True)
+        return row
+    return get_job(job_id, user_id=user_id)

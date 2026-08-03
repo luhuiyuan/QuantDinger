@@ -59,7 +59,7 @@ Keep PostgreSQL and Redis ports on their default loopback bindings. Public acces
 
 ## Unified routing cutover
 
-Follow `docs/DATA_ROUTING_CUTOVER_RUNBOOK.md`. Activation is a coordinated,
+Follow `docs/deployment/DATA_ROUTING_CUTOVER_RUNBOOK.md`. Activation is a coordinated,
 forward-only cutover: all mandatory server-owned gates must pass, the whole
 application enters maintenance, workers drain at safe boundaries, and the
 unique target-version cutover record is activated once. There is no per-domain

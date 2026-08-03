@@ -44,6 +44,9 @@ def register(app) -> None:
     from . import quick_trade  # noqa: F401
     from . import jobs as jobs_module  # noqa: F401
     from . import indicators  # noqa: F401
+    from . import research  # noqa: F401
+    from . import trading_data  # noqa: F401
+    from . import notifications  # noqa: F401
     from . import admin  # noqa: F401
     from . import me_tokens  # noqa: F401
 

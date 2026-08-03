@@ -1,11 +1,11 @@
 # QuantDinger MCP Server
 
-The MCP server is a thin, tenant-scoped wrapper over `/api/agent/v1`. It exposes market data, chart-indicator authoring, Strategy API V2 deployment and backtesting, bounded job polling, runtime controls, and explicitly confirmed quick orders.
+The MCP server is a thin, tenant-scoped wrapper over `/api/agent/v1`. It exposes research universes and factors, market data, chart-indicator authoring, Strategy API V2 deployment and backtesting, broker/execution observations, notification automation, bounded jobs, and safety-gated trading.
 
 ## Install and run
 
 ```bash
-pip install "quantdinger-mcp==0.4.0"
+pip install "quantdinger-mcp==0.5.0"
 export QUANTDINGER_BASE_URL=http://localhost:8888
 export QUANTDINGER_AGENT_TOKEN=qd_agent_xxx
 quantdinger-mcp
@@ -26,7 +26,7 @@ export QUANTDINGER_MCP_AUTH_TOKEN=replace-with-a-random-32-plus-character-secret
 quantdinger-mcp
 ```
 
-Clients must send `Authorization: Bearer <QUANTDINGER_MCP_AUTH_TOKEN>` to `/mcp` or `/sse`. For a private ingress that already authenticates every request, `QUANTDINGER_MCP_ALLOW_INSECURE_HTTP=true` is an explicit escape hatch; never use it on a directly reachable public listener.
+Clients must send `Authorization: Bearer <QUANTDINGER_MCP_AUTH_TOKEN>` to `/mcp` or `/sse`. Authenticated non-loopback listeners require an HTTPS `QUANTDINGER_MCP_PUBLIC_URL`. `QUANTDINGER_MCP_ALLOW_HTTP=true` is only for a trusted private proxy that terminates TLS. For an unauthenticated private ingress that already authenticates every request, `QUANTDINGER_MCP_ALLOW_INSECURE_HTTP=true` remains a separate escape hatch; never use either setting on a directly reachable public listener.
 
 Docker builds use the official PyPI index by default. In regions where it is slow, override it without editing the image definition: `docker build --build-arg PIP_INDEX_URL=https://your-mirror.example/simple .`.
 
@@ -38,19 +38,23 @@ Never place an agent token in prompts, logs, screenshots, source control, or MCP
 |---|---:|---|
 | `whoami`, `check_health` | R/public | Identity, allowlists, and liveness |
 | `list_markets`, `search_symbols`, `get_klines`, `get_price` | R | Market discovery and data |
-| `get_indicator_authoring_contract`, `validate_indicator_code`, `save_indicator`, `list_indicators`, `get_indicator` | R/W | Chart-only indicators |
+| Universe and factor tools | R | Point-in-time research inputs |
+| `list_watchlist`, `add_watchlist`, `remove_watchlist` | R/W | Watchlist workspace |
+| Indicator authoring, validation, save, link, and read tools | R/W | Chart-only indicators |
 | `list_strategy_templates`, `compile_strategy_code` | R | Strategy API V2 templates and manifest compilation |
 | `list_strategy_sources`, `get_strategy_source`, `save_strategy_source` | R/W | Private Strategy API V2 source library |
 | `list_strategy_source_versions`, `restore_strategy_source_version` | R/W | Source history and explicitly confirmed restore |
 | `create_strategy`, `update_strategy`, `list_strategies`, `get_strategy` | R/W | Strategy API V2 deployments |
 | `submit_backtest` | B | Strategy API V2 backtest job |
-| `list_jobs`, `get_job`, `wait_for_job`, `stream_job_until_done` | R | Bounded async-job access |
+| `list_jobs`, `get_job`, `wait_for_job`, `stream_job_until_done`, `cancel_job` | R/B | Bounded jobs and confirmed cancellation |
 | `runtime_overview`, `stop_strategy` | R/T | Runtime inspection and confirmed stop |
-| `place_quick_order` | T | Explicitly confirmed quick order |
+| Broker account, strategy position/trade, and quick-trade observation tools | R | Secret-free execution observations |
+| Signal-alert tools | N | Notification task lifecycle and confirmed delivery evaluation |
+| `place_quick_order` | T | Confirmed order with token notional caps |
 | `list_portfolio_positions`, `list_paper_orders` | R | Portfolio and paper-order reads |
-| `cancel_open_paper_orders` | T | Explicitly confirmed paper-order kill switch |
+| `emergency_stop_trading`, `cancel_open_paper_orders` | T | Emergency cancellation and T-token revocation |
 
-`stop_strategy` requires `confirm_stop=true`. `place_quick_order` requires `confirm_order=true`; a live-capable token also requires `confirm_live_trading=true`. Optional `tp_price` and `sl_price` protection are forwarded to the shared Quick Trade execution path. Server-side trading flags and token allowlists still apply; a live-capable token receives an error instead of silently falling back to paper when live trading is disabled.
+Every mutating W/B/N/T tool requires a caller-generated `idempotency_key`; retries of the same request must reuse it. `stop_strategy` requires `confirm_stop=true`. `place_quick_order` requires `confirm_order=true`; a live-capable token also requires `confirm_live_trading=true`. Optional `tp_price` and `sl_price` protection are forwarded to the shared Quick Trade execution path. Server-side trading flags, allowlists, and per-order/per-day notional caps still apply.
 
 ## Strategy API V2 workflow
 
@@ -71,7 +75,8 @@ create_strategy(
   source_id=12,
   initial_capital=10000,
   execution_mode="signal",
-  params={"lookback": 40}
+  params={"lookback": 40},
+  idempotency_key="deploy-btc-momentum-v1"
 )
 ```
 
@@ -92,7 +97,15 @@ Market, symbol, and timeframe are not backtest parameters. They come from the co
 
 Indicators are chart-only. Validate and save them through the indicator tools, then convert the idea into Strategy API V2 code before using `submit_backtest` or `create_strategy`.
 
-Restoring an older source snapshot requires `confirm_restore=true`. Cancelling open paper orders requires `confirm_cancel=true`. Neither action starts a strategy or places a live order.
+Restoring a source snapshot requires `confirm_restore=true`. The emergency stop requires confirmation, attempts to cancel agent-originated live orders, cancels paper orders, revokes every active tenant T token, and reports exchange cancellations needing human follow-up.
+
+The optional Docker network service is enabled explicitly:
+
+```bash
+QUANTDINGER_AGENT_TOKEN=qd_agent_xxx \
+QUANTDINGER_MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+docker compose --profile mcp up -d --build mcp
+```
 
 ## Development
 

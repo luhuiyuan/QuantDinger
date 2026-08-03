@@ -8,6 +8,7 @@ from app.services.live_trading.account_positions import reconcile_strategy_vs_ac
 from app.services.pending_orders.live_order_support import FillAccumulator, signal_to_side_pos_reduce
 from app.services.live_trading import account_risk, records
 from app.services import strategy_live_guard
+from app.services.pending_order_worker import _strategy_allows_simultaneous_legs
 from app.services.trading_executor import TradingExecutor
 
 
@@ -219,6 +220,52 @@ def test_direction_capability_rejects_incompatible_signal():
     strategy_live_guard.validate_strategy_signal_direction(strategy, "close_short")
     with pytest.raises(RuntimeError, match="strategyV2.directionModeViolation:long_only:short"):
         strategy_live_guard.validate_strategy_signal_direction(strategy, "open_short")
+
+
+def test_pending_executor_allows_opposite_leg_only_for_dual_direction_strategy():
+    assert _strategy_allows_simultaneous_legs(_strategy(22, "neutral")) is True
+    assert _strategy_allows_simultaneous_legs(_strategy(23, "long")) is False
+    assert _strategy_allows_simultaneous_legs(_strategy(24, "short")) is False
+
+
+def test_live_position_snapshot_keeps_both_owned_legs(monkeypatch):
+    executor = TradingExecutor()
+    strategy = _strategy(25, "neutral")
+    candidates = [{
+        "key": "Crypto:BTC/USDT@okx:swap",
+        "symbol": "BTC/USDT",
+    }]
+    monkeypatch.setattr(
+        executor,
+        "_get_current_positions",
+        lambda *_args: [
+            {
+                "side": "long",
+                "size": 1.25,
+                "entry_price": 100,
+                "current_price": 101,
+            },
+            {
+                "side": "short",
+                "size": 2.5,
+                "entry_price": 102,
+                "current_price": 101,
+            },
+        ],
+    )
+
+    snapshot = executor._positions_by_symbol(
+        25,
+        candidates,
+        strategy=strategy,
+    )
+
+    assert set(snapshot) == {
+        "Crypto:BTC/USDT@okx:swap::long",
+        "Crypto:BTC/USDT@okx:swap::short",
+    }
+    assert snapshot["Crypto:BTC/USDT@okx:swap::long"]["amount"] == pytest.approx(1.25)
+    assert snapshot["Crypto:BTC/USDT@okx:swap::short"]["amount"] == pytest.approx(2.5)
 
 
 def test_live_direction_guard_logs_warning_without_failing_runtime(monkeypatch):
@@ -504,6 +551,28 @@ def test_stop_policy_distinguishes_pause_only_from_pause_and_close(monkeypatch):
         ("BTC/USDT", "close_long", 1.0),
         ("ETH/USDT", "close_short", 2.0),
     ]
+
+
+def test_stop_strategy_cancels_resting_grid_orders_even_without_live_thread(monkeypatch):
+    import app.services.grid.runner as grid_runner_module
+    import app.services.trading_executor as trading_executor_module
+
+    cancelled = []
+    monkeypatch.setattr(
+        grid_runner_module,
+        "shutdown_grid_for_strategy",
+        lambda strategy_id: cancelled.append(int(strategy_id)),
+    )
+    monkeypatch.setattr(
+        trading_executor_module,
+        "append_strategy_log",
+        lambda *_args, **_kwargs: None,
+    )
+
+    executor = TradingExecutor()
+
+    assert executor.stop_strategy(77, persist_status=False) is True
+    assert cancelled == [77]
 
 
 @dataclass

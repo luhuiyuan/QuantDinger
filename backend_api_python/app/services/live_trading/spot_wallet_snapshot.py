@@ -141,26 +141,6 @@ def _from_htx_spot_balance(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
-def _from_kraken_balance(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    result = raw.get("result") if isinstance(raw, dict) else None
-    if not isinstance(result, dict):
-        return rows
-    for key, val in result.items():
-        try:
-            qty = float(val or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if qty <= 1e-10:
-            continue
-        ccy = str(key or "").strip().upper().lstrip("X").lstrip("Z")
-        if not ccy:
-            continue
-        _append_row(rows, ccy, qty)
-    return rows
-
-
-
 def list_spot_wallet_positions(client: Any) -> List[Dict[str, Any]]:
     """
     Best-effort: all non-zero spot wallet coins for account snapshot / UI.
@@ -174,7 +154,6 @@ def list_spot_wallet_positions(client: Any) -> List[Dict[str, Any]]:
     from app.services.live_trading.bybit import BybitClient
     from app.services.live_trading.gate import GateSpotClient
     from app.services.live_trading.htx import HtxClient
-    from app.services.live_trading.kraken import KrakenClient
     from app.services.live_trading.okx import OkxClient
 
     if isinstance(client, OkxClient):
@@ -189,7 +168,4 @@ def list_spot_wallet_positions(client: Any) -> List[Dict[str, Any]]:
         return _from_gate_spot_accounts(client.get_accounts() or [])
     if isinstance(client, HtxClient) and str(getattr(client, "market_type", "") or "").strip().lower() == "spot":
         return _from_htx_spot_balance(client.get_balance() or {})
-    if isinstance(client, KrakenClient):
-        return _from_kraken_balance(client.get_balance() or {})
-
     return []

@@ -19,19 +19,19 @@ def fee_breakdown_snapshot(raw: Any) -> Dict[str, float]:
     if isinstance(breakdown, dict):
         for currency, amount in breakdown.items():
             try:
-                fee = abs(float(amount or 0.0))
+                fee = float(amount or 0.0)
             except Exception:
                 fee = 0.0
-            if fee > 0:
+            if abs(fee) > 1e-18:
                 key = str(currency or "").strip().upper() or "UNKNOWN"
                 fees[key] = fees.get(key, 0.0) + fee
     if fees:
         return fees
     try:
-        commission = abs(float(data.get("commission") or data.get("fee") or 0.0))
+        commission = float(data.get("commission") or data.get("fee") or 0.0)
     except Exception:
         commission = 0.0
-    if commission > 0:
+    if abs(commission) > 1e-18:
         currency = str(data.get("commission_ccy") or data.get("fee_ccy") or "").strip().upper() or "UNKNOWN"
         fees[currency] = commission
     return fees
@@ -69,7 +69,7 @@ def incremental_fees(cumulative: Dict[str, float], previous: Dict[str, float]) -
     return {
         currency: amount - previous.get(currency, 0.0)
         for currency, amount in cumulative.items()
-        if amount - previous.get(currency, 0.0) > 1e-12
+        if abs(amount - previous.get(currency, 0.0)) > 1e-12
     }
 
 

@@ -341,8 +341,13 @@ def clear_cache():
     else:
         try:
             import redis as _redis
+            from app.config.redis_urls import cache_key
+
             if isinstance(cm._client, _redis.Redis):
-                for key in cm._client.scan_iter("dp:*"):
+                # CacheManager namespaces every key.  Scanning bare ``dp:*``
+                # leaves Redis entries behind even though the in-memory
+                # implementation clears correctly.
+                for key in cm._client.scan_iter(cache_key("dp:*")):
                     cm._client.delete(key)
         except Exception:
             pass

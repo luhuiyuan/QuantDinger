@@ -84,3 +84,74 @@ def test_deployment_rejects_direction_override_that_conflicts_with_manifest(monk
 
     with pytest.raises(StrategyV2ContractError, match="strategyV2.directionModeMismatch"):
         StrategyV2DeploymentService().save(user_id=7, payload=_payload("long_only"))
+
+
+def test_deployment_recovers_visual_grid_runtime_from_source_metadata(monkeypatch):
+    class _GridSources:
+        @staticmethod
+        def get_source(_source_id, user_id=None):
+            return {
+                "id": 9,
+                "name": "Grid strategy",
+                "code": SOURCE,
+                "metadata": {
+                    "last_run_config": {
+                        "strategy_family": "robot",
+                        "executor_type": "grid",
+                        "bot_type": "grid",
+                        "executor_config": {"grid_count": 4},
+                        "bot_params": {
+                            "gridCount": 4,
+                            "gridCountUnit": "cells",
+                            "amountPerGrid": 2,
+                        },
+                    },
+                },
+            }
+
+    cursor = _Cursor()
+    monkeypatch.setattr(deployment, "get_script_source_service", lambda: _GridSources())
+    monkeypatch.setattr(deployment, "get_db_connection", lambda: _Db(cursor))
+
+    StrategyV2DeploymentService().save(user_id=7, payload=_payload("both"))
+    trading_config = json.loads(cursor.params[-1])
+
+    assert trading_config["bot_type"] == "grid"
+    assert trading_config["executor_type"] == "grid"
+    assert trading_config["bot_params"]["amountPerGridPct"] == pytest.approx(0.25)
+
+
+def test_deployment_manifest_overrides_stale_editor_symbol_and_market_type(monkeypatch):
+    stock_source = """
+def initialize(context):
+    context.set_universe(["USStock:SPY"])
+    context.subscribe(frequency="1d")
+
+def handle_data(context, data):
+    pass
+"""
+
+    class _StockSources:
+        @staticmethod
+        def get_source(_source_id, user_id=None):
+            return {
+                "id": 9,
+                "name": "Stock strategy",
+                "code": stock_source,
+                "metadata": {
+                    "last_run_config": {
+                        "symbol": "BTC/USDT",
+                        "market_type": "swap",
+                    },
+                },
+            }
+
+    cursor = _Cursor()
+    monkeypatch.setattr(deployment, "get_script_source_service", lambda: _StockSources())
+    monkeypatch.setattr(deployment, "get_db_connection", lambda: _Db(cursor))
+
+    StrategyV2DeploymentService().save(user_id=7, payload=_payload(""))
+    trading_config = json.loads(cursor.params[-1])
+
+    assert trading_config["symbol"] == "SPY"
+    assert trading_config["market_type"] == "spot"

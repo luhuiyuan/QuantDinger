@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 ALLOWED_DOCS_ROOT_FILES = {"README.md", "README_CN.md"}
+IGNORED_DOCS_ROOT_FILES = {".DS_Store"}
 IGNORED_DIRECTORIES = {
     ".git",
     ".mypy_cache",
@@ -118,7 +119,9 @@ def validate() -> list[str]:
     unexpected_root_files = sorted(
         path.name
         for path in DOCS.iterdir()
-        if path.is_file() and path.name not in ALLOWED_DOCS_ROOT_FILES
+        if path.is_file()
+        and path.name not in ALLOWED_DOCS_ROOT_FILES
+        and path.name not in IGNORED_DOCS_ROOT_FILES
     )
     if unexpected_root_files:
         errors.append(

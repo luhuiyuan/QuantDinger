@@ -67,6 +67,7 @@ def shutdown_grid_for_strategy(strategy_id: int) -> None:
             symbol,
             tc,
             ex_cfg,
+            user_id=user_id,
             create_client_fn=_create_client,
             enqueue_market=lambda *a, **k: False,
         )
@@ -106,6 +107,7 @@ class GridRestingRunner:
             symbol,
             self.trading_config,
             self.exchange_config,
+            user_id=self.user_id,
             create_client_fn=create_client_fn,
             enqueue_market=enqueue_market_fn,
         )
@@ -181,6 +183,10 @@ class GridRestingRunner:
                 "Grid exchange snapshot before initial position: "
                 f"long={snap.get('long_size', 0):.6f} short={snap.get('short_size', 0):.6f} "
                 f"mode={snap.get('position_mode_label') or 'unknown'}",
+            )
+            self._engine.set_initial_exchange_baseline(
+                long_size=float(snap.get("long_size") or 0.0),
+                short_size=float(snap.get("short_size") or 0.0),
             )
         except Exception as e:
             logger.debug("grid startup exchange snapshot sid=%s: %s", self.strategy_id, e)
@@ -264,13 +270,30 @@ class GridRestingRunner:
                 exits = self._risk_exit_fn(current_price) or []
                 if exits:
                     self._engine.cancel_entry_orders_on_exchange()
+                    self._engine._paused_entries = True
+                    exit_reasons = []
+                    all_queued = True
+                    queued_any = False
                     for ex in exits:
                         st = str(ex.get("type") or "").strip().lower()
                         if st:
-                            self._engine._enqueue_market(
+                            queued_any = True
+                            exit_reasons.append(str(ex.get("reason") or "grid_risk"))
+                            all_queued = bool(self._engine._enqueue_market(
                                 st, 0, current_price, str(ex.get("reason") or "grid_risk")
-                            )
-                    append_strategy_log(self.strategy_id, "warning", "Grid risk exit triggered")
+                            )) and all_queued
+                    if queued_any and all_queued:
+                        self._engine._stop_requested = True
+                        self._engine._stop_reason = (
+                            "grid risk exit: " + ", ".join(sorted(set(exit_reasons)))
+                        )
+                        append_strategy_log(self.strategy_id, "warning", "Grid risk exit triggered")
+                    else:
+                        append_strategy_log(
+                            self.strategy_id,
+                            "error",
+                            "Grid risk exit could not be queued; entries remain paused and the close will retry",
+                        )
                     return
             except Exception as e:
                 logger.debug("grid risk exit: %s", e)

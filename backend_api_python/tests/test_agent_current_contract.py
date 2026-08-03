@@ -64,8 +64,10 @@ def test_backtest_rejects_dynamic_universe_for_restricted_token(app):
 
 
 @pytest.fixture(autouse=True)
-def _reset_agent_auth():
+def _reset_agent_auth(monkeypatch):
     agent_auth._rate_state.clear()
+    monkeypatch.setattr(agent_auth, "_reserve_idempotency", lambda *_: ("reserved", None))
+    monkeypatch.setattr(agent_auth, "_complete_idempotency", lambda *_: None)
     yield
     agent_auth._rate_state.clear()
 
@@ -91,7 +93,10 @@ def test_live_capable_token_never_silently_falls_back_to_paper(client, monkeypat
 
     response = client.post(
         "/api/agent/v1/quick-trade/orders",
-        headers={"Authorization": "Bearer qd_agent_TESTTOKEN12345"},
+        headers={
+            "Authorization": "Bearer qd_agent_TESTTOKEN12345",
+            "Idempotency-Key": "live-disabled-check",
+        },
         json={"market": "Crypto", "symbol": "BTC/USDT", "side": "buy", "qty": 0.01},
     )
     assert response.status_code == 501

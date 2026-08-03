@@ -132,3 +132,68 @@ def test_recent_failed_order_degrades_until_attention_window_expires():
 
     snapshot["failed_orders"] = 0
     assert health._health_state(snapshot, strategy_status="running", now=1_010) == "healthy"
+
+
+def test_position_drift_degrades_running_strategy_health():
+    snapshot = {
+        **health._empty_snapshot(),
+        "run_id": 7,
+        "last_heartbeat_at": 1_000,
+        "position_drift_blocked": True,
+        "position_drift_count": 1,
+    }
+
+    assert health._health_state(snapshot, strategy_status="running", now=1_010) == "degraded"
+
+
+def test_position_ownership_loader_attaches_matching_okx_drift(monkeypatch):
+    snapshots = {
+        20: {
+            **health._empty_snapshot(),
+            "_ownership_context": {
+                "user_id": 7,
+                "exchange_id": "okx",
+                "credential_id": 12,
+                "symbol": "BTC/USDT",
+                "market_type": "swap",
+            },
+        },
+        21: {
+            **health._empty_snapshot(),
+            "_ownership_context": {
+                "user_id": 7,
+                "exchange_id": "bitget",
+                "credential_id": 13,
+                "symbol": "BTC/USDT",
+                "market_type": "swap",
+            },
+        },
+    }
+    monkeypatch.setattr(
+        health,
+        "_query",
+        lambda _sql, params: [
+            {
+                "user_id": 7,
+                "credential_id": 12,
+                "exchange_id": "okx",
+                "market_type": "swap",
+                "symbol_canonical": "BTC/USDT",
+                "side": "long",
+                "coexistence_mode": "strict",
+                "manual_reserved_qty": 0,
+                "observed_account_qty": 0.0145,
+                "allocated_qty": 0,
+                "status": "drift_blocked",
+                "drift_reason": "unallocated_account_position",
+            }
+        ],
+    )
+
+    health._load_position_ownership(snapshots)
+
+    assert snapshots[20]["position_drift_blocked"] is True
+    assert snapshots[20]["position_drift_count"] == 1
+    assert snapshots[20]["position_drift_sides"] == ["long"]
+    assert snapshots[20]["position_drift_details"][0]["account_qty"] == 0.0145
+    assert snapshots[21]["position_drift_blocked"] is False

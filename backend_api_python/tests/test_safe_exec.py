@@ -2,11 +2,13 @@
 
 import builtins
 import math
+import threading
 
 from app.utils.safe_exec import (
     build_safe_builtins,
     safe_exec_code,
     safe_exec_with_validation,
+    timeout_context,
     validate_code_safety,
 )
 
@@ -320,3 +322,47 @@ def test_legit_pandas_strategy_passes_validator():
     ok, err = validate_code_safety(_LEGIT_PANDAS_STRATEGY)
     assert ok is True
     assert err is None
+
+
+def test_non_main_thread_timeouts_share_one_watchdog_thread():
+    failures: list[Exception] = []
+
+    def run_many() -> None:
+        try:
+            for _ in range(100):
+                with timeout_context(1):
+                    pass
+        except Exception as exc:  # pragma: no cover - assertion reports detail
+            failures.append(exc)
+
+    worker = threading.Thread(target=run_many)
+    worker.start()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert failures == []
+    watchdogs = [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == "SafeExecTimeoutWatchdog" and thread.is_alive()
+    ]
+    assert len(watchdogs) == 1
+
+
+def test_shared_watchdog_still_interrupts_non_main_thread_execution():
+    outcomes: list[str] = []
+
+    def run_until_timeout() -> None:
+        try:
+            with timeout_context(0.05):
+                while True:
+                    pass
+        except Exception as exc:
+            outcomes.append(type(exc).__name__)
+
+    worker = threading.Thread(target=run_until_timeout)
+    worker.start()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert outcomes == ["TimeoutError"]

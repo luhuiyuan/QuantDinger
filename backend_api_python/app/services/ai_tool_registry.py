@@ -585,18 +585,89 @@ MCP_AGENT_TOOLS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         id="mcp.cancel_open_paper_orders",
         category="trading",
-        label_zh="Cancel open paper orders",
-        label_en="Cancel open paper orders",
-        description_zh="Cancel all open agent-originated paper orders for the current tenant.",
-        description_en="Cancel all open agent-originated paper orders for the current tenant.",
+        label_zh="Agent trading emergency stop",
+        label_en="Agent trading emergency stop",
+        description_zh="Compatibility alias for the tenant emergency stop: cancel agent orders and revoke T tokens.",
+        description_en="Compatibility alias for the tenant emergency stop: cancel agent orders and revoke T tokens.",
         route="/api/agent/v1/quick-trade/kill-switch",
         requires=("confirm_cancel",),
-        produces=("paper_order_cancellation",),
+        produces=("emergency_stop_result",),
         risk_level="runtime_control",
         read_only=False,
         priority=88,
-        safety="Requires explicit user approval and never cancels live exchange orders.",
+        safety="Requires explicit user approval. Review every reported live cancellation failure.",
     ),
+)
+
+
+_MCP_EXTENSION_ROUTES = {
+    "emergency_stop_trading": "/api/agent/v1/quick-trade/kill-switch",
+    "cancel_job": "/api/agent/v1/jobs/{job_id}/cancel",
+    "link_indicator_config": "/api/agent/v1/indicators/link-config",
+    "list_universes": "/api/agent/v1/research/universes",
+    "get_universe": "/api/agent/v1/research/universes/{universe_id}",
+    "list_universe_members": "/api/agent/v1/research/universes/{universe_id}/members",
+    "list_factors": "/api/agent/v1/research/factors",
+    "get_factor": "/api/agent/v1/research/factors/{factor_id}",
+    "list_watchlist": "/api/agent/v1/research/watchlist",
+    "add_watchlist": "/api/agent/v1/research/watchlist",
+    "remove_watchlist": "/api/agent/v1/research/watchlist",
+    "list_trading_accounts": "/api/agent/v1/trading/accounts",
+    "get_account_snapshot": "/api/agent/v1/trading/accounts/{credential_id}/snapshot",
+    "list_account_positions": "/api/agent/v1/trading/accounts/{credential_id}/positions",
+    "list_strategy_positions": "/api/agent/v1/trading/strategies/{strategy_id}/positions",
+    "list_strategy_trades": "/api/agent/v1/trading/strategies/{strategy_id}/trades",
+    "list_strategy_pending_orders": "/api/agent/v1/trading/strategies/{strategy_id}/pending-orders",
+    "list_agent_quick_trades": "/api/agent/v1/trading/quick-trades",
+    "list_signal_alerts": "/api/agent/v1/notifications/signal-alerts",
+    "create_signal_alert": "/api/agent/v1/notifications/signal-alerts",
+    "update_signal_alert": "/api/agent/v1/notifications/signal-alerts/{task_id}",
+    "set_signal_alert_status": "/api/agent/v1/notifications/signal-alerts/{task_id}/status",
+    "delete_signal_alert": "/api/agent/v1/notifications/signal-alerts/{task_id}",
+    "run_signal_alert": "/api/agent/v1/notifications/signal-alerts/{task_id}/run",
+}
+_MCP_EXTENSION_WRITES = {
+    "emergency_stop_trading",
+    "cancel_job",
+    "link_indicator_config",
+    "add_watchlist",
+    "remove_watchlist",
+    "create_signal_alert",
+    "update_signal_alert",
+    "set_signal_alert_status",
+    "delete_signal_alert",
+    "run_signal_alert",
+}
+MCP_AGENT_TOOLS = MCP_AGENT_TOOLS + tuple(
+    ToolDefinition(
+        id=f"mcp.{name}",
+        category=(
+            "research" if name in {
+                "list_universes", "get_universe", "list_universe_members",
+                "list_factors", "get_factor", "list_watchlist", "add_watchlist",
+                "remove_watchlist",
+            }
+            else "notifications" if "signal_alert" in name
+            else "jobs" if name == "cancel_job"
+            else "indicator" if name == "link_indicator_config"
+            else "trading"
+        ),
+        label_zh=name.replace("_", " "),
+        label_en=name.replace("_", " "),
+        description_zh=f"Agent Gateway MCP tool: {name}.",
+        description_en=f"Agent Gateway MCP tool: {name}.",
+        route=route,
+        produces=("tool_result",),
+        risk_level="write_config" if name in _MCP_EXTENSION_WRITES else "read",
+        read_only=name not in _MCP_EXTENSION_WRITES,
+        priority=80,
+        safety=(
+            "Mutating calls require an Idempotency-Key; destructive or delivery actions also require explicit confirmation."
+            if name in _MCP_EXTENSION_WRITES
+            else ""
+        ),
+    )
+    for name, route in _MCP_EXTENSION_ROUTES.items()
 )
 
 
@@ -631,7 +702,7 @@ def public_tool_registry(language: str = "zh-CN") -> dict[str, Any]:
         if tool.enabled:
             categories[tool.category] = categories.get(tool.category, 0) + 1
     return {
-        "version": "2026.07.20.1",
+        "version": "2026.07.31.1",
         "total": sum(categories.values()),
         "categories": categories,
         "tools": list_tools(language),

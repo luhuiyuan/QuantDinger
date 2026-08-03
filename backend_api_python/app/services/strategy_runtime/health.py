@@ -6,6 +6,11 @@ import json
 import time
 from typing import Any, Dict, Iterable
 
+from app.services.live_trading.position_ownership import (
+    STATUS_BLOCKED,
+    canonical_symbol,
+    normalize_market_type,
+)
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 
@@ -36,6 +41,7 @@ def load_runtime_health(
     _load_pending_orders(snapshots, placeholders, ids)
     _load_positions(snapshots, placeholders, ids)
     _load_latest_fills(snapshots, placeholders, ids)
+    _load_position_ownership(snapshots)
 
     now = int(time.time())
     for strategy_id, snapshot in snapshots.items():
@@ -44,6 +50,7 @@ def load_runtime_health(
             strategy_status=statuses.get(strategy_id, ""),
             now=now,
         )
+        snapshot.pop("_ownership_context", None)
     return snapshots
 
 
@@ -57,6 +64,10 @@ def record_runtime_heartbeat(
     loop_latency_ms: int = 0,
     status: str = "healthy",
     last_error: str = "",
+    price_source: str = "",
+    price_age_ms: int = 0,
+    trigger_mode: str = "",
+    fill_transport: str = "",
 ) -> None:
     if int(strategy_id or 0) <= 0:
         return
@@ -76,6 +87,10 @@ def record_runtime_heartbeat(
         "latency_ms": max(0, int(loop_latency_ms or 0)),
         "status": str(status or "healthy"),
         "last_error": str(last_error or "")[:1000],
+        "price_source": str(price_source or ""),
+        "price_age_ms": max(0, int(price_age_ms or 0)),
+        "trigger_mode": str(trigger_mode or ""),
+        "fill_transport": str(fill_transport or ""),
     })
     # Keep a low-frequency equity mark so tomorrow's P&L can use a real
     # midnight baseline even when nobody has the monitoring page open.
@@ -95,6 +110,10 @@ def _empty_snapshot() -> Dict[str, Any]:
         "latency_ms": 0,
         "last_price": 0.0,
         "last_error": "",
+        "price_source": "",
+        "price_age_ms": 0,
+        "trigger_mode": "",
+        "fill_transport": "",
         "last_event_at": None,
         "last_event_type": "",
         "last_event_severity": "",
@@ -108,6 +127,11 @@ def _empty_snapshot() -> Dict[str, Any]:
         "open_positions": 0,
         "gross_exposure": 0.0,
         "last_fill_at": None,
+        "position_drift_blocked": False,
+        "position_drift_count": 0,
+        "position_drift_reason": "",
+        "position_drift_sides": [],
+        "position_drift_details": [],
     }
 
 
@@ -127,7 +151,8 @@ def _query(sql: str, params: tuple) -> list[Dict[str, Any]]:
 def _load_latest_runs(snapshots, placeholders, ids):
     rows = _query(
         f"""
-        SELECT strategy_id, id, runtime_status, started_at, stopped_at, stop_reason
+        SELECT strategy_id, id, user_id, exchange_id, credential_id, symbol, market_type,
+               runtime_status, started_at, stopped_at, stop_reason
         FROM strategy_runs
         WHERE strategy_id IN ({placeholders})
         ORDER BY strategy_id, id DESC
@@ -146,6 +171,13 @@ def _load_latest_runs(snapshots, placeholders, ids):
             "started_at": row.get("started_at"),
             "stopped_at": row.get("stopped_at"),
             "stop_reason": str(row.get("stop_reason") or ""),
+            "_ownership_context": {
+                "user_id": int(row.get("user_id") or 0),
+                "exchange_id": str(row.get("exchange_id") or "").strip().lower(),
+                "credential_id": int(row.get("credential_id") or 0),
+                "symbol": canonical_symbol(str(row.get("symbol") or "")),
+                "market_type": normalize_market_type(str(row.get("market_type") or "swap")),
+            },
         })
 
 
@@ -181,6 +213,10 @@ def _load_health_state(snapshots, placeholders, ids):
             "pending_signals": int(state.get("pending_signal_count") or 0),
             "loop_latency_ms": max(0, int(state.get("loop_latency_ms") or 0)),
             "latency_ms": max(0, int(state.get("latency_ms") or state.get("loop_latency_ms") or 0)),
+            "price_source": str(state.get("price_source") or ""),
+            "price_age_ms": max(0, int(state.get("price_age_ms") or 0)),
+            "trigger_mode": str(state.get("trigger_mode") or ""),
+            "fill_transport": str(state.get("fill_transport") or ""),
         })
 
 
@@ -212,7 +248,10 @@ def _load_pending_orders(snapshots, placeholders, ids):
     rows = _query(
         f"""
         SELECT strategy_id, strategy_run_id,
-               SUM(CASE WHEN status IN ('pending', 'processing') THEN 1 ELSE 0 END) AS pending_orders,
+               SUM(CASE
+                       WHEN status IN ('pending', 'processing', 'sent', 'syncing')
+                       THEN 1 ELSE 0
+                   END) AS pending_orders,
                SUM(CASE
                        WHEN status IN ('failed', 'error', 'rejected')
                         AND updated_at >= NOW() - (%s * INTERVAL '1 second')
@@ -284,12 +323,77 @@ def _load_latest_fills(snapshots, placeholders, ids):
             snapshots[strategy_id]["last_fill_at"] = row.get("last_fill_at")
 
 
+def _load_position_ownership(snapshots: Dict[int, Dict[str, Any]]) -> None:
+    """Attach blocked account-leg ownership to every matching live strategy."""
+    user_ids = sorted({
+        int((snapshot.get("_ownership_context") or {}).get("user_id") or 0)
+        for snapshot in snapshots.values()
+        if int((snapshot.get("_ownership_context") or {}).get("user_id") or 0) > 0
+    })
+    if not user_ids:
+        return
+    placeholders = ",".join(["%s"] * len(user_ids))
+    rows = _query(
+        f"""
+        SELECT user_id, credential_id, exchange_id, market_type, symbol,
+               symbol_canonical, side, coexistence_mode, manual_reserved_qty,
+               observed_account_qty, allocated_qty, status, drift_reason, updated_at
+        FROM qd_position_reservations
+        WHERE user_id IN ({placeholders}) AND status = %s
+        ORDER BY updated_at DESC, id DESC
+        """,
+        (*user_ids, STATUS_BLOCKED),
+    )
+    for strategy_id, snapshot in snapshots.items():
+        context = snapshot.get("_ownership_context") or {}
+        if not context:
+            continue
+        details = []
+        for row in rows:
+            row_credential = int(row.get("credential_id") or 0)
+            context_credential = int(context.get("credential_id") or 0)
+            if int(row.get("user_id") or 0) != int(context.get("user_id") or 0):
+                continue
+            if context_credential > 0 and row_credential != context_credential:
+                continue
+            if normalize_market_type(str(row.get("market_type") or "swap")) != context.get("market_type"):
+                continue
+            if canonical_symbol(str(row.get("symbol_canonical") or row.get("symbol") or "")) != context.get("symbol"):
+                continue
+            row_exchange = str(row.get("exchange_id") or "").strip().lower()
+            if context.get("exchange_id") and row_exchange and row_exchange != context.get("exchange_id"):
+                continue
+            details.append({
+                "side": str(row.get("side") or ""),
+                "reason": str(row.get("drift_reason") or ""),
+                "account_qty": float(row.get("observed_account_qty") or 0.0),
+                "strategy_qty": float(row.get("allocated_qty") or 0.0),
+                "protected_qty": float(row.get("manual_reserved_qty") or 0.0),
+                "coexistence_mode": str(row.get("coexistence_mode") or "strict"),
+                "updated_at": row.get("updated_at"),
+            })
+        if not details:
+            continue
+        snapshot.update({
+            "position_drift_blocked": True,
+            "position_drift_count": len(details),
+            "position_drift_reason": str(details[0].get("reason") or ""),
+            "position_drift_sides": sorted({str(item.get("side") or "") for item in details if item.get("side")}),
+            "position_drift_details": details,
+        })
+
+
 def _health_state(snapshot: Dict[str, Any], *, strategy_status: str, now: int) -> str:
     if strategy_status != "running":
         return "inactive"
     if int(snapshot.get("run_id") or 0) <= 0:
         return "degraded"
-    if int(snapshot.get("failed_orders") or 0) > 0 or str(snapshot.get("last_error") or "").strip():
+    if (
+        int(snapshot.get("failed_orders") or 0) > 0
+        or bool(snapshot.get("position_drift_blocked"))
+        or int(snapshot.get("position_drift_count") or 0) > 0
+        or str(snapshot.get("last_error") or "").strip()
+    ):
         return "degraded"
     heartbeat = int(snapshot.get("last_heartbeat_at") or 0)
     if heartbeat <= 0:

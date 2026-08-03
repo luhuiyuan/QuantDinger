@@ -87,7 +87,18 @@ def test_non_loopback_http_accepts_distinct_strong_auth(monkeypatch, fresh_modul
     monkeypatch.setattr(fresh_module.mcp.settings, "host", "0.0.0.0")
     monkeypatch.setattr(fresh_module, "MCP_AUTH_TOKEN", "mcp_" + "x" * 40)
     monkeypatch.setattr(fresh_module, "AGENT_TOKEN", "qd_agent_different")
+    monkeypatch.setattr(fresh_module, "MCP_PUBLIC_URL", "https://mcp.example.test")
     fresh_module._validate_network_security("streamable-http")
+
+
+def test_non_loopback_authenticated_http_requires_https(monkeypatch, fresh_module):
+    monkeypatch.setattr(fresh_module.mcp.settings, "host", "0.0.0.0")
+    monkeypatch.setattr(fresh_module, "MCP_AUTH_TOKEN", "mcp_" + "x" * 40)
+    monkeypatch.setattr(fresh_module, "AGENT_TOKEN", "qd_agent_different")
+    monkeypatch.setattr(fresh_module, "MCP_PUBLIC_URL", "http://mcp.example.test")
+    monkeypatch.delenv("QUANTDINGER_MCP_ALLOW_HTTP", raising=False)
+    with pytest.raises(SystemExit):
+        fresh_module._validate_network_security("streamable-http")
 
 
 def test_invalid_numeric_env_uses_default(monkeypatch, fresh_module):

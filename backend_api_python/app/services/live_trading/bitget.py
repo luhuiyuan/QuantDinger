@@ -447,8 +447,10 @@ class BitgetMixClient(BaseRestClient):
         hold_side: str = "",
     ) -> Dict[str, Any]:
         """
-        Bitget mix place-order: hedge_mode requires tradeSide open/close; one_way_mode requires reduceOnly YES/NO
-        and must not send tradeSide (see Bitget API doc + CCXT bitget.py).
+        Bitget mix place-order: hedge_mode requires tradeSide open/close and
+        uses ``side`` as the position direction; one_way_mode requires
+        reduceOnly YES/NO and must not send tradeSide. ``holdSide`` belongs to
+        other Bitget endpoints and is not a v2 place-order parameter.
         """
         sd = (side or "").lower()
         if sd not in ("buy", "sell"):
@@ -458,19 +460,19 @@ class BitgetMixClient(BaseRestClient):
         )
         hedge = pos_mode == "hedge_mode"
         if hedge:
-            # Mirror CCXT: hedge close flips side; hedge open keeps side + tradeSide open.
-            out: Dict[str, Any] = {
-                "tradeSide": "close" if reduce_only else "open",
-                "side": ("sell" if sd == "buy" else "buy") if reduce_only else sd,
-            }
             hs = str(hold_side or "").strip().lower()
             if hs in ("long", "short"):
-                out["holdSide"] = hs
-            elif reduce_only:
-                # close long -> sell+close holdSide long; close short -> buy+close holdSide short
-                out["holdSide"] = "long" if out["side"] == "sell" else "short"
+                direction_side = "buy" if hs == "long" else "sell"
             else:
-                out["holdSide"] = "long" if sd == "buy" else "short"
+                # The shared signal uses the physical order side. Bitget hedge
+                # mode instead expects the position direction on closes.
+                direction_side = (
+                    ("sell" if sd == "buy" else "buy") if reduce_only else sd
+                )
+            out: Dict[str, Any] = {
+                "tradeSide": "close" if reduce_only else "open",
+                "side": direction_side,
+            }
             return out
         return {"side": sd, "reduceOnly": "YES" if reduce_only else "NO"}
 
@@ -565,6 +567,40 @@ class BitgetMixClient(BaseRestClient):
         if mn > 0 and qty < mn:
             return (Decimal("0"), size_precision)
         return (qty, size_precision)
+
+    def normalize_base_order_size(
+        self,
+        *,
+        symbol: str,
+        product_type: str = "USDT-FUTURES",
+        base_size: float,
+    ) -> float:
+        """Return the base-asset quantity Bitget can actually submit.
+
+        ``_normalize_size`` returns the exchange order unit (contracts on some
+        instruments).  Fill APIs are normalized back to base quantity, so the
+        durable completion check must compare against the same unit.
+        """
+        normalized_size, _precision = self._normalize_size(
+            symbol=symbol,
+            product_type=product_type,
+            base_size=base_size,
+        )
+        if normalized_size <= 0:
+            return 0.0
+        contract: Dict[str, Any] = {}
+        try:
+            contract = self.get_contract(symbol=symbol, product_type=product_type) or {}
+        except Exception:
+            contract = {}
+        contract_size = self._to_dec(
+            contract.get("contractSize")
+            or contract.get("contractSz")
+            or contract.get("ctVal")
+            or "0"
+        )
+        base_quantity = normalized_size * contract_size if contract_size > 0 else normalized_size
+        return float(base_quantity)
 
     def _normalize_price(self, *, symbol: str, product_type: str, price: float) -> Tuple[Decimal, Optional[int]]:
         """
@@ -724,6 +760,23 @@ class BitgetMixClient(BaseRestClient):
             lv = 0
         if not sym or lv <= 0:
             return False
+        try:
+            contract = self.get_contract(symbol=symbol, product_type=pt) or {}
+        except Exception:
+            contract = {}
+        max_raw = (
+            contract.get("maxLever")
+            or contract.get("maxLeverage")
+            or contract.get("maxLeverRate")
+        )
+        try:
+            max_leverage = int(float(max_raw or 0))
+        except (TypeError, ValueError):
+            max_leverage = 0
+        if max_leverage > 0 and lv > max_leverage:
+            raise LiveTradingError(
+                f"Bitget leverage {lv}x exceeds the current {sym} maximum {max_leverage}x"
+            )
 
         cache_key = f"{pt}:{sym}:{mc}:{mm}:{hs}:{lv}"
         now = time.time()
@@ -747,9 +800,31 @@ class BitgetMixClient(BaseRestClient):
         try:
             resp = self._signed_request("POST", "/api/v2/mix/account/set-leverage", json_body=body)
             ok = isinstance(resp, dict) and str(resp.get("code") or "") in ("00000", "0", "")
+            data = resp.get("data") if isinstance(resp, dict) else None
+            if ok and isinstance(data, dict):
+                candidate_keys = (
+                    ("longLeverage", "shortLeverage")
+                    if hs not in ("long", "short")
+                    else (f"{hs}Leverage", "leverage")
+                )
+                effective_values = []
+                for key in candidate_keys:
+                    if data.get(key) not in (None, ""):
+                        try:
+                            effective_values.append(int(float(data.get(key))))
+                        except (TypeError, ValueError) as exc:
+                            raise LiveTradingError(
+                                f"Bitget returned an invalid effective leverage: {data.get(key)}"
+                            ) from exc
+                if effective_values and any(value != lv for value in effective_values):
+                    raise LiveTradingError(
+                        f"Bitget applied {effective_values} instead of requested {lv}x leverage"
+                    )
             if ok:
                 self._lev_cache[cache_key] = (now, True)
             return bool(ok)
+        except LiveTradingError:
+            raise
         except Exception:
             return False
 

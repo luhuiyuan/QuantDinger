@@ -36,7 +36,6 @@ def test_twelvedata_daily_credit_limit_suppresses_later_requests(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(asia_stock_kline, "_TD_DAILY_LIMIT_UNTIL", 0.0)
-    monkeypatch.setattr(asia_stock_kline, "_get_twelve_data_api_key", lambda: "test-key")
     monkeypatch.setattr(asia_stock_kline.requests, "get", fake_get)
 
     out1 = asia_stock_kline.fetch_twelvedata_klines(
@@ -45,6 +44,7 @@ def test_twelvedata_daily_credit_limit_suppresses_later_requests(monkeypatch):
         timeframe="1m",
         limit=10,
         before_time=None,
+        api_key="test-key",
     )
     out2 = asia_stock_kline.fetch_twelvedata_klines(
         is_hk=False,
@@ -52,6 +52,7 @@ def test_twelvedata_daily_credit_limit_suppresses_later_requests(monkeypatch):
         timeframe="1m",
         limit=10,
         before_time=None,
+        api_key="test-key",
     )
 
     assert out1 == []

@@ -298,7 +298,7 @@ BTC perpetual momentum with state-transition entries confirmed by MACD and stoch
 # @param kdj_smooth_k int 3 range=1:20:1
 # @param kdj_smooth_d int 3 range=1:20:1
 # @param overbought float 85 range=50:100:1
-# @param target_pct float 4.75 range=0.1:5:0.05
+# @param target_pct float 0.95 range=0.1:5:0.05
 # @param stop_loss_pct float 0.02 range=0.005:0.2:0.005
 # @param trailing_activation_pct float 0.05 range=0.005:0.5:0.005
 # @param trailing_stop_pct float 0.01 range=0.005:0.2:0.005
@@ -320,7 +320,7 @@ def handle_data(context, data):
     kdj_smooth_k = int(context.params.get("kdj_smooth_k", 3))
     kdj_smooth_d = int(context.params.get("kdj_smooth_d", 3))
     overbought = float(context.params.get("overbought", 85))
-    target_pct = float(context.params.get("target_pct", 4.75))
+    target_pct = float(context.params.get("target_pct", 0.95))
     stop_loss_pct = float(context.params.get("stop_loss_pct", 0.02))
     trailing_activation_pct = float(context.params.get("trailing_activation_pct", 0.05))
     trailing_stop_pct = float(context.params.get("trailing_stop_pct", 0.01))
@@ -353,7 +353,7 @@ def handle_data(context, data):
         )
     elif exit_signal and is_long:
         order_target_percent(g.symbol, 0.0, reason="macd_kdj_exit")
-$macdkdj$, '{"params":[{"name":"fast_period","type":"integer","default":12,"min":2,"max":100,"step":1,"labelKey":"trading-assistant.templateParam.fast_period.label"},{"name":"slow_period","type":"integer","default":26,"min":3,"max":200,"step":1,"labelKey":"trading-assistant.templateParam.slow_period.label"},{"name":"signal_period","type":"integer","default":9,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.signalPeriod"},{"name":"kdj_period","type":"integer","default":9,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.kdjPeriod"},{"name":"kdj_smooth_k","type":"integer","default":3,"min":1,"max":20,"step":1,"labelKey":"strategyV2.params.kdjSmoothK"},{"name":"kdj_smooth_d","type":"integer","default":3,"min":1,"max":20,"step":1,"labelKey":"strategyV2.params.kdjSmoothD"},{"name":"overbought","type":"number","default":85,"min":50,"max":100,"step":1,"labelKey":"trading-assistant.templateParam.overbought.label"},{"name":"target_pct","type":"number","default":4.75,"min":0.1,"max":5,"step":0.05,"labelKey":"strategyV2.params.targetExposure"},{"name":"stop_loss_pct","type":"percent","default":0.02,"min":0.005,"max":0.2,"step":0.005,"labelKey":"strategyV2.params.stopLoss"},{"name":"trailing_activation_pct","type":"percent","default":0.05,"min":0.005,"max":0.5,"step":0.005,"labelKey":"strategyV2.params.trailingActivation"},{"name":"trailing_stop_pct","type":"percent","default":0.01,"min":0.005,"max":0.2,"step":0.005,"labelKey":"strategyV2.params.trailingDrawdown"}]}'::jsonb, '["strategy-v2","cta","ta-lib","macd","kdj","crypto","swap","risk"]'::jsonb, 'bar-chart', 'gold', 70, TRUE, '{"source":"system_seed","version":9,"apiVersion":2}'::jsonb, NOW()),
+$macdkdj$, '{"params":[{"name":"fast_period","type":"integer","default":12,"min":2,"max":100,"step":1,"labelKey":"trading-assistant.templateParam.fast_period.label"},{"name":"slow_period","type":"integer","default":26,"min":3,"max":200,"step":1,"labelKey":"trading-assistant.templateParam.slow_period.label"},{"name":"signal_period","type":"integer","default":9,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.signalPeriod"},{"name":"kdj_period","type":"integer","default":9,"min":2,"max":100,"step":1,"labelKey":"strategyV2.params.kdjPeriod"},{"name":"kdj_smooth_k","type":"integer","default":3,"min":1,"max":20,"step":1,"labelKey":"strategyV2.params.kdjSmoothK"},{"name":"kdj_smooth_d","type":"integer","default":3,"min":1,"max":20,"step":1,"labelKey":"strategyV2.params.kdjSmoothD"},{"name":"overbought","type":"number","default":85,"min":50,"max":100,"step":1,"labelKey":"trading-assistant.templateParam.overbought.label"},{"name":"target_pct","type":"number","default":0.95,"min":0.1,"max":5,"step":0.05,"labelKey":"strategyV2.params.targetExposure"},{"name":"stop_loss_pct","type":"percent","default":0.02,"min":0.005,"max":0.2,"step":0.005,"labelKey":"strategyV2.params.stopLoss"},{"name":"trailing_activation_pct","type":"percent","default":0.05,"min":0.005,"max":0.5,"step":0.005,"labelKey":"strategyV2.params.trailingActivation"},{"name":"trailing_stop_pct","type":"percent","default":0.01,"min":0.005,"max":0.2,"step":0.005,"labelKey":"strategyV2.params.trailingDrawdown"}]}'::jsonb, '["strategy-v2","cta","ta-lib","macd","kdj","crypto","swap","risk"]'::jsonb, 'bar-chart', 'gold', 70, TRUE, '{"source":"system_seed","version":10,"apiVersion":2}'::jsonb, NOW()),
 
 ('strategy_v2_supertrend', 'script', 'SuperTrend', 'A configurable SPY SuperTrend strategy using ATR trailing bands.', $supertrend$"""
 SuperTrend

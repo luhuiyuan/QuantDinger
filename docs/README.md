@@ -14,12 +14,15 @@ release. Start with the [project README](../README.md) or the
 | [Process roles](architecture/PROCESS_ROLES_AND_TASKS.md) | API, trading, scheduler-worker, internal Task Run, and migration boundaries. |
 | [API conventions](architecture/API_CONVENTIONS.md) | Human API envelopes, authentication, and stability classes. |
 | [Extension guide](architecture/EXTENSION_GUIDE.md) | How to add routes, services, adapters, and tasks safely. |
+| [External data request logs](architecture/EXTERNAL_DATA_REQUEST_LOGS.md) | Routed request and provider-attempt observability contract. |
 
 ## Deployment and operations
 
 | Document | Purpose |
 | --- | --- |
 | [Production hardening](deployment/PRODUCTION_HARDENING.md) | Locked runtime and production preflight. |
+| [Data Source Operations](deployment/DATA_SOURCE_OPERATIONS.md) | Administrator workflow for providers, policies, diagnostics, and cutover. |
+| [Data routing cutover](deployment/DATA_ROUTING_CUTOVER_RUNBOOK.md) | Forward-only activation, maintenance, and verification runbook. |
 | [Observability](deployment/OBSERVABILITY.md) | Prometheus, Grafana, Alertmanager, and exporters. |
 | [Installation troubleshooting](deployment/INSTALL_TROUBLESHOOTING.md) | Docker, mirrors, ports, and PostgreSQL problems. |
 | [Cloud deployment (English)](deployment/CLOUD_DEPLOYMENT_EN.md) | Reverse proxy and cloud deployment. |

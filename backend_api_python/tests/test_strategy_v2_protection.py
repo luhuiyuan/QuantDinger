@@ -243,3 +243,98 @@ def test_live_protection_snapshot_restores_after_restart():
         timestamp="2026-01-01 00:01:00",
     )
     assert exits[0].reason == "stop_loss"
+
+
+def test_scale_in_preserves_an_activated_trailing_peak():
+    spec = ProtectionSpec(
+        trailing_stop_pct=0.003,
+        trailing_activation_pct=0.01,
+        trailing_rebase_on_scale_in=False,
+    )
+    state = ProtectionState.open(
+        symbol="Crypto:BTC/USDT@spot",
+        side="long",
+        entry_price=100,
+        spec=spec,
+        opened_at="2026-01-01",
+    )
+    engine = ProtectionEngine()
+
+    assert engine.evaluate_price(
+        state,
+        timestamp="2026-01-01 00:01:00",
+        price=102,
+    ) is None
+    assert state.trailing_active is True
+    assert state.highest_price == pytest.approx(102)
+
+    state.apply_scale_in(
+        entry_price=95,
+        fill_price=90,
+        spec=spec,
+    )
+
+    assert state.entry_price == pytest.approx(95)
+    assert state.trailing_active is True
+    assert state.highest_price == pytest.approx(102)
+    decision = engine.evaluate_price(
+        state,
+        timestamp="2026-01-01 00:02:00",
+        price=101.6,
+    )
+    assert decision is not None
+    assert decision.reason == "trailing_stop"
+    assert decision.trigger_price == pytest.approx(102 * (1 - 0.003))
+
+
+def test_scale_in_rebases_unactivated_trailing_extremes_to_the_new_basket():
+    spec = ProtectionSpec(
+        trailing_stop_pct=0.003,
+        trailing_activation_pct=0.05,
+        trailing_rebase_on_scale_in=False,
+    )
+    state = ProtectionState.open(
+        symbol="Crypto:BTC/USDT@spot",
+        side="long",
+        entry_price=100,
+        spec=spec,
+        opened_at="2026-01-01",
+    )
+    state.highest_price = 103
+
+    state.apply_scale_in(
+        entry_price=95,
+        fill_price=90,
+        spec=spec,
+    )
+
+    assert state.trailing_active is False
+    assert state.highest_price == pytest.approx(95)
+    assert state.lowest_price == pytest.approx(90)
+
+
+def test_scale_in_defaults_to_legacy_trailing_reset_for_custom_strategies():
+    spec = ProtectionSpec(
+        trailing_stop_pct=0.003,
+        trailing_activation_pct=0.01,
+    )
+    state = ProtectionState.open(
+        symbol="Crypto:BTC/USDT@spot",
+        side="long",
+        entry_price=100,
+        spec=spec,
+        opened_at="2026-01-01",
+    )
+    state.highest_price = 103
+    state.trailing_active = True
+
+    state.apply_scale_in(
+        entry_price=95,
+        fill_price=90,
+        scaled_at="2026-01-02",
+    )
+
+    assert state.trailing_active is False
+    assert state.highest_price == pytest.approx(95)
+    assert state.lowest_price == pytest.approx(90)
+    assert state.opened_at == pd.Timestamp("2026-01-02")

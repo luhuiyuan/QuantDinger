@@ -12,11 +12,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _namespace(name, path):
-    if name in sys.modules:
-        return
-    module = types.ModuleType(name)
-    module.__path__ = [str(path)]
-    sys.modules[name] = module
+    module = sys.modules.get(name)
+    if module is None:
+        module = types.ModuleType(name)
+        module.__path__ = [str(path)]
+        sys.modules[name] = module
+
+    parent_name, _, child_name = name.rpartition(".")
+    if parent_name and parent_name in sys.modules:
+        setattr(sys.modules[parent_name], child_name, module)
 
 
 _namespace("app", ROOT / "app")

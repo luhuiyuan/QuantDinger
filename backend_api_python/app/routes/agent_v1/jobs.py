@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 import time
 
-from app.utils.agent_auth import SCOPE_R, agent_required, current_user_id
-from app.utils.agent_jobs import get_job, list_jobs, stream_progress
+from app.utils.agent_auth import SCOPE_B, SCOPE_R, agent_required, current_user_id
+from app.utils.agent_jobs import cancel_job, get_job, list_jobs, stream_progress
 from flask import Response, request
 
 from . import agent_v1_bp
@@ -36,6 +36,17 @@ def get_user_job(job_id: str):
     if not row:
         return error(404, "Job not found", http=404)
     return envelope(row)
+
+
+@agent_v1_bp.route("/jobs/<job_id>/cancel", methods=["POST"])
+@agent_required(SCOPE_B)
+def cancel_user_job(job_id: str):
+    row = cancel_job(job_id, user_id=current_user_id())
+    if not row:
+        return error(404, "Job not found", http=404)
+    if row.get("status") != "cancelled":
+        return error(409, f"Job is already {row.get('status')}", http=409)
+    return envelope(row, message="cancelled")
 
 
 def _sse_frame(event: str, data) -> bytes:
@@ -85,24 +96,27 @@ def stream_user_job(job_id: str):
             })
             return
 
-        last_ping = time.monotonic()
-        for rec in stream_progress(job_id, since_seq=since_seq):
-            yield _sse_frame("progress", rec)
-            now = time.monotonic()
-            if now - last_ping > 15.0:
-                yield _sse_frame("ping", {"ts": now})
-                last_ping = now
-            if rec.get("terminal"):
-                break
+        last_progress = None
+        while True:
+            # Keep the client-provided sequence floor stable across heartbeat
+            # cycles. Persisted snapshots use synthetic sequence numbers and
+            # must not advance past later in-memory events.
+            for rec in stream_progress(job_id, since_seq=since_seq, idle_timeout_s=15.0):
+                signature = json.dumps(rec.get("data") or {}, sort_keys=True, default=str)
+                if signature != last_progress or rec.get("terminal"):
+                    yield _sse_frame("progress", rec)
+                    last_progress = signature
 
-        # Re-fetch the row after termination so result/error are accurate.
-        final = get_job(job_id, user_id=user_id) or row
-        yield _sse_frame("result", {
-            "job_id": final.get("job_id", job_id),
-            "status": final.get("status"),
-            "result": final.get("result"),
-            "error": final.get("error"),
-        })
+            final = get_job(job_id, user_id=user_id) or row
+            if final.get("status") in ("succeeded", "failed", "cancelled"):
+                yield _sse_frame("result", {
+                    "job_id": final.get("job_id", job_id),
+                    "status": final.get("status"),
+                    "result": final.get("result"),
+                    "error": final.get("error"),
+                })
+                return
+            yield _sse_frame("ping", {"ts": time.time(), "status": final.get("status")})
 
     return Response(
         _gen(),

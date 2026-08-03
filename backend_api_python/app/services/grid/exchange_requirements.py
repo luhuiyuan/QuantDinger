@@ -75,9 +75,31 @@ def detect_hedge_position_mode(
             return False, "okx_net_mode"
         return None, f"okx_{pm or 'unknown'}"
 
+    if exchange_id in ("gate", "gateio") and hasattr(client, "get_position_mode"):
+        mode = str(client.get_position_mode() or "").strip().lower()
+        if mode == "dual":
+            return True, "gate_dual_mode"
+        if mode == "single":
+            return False, "gate_single_mode"
+        if mode == "dual_plus":
+            return None, "gate_split_position_mode_unsupported"
+        return None, "gate_unknown"
+
     if hasattr(client, "is_hedge_position_mode") and callable(getattr(client, "is_hedge_position_mode")):
         hedge = client.is_hedge_position_mode(symbol=sym)
+        if hedge is None:
+            return None, f"{exchange_id or type(client).__name__.lower()}_unknown"
+        if exchange_id in ("gate", "gateio") or type(client).__name__ == "GateUsdtFuturesClient":
+            return bool(hedge), "gate_dual_mode" if hedge else "gate_single_mode"
         return bool(hedge), "bybit_hedge_mode" if hedge else "bybit_one_way_mode"
+
+    if hasattr(client, "detect_swap_hedge_mode") and callable(
+        getattr(client, "detect_swap_hedge_mode")
+    ):
+        hedge = client.detect_swap_hedge_mode(symbol=sym)
+        if hedge is None:
+            return None, "htx_unknown"
+        return bool(hedge), "htx_dual_side" if hedge else "htx_single_side"
 
     if hasattr(client, "get_swap_hedge_mode") and callable(getattr(client, "get_swap_hedge_mode")):
         hedge = client.get_swap_hedge_mode(symbol=sym)
@@ -92,7 +114,7 @@ def detect_hedge_position_mode(
     if exchange_id == "bybit":
         return None, "bybit_unknown"
     if exchange_id in ("gate", "gateio"):
-        return False, "gate_one_way_mode"
+        return None, "gate_unknown"
 
     try:
         from app.services.live_trading.bitget import BitgetMixClient
@@ -168,10 +190,11 @@ def validate_neutral_grid_exchange_support(
             "local strategy positions from the exchange."
         )
     if is_hedge is None:
-        logger.warning(
-            "neutral grid hedge mode unknown for %s (%s); proceeding best-effort",
-            symbol,
-            label,
+        return False, (
+            "Neutral grid requires a verified hedge (dual-side) position mode, "
+            f"but the exchange returned {label}. Retry after the account-mode "
+            "query succeeds; startup is blocked to prevent long/short legs from "
+            "being netted or assigned to the wrong position."
         )
     return True, ""
 

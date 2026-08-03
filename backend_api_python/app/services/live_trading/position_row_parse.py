@@ -39,6 +39,14 @@ def extract_signed_position_qty(item: Dict[str, Any]) -> float:
 
 def infer_position_side_from_row(item: Dict[str, Any]) -> str:
     """Map heterogeneous exchange position rows to ``long`` / ``short``."""
+    # Gate dual / dual-plus position rows identify the leg in ``mode``.
+    # Their size must not be interpreted as a net-mode sign.
+    gate_mode = str(item.get("mode") or item.get("position_mode") or "").strip().lower()
+    if gate_mode in ("dual_short", "dual-plus-short", "dual_plus_short"):
+        return "short"
+    if gate_mode in ("dual_long", "dual-plus-long", "dual_plus_long"):
+        return "long"
+
     psu = str(item.get("positionSide") or item.get("position_side") or "").strip().upper()
     if psu == "SHORT":
         return "short"

@@ -94,6 +94,6 @@ background requests.
 - Mobile/H5 has no administrator console. Administration is Web-only.
 
 For activation and incident handling, follow
-`docs/DATA_ROUTING_CUTOVER_RUNBOOK.md`. After activation, repair only through a
+`docs/deployment/DATA_ROUTING_CUTOVER_RUNBOOK.md`. After activation, repair only through a
 new policy, explicit Capability disablement, eligible cache, quarantine, or a
 forward application fix.

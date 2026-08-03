@@ -28,7 +28,12 @@ def _auth(monkeypatch):
     monkeypatch.setattr(
         auth,
         "verify_token",
-        lambda _token: {"sub": "tester", "user_id": 7, "role": "user"},
+        lambda _token: {
+            "sub": "tester",
+            "user_id": 7,
+            "_verified_username": "tester",
+            "_verified_user_role": "user",
+        },
     )
 
 

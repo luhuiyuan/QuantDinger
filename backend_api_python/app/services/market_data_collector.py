@@ -725,6 +725,8 @@ class MarketDataCollector:
         ]
         return {"news": rows, "sentiment": {}}
 
+_collector: Optional[MarketDataCollector] = None
+
 
 def get_market_data_collector() -> MarketDataCollector:
     """获取市场数据采集器单例"""

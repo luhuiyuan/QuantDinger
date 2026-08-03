@@ -53,4 +53,18 @@ def init_http_observability(app: Flask) -> None:
             g.request_metrics_active = False
         token = getattr(g, "request_context_token", None)
         if token is not None:
-            request_id_context.reset(token)
+            # ``stream_with_context`` can tear down the same request context
+            # once when the view returns and again when the response iterator
+            # closes. ContextVar tokens are single-use, so make the cleanup
+            # idempotent before resetting it. Otherwise the second teardown
+            # raises RuntimeError and Gunicorn terminates an otherwise complete
+            # SSE/chunked response without its final HTTP chunk.
+            g.request_context_token = None
+            try:
+                request_id_context.reset(token)
+            except (RuntimeError, ValueError):
+                # A copied streaming context may retain a token that was
+                # already reset, or was created in its parent context. The
+                # request is ending, so clearing the correlation value is the
+                # safe fallback for this execution context.
+                request_id_context.set("")

@@ -667,6 +667,36 @@
       ]
     },
     {
+      "path": "backend_api_python/app/services/data_routing/adapters/production_transports.py",
+      "owner_module": "app.services.data_routing.adapters.production_transports",
+      "detected_clients": [
+        "akshare",
+        "ccxt",
+        "requests",
+        "yfinance"
+      ],
+      "scope": "adapter_transport",
+      "adapters": [
+        "akshare",
+        "easy_tdx",
+        "tencent",
+        "twelve_data",
+        "yfinance"
+      ],
+      "migration_status": "registered_adapter_transport"
+    },
+    {
+      "path": "backend_api_python/app/services/execution_streams/adapters.py",
+      "owner_module": "app.services.execution_streams.adapters",
+      "detected_clients": [
+        "requests"
+      ],
+      "scope": "out_of_scope",
+      "allowlist_category": "trading",
+      "exclusion_reason": "Maintains authenticated private exchange execution streams and listen-key lifecycle for account order and fill reconciliation.",
+      "migration_status": "excluded"
+    },
+    {
       "path": "backend_api_python/app/services/fundamental_data.py",
       "owner_module": "app.services.fundamental_data",
       "detected_clients": [
@@ -722,25 +752,6 @@
       "allowlist_category": "infrastructure",
       "exclusion_reason": "Best-effort GeoIP enrichment for login security notifications.",
       "migration_status": "excluded"
-    },
-    {
-      "path": "backend_api_python/app/services/data_routing/adapters/production_transports.py",
-      "owner_module": "app.services.data_routing.adapters.production_transports",
-      "detected_clients": [
-        "akshare",
-        "ccxt",
-        "requests",
-        "yfinance"
-      ],
-      "scope": "adapter_transport",
-      "adapters": [
-        "akshare",
-        "easy_tdx",
-        "tencent",
-        "twelve_data",
-        "yfinance"
-      ],
-      "migration_status": "registered_adapter_transport"
     },
     {
       "path": "backend_api_python/app/services/market/symbol_search.py",

@@ -9,6 +9,8 @@ QuantDinger 指标是运行在指标编辑器中的 Python 图表程序。它读
 
 指标不能下单、回测、运行实盘、读取账户、管理仓位、设置杠杆或执行止盈止损。需要交易时，应先把指标中的视觉信号转换成 Strategy API V2 策略，再在策略页完成验证、回测和部署。
 
+与 TradingView/Pine 的兼容目标是：**覆盖常用单标的、单周期指标的计算与视觉语义，而不是兼容 Pine 语法、全部 API 或逐 tick 执行模型。** 从 Pine 迁移时需要把公式改写为 Python/pandas，并按本文的 <code>output</code> 契约返回结果。
+
 ---
 
 ## 1. 先完成一个最小指标
@@ -250,7 +252,35 @@ output = {
 | <code>data</code> | list | 与 <code>df</code> 等长的数值/<code>None</code> 列表 |
 | <code>color</code> | str | 推荐使用 <code>#RRGGBB</code> |
 | <code>overlay</code> | bool | <code>True</code> 主图，<code>False</code> 副图 |
-| <code>type</code> | str，可选 | 常用 <code>line</code>，也可由当前渲染器支持其他样式 |
+| <code>type</code> | str，可选 | <code>line</code>、<code>bar</code> 或 <code>circle</code>；别名见下表 |
+
+当前公开绘图类型：
+
+| 写法 | 规范化结果 | 典型 Pine 对应 |
+| --- | --- | --- |
+| <code>line</code> | 折线 | <code>plot(..., style=plot.style_line)</code> |
+| <code>bar</code>、<code>histogram</code>、<code>column</code> | 从基准值绘制的柱 | histogram/columns |
+| <code>circle</code>、<code>dot</code>、<code>point</code>、<code>scatter</code> | 圆点 | circles/scatter |
+| <code>lamp</code> | 灯带圆点；同一副图有至少 3 个灯带序列时自动按行排列 | 状态面板的近似表达 |
+
+样式字段按图形类型生效：
+
+- 通用：<code>color</code>、<code>opacity</code>。
+- 折线：<code>lineWidth</code>，以及 <code>lineStyle</code>/<code>style</code>（例如 <code>solid</code>、<code>dashed</code>）。
+- 柱和圆点：<code>size</code>/<code>radius</code>、<code>borderColor</code>、<code>borderSize</code>；柱还可设置 <code>baseValue</code>。
+- 同一指标内所有 <code>overlay=False</code> 的序列共享一个副图，不会像多个独立 Pine 脚本那样自动创建多个副图。
+
+需要 Pine 的 series color/动态点大小时，<code>data</code> 的单点可以从数值扩展为对象：
+
+~~~python
+dynamic_points = [
+    None,
+    {"value": 102.5, "color": "#22C55E", "size": 4},
+    {"value": 101.8, "color": "#EF4444", "size": 6},
+]
+~~~
+
+对象中的数值键可使用 <code>value</code>、<code>y</code> 或 <code>data</code>；颜色键可使用 <code>color</code>、<code>fillColor</code> 或 <code>backgroundColor</code>；大小键可使用 <code>size</code>、<code>radius</code> 或 <code>r</code>。推荐在新代码中只使用第一组规范字段 <code>value/color/size</code>。
 
 示例：
 
@@ -314,10 +344,22 @@ signals = [
 
 - <code>type</code> 通常为 <code>buy</code> 或 <code>sell</code>，只控制标记方向，不是信号名称。
 - <code>text</code> 是稳定的信号名；可选 <code>textData</code> 可为每根 bar 提供不同标签。
-- 只有 <code>data[i]</code> 中的有限数值会激活第 i 根 bar 的信号。
+- 最稳定、最便于通知系统识别的写法，是用 <code>data[i]</code> 中的有限非零价格激活第 i 根 bar 的信号。
 - <code>text</code> 或 <code>textData</code> 本身不会激活信号。
 - 无信号位置必须使用真实的 <code>None</code>。
 - 默认标记一次性事件，不要在条件持续为真时每根 bar 都重复标记。
+
+兼容格式也允许 <code>True</code>，或 <code>{"active": True, "price": ..., "text": ..., "color": ...}</code>。布尔值没有价格时，渲染器会按当前 K 线高低点定位。为了让图表预览、保存后的信号监控和未来客户端保持一致，新指标优先使用“价格或 <code>None</code>”格式；只有确实需要逐点文本/颜色时才使用对象。
+
+<code>renderMode</code> 控制持续条件如何变成标记：
+
+| 值 | 行为 |
+| --- | --- |
+| <code>events</code>（显式事件模式） | 每个非空事件点都显示并可触发通知 |
+| <code>points</code> / <code>markers</code> / <code>raw</code> | 明确保留每个激活点 |
+| <code>state</code> / <code>continuous</code> / <code>condition</code> | 只在 False → True 的边沿显示并通知 |
+
+如果不指定模式，运行时会把高密度激活序列识别为持续状态并自动做边沿化。公共指标不要依赖这个启发式规则；应直接生成稀疏事件，或显式设置 <code>renderMode</code>。
 
 把状态转换成边沿事件：
 
@@ -415,7 +457,43 @@ confirmed_entry = edge(raw_entry).shift(
 
 ---
 
-## 10. pandas 与 numpy 类型陷阱
+## 10. 与 TradingView/Pine 的能力对应
+
+QuantDinger 不执行 Pine 源码。迁移目标是保持指标含义、数值时序和视觉表达一致，再用 Python/pandas 实现。以下是当前契约的真实边界：
+
+| TradingView/Pine 能力域 | 当前状态 | QuantDinger 写法或限制 |
+| --- | --- | --- |
+| OHLCV、历史引用、滚动窗口 | 支持 | <code>df</code>、<code>shift</code>、<code>rolling</code>、<code>ewm</code> |
+| <code>input.int/float/bool/string</code> | 支持主要语义 | <code># @param</code>；暂不支持 Pine 的 group、inline、confirm 和专用 color/source/timeframe/symbol 输入控件 |
+| <code>ta.*</code> 常用技术指标 | 计算语义可实现 | 使用 pandas/numpy；指标运行时暂不提供与 Pine 同名的 <code>ta</code> 命名空间，迁移时必须核对平滑算法、预热值和 NaN 规则 |
+| <code>plot()</code>、histogram、circles | 支持常用子集 | <code>plots</code> 的 line/bar/circle，支持主图/副图和逐点颜色/大小 |
+| <code>plotshape()</code>、<code>plotchar()</code> | 支持主要事件语义 | 使用 <code>signals</code>；动态文字用 <code>textData</code> 或点对象 |
+| <code>hline()</code>、line、box、label | 支持常用静态结果 | 使用 line/zone/label layers；每次运行返回最终对象列表，没有 Pine 对象 ID、修改方法或垃圾回收语义 |
+| <code>alert()</code>、<code>alertcondition()</code> | 部分支持 | 指标输出 <code>signals</code>，保存后由用户配置监控通知；指标代码本身不直接发送通知或下单 |
+| arrays、maps、用户函数与状态计算 | Python 等价能力 | 使用 list/dict、函数、pandas Series；这是整段 DataFrame 批量计算，不是 Pine 的逐 bar <code>var</code>/<code>varip</code> 执行模型 |
+| <code>fill()</code>、linefill、<code>bgcolor()</code>、<code>barcolor()</code> | 尚无一等契约 | 固定区间可用 zone 近似；不能宣称为完整填充、背景或 K 线着色兼容 |
+| area/step/cross/arrow、<code>plotcandle()</code>/<code>plotbar()</code> | 尚未支持 | 当前未知 <code>type</code> 会退化为 line，不应依赖退化行为 |
+| table、polyline、动态 drawing 对象生命周期 | 尚未支持 | 不要输出未定义对象 |
+| <code>request.security()</code>、<code>request.*()</code>、跨标的/多周期 | 尚未支持 | 指标只接收当前图表 DataFrame；不能在代码中自行请求网络或交易所数据 |
+| <code>barstate.*</code>、逐 tick 更新和 rollback | 不同执行模型 | 当前按收到的完整 DataFrame 批量重算；应以已完成 K 线事件作为可复现基准 |
+| strategy.*、订单、仓位和回测 | 不属于指标 | 转换到 Strategy API V2 |
+
+因此，“大部分功能一致”的推荐验收口径是：常见单标的、单周期指标在相同 OHLCV、参数、已完成 K 线上得到等价数值和事件；不要求 Pine 源码直接运行，也不把多周期请求、逐 tick 状态或高级绘图对象算作当前已兼容功能。
+
+迁移 Pine 指标时逐项核对：
+
+1. 明确 Pine 版本、输入参数、源序列和指标所在周期。
+2. 对齐 SMA/EMA/RMA/WMA、标准差、ATR 和交叉等函数的精确定义；不要只比较函数名称。
+3. 对齐预热期、<code>na</code> 传播、除零处理和首次有效 bar。
+4. 把持续条件与一次性事件分开；Pine 的条件序列不能直接当成每根 bar 的重复通知。
+5. 用固定 OHLCV 样本比较序列容差、事件 bar 索引和图层锚点。
+6. Pine 脚本包含表中“尚未支持”的能力时，必须删减、近似表达，或先扩展平台契约，不能在指南或代码注释中声称完全一致。
+
+Pine 能力分类可参考 TradingView 官方文档：[Visuals overview](https://www.tradingview.com/pine-script-docs/visuals/overview/)、[Inputs](https://www.tradingview.com/pine-script-docs/concepts/inputs/)、[Other timeframes and data](https://www.tradingview.com/pine-script-docs/concepts/other-timeframes-and-data/)、[Bar states](https://www.tradingview.com/pine-script-docs/concepts/bar-states/)。
+
+---
+
+## 11. pandas 与 numpy 类型陷阱
 
 最常见的错误是把 numpy ndarray 当成 pandas Series。
 
@@ -455,7 +533,7 @@ values = pd.Series(array, index=df.index)
 
 ---
 
-## 11. 避免未来数据和重绘
+## 12. 避免未来数据和重绘
 
 指标只能使用当前及历史 bar。禁止：
 
@@ -479,7 +557,7 @@ cross_up = (
 
 ---
 
-## 12. 沙箱与安全限制
+## 13. 沙箱与安全限制
 
 允许的计算模块包括 numpy、pandas、math、json、datetime、time、collections、functools、itertools、statistics、decimal、fractions 和 copy。<code>pd</code> 与 <code>np</code> 已预置，通常无需 import。
 
@@ -495,7 +573,7 @@ cross_up = (
 
 ---
 
-## 13. 完整教程：双 EMA 交叉指标
+## 14. 完整教程：双 EMA 交叉指标
 
 ~~~python
 # @param fast_len int 12 Fast EMA period range=5:30:1
@@ -602,7 +680,7 @@ output = {
 
 ---
 
-## 14. 验证、调试和常见错误
+## 15. 验证、调试和常见错误
 
 建议每次按以下顺序：
 
@@ -631,7 +709,7 @@ output = {
 
 ---
 
-## 15. 转换成策略前的语义清单
+## 16. 转换成策略前的语义清单
 
 转换前明确回答：
 
@@ -650,7 +728,7 @@ output = {
 
 ---
 
-## 16. 发布前检查清单
+## 17. 发布前检查清单
 
 - [ ] 名称和描述存在，且不包含收益承诺。
 - [ ] 代码注释、标识符、元数据和默认标签为英文。

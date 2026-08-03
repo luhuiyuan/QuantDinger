@@ -52,9 +52,11 @@ class GridBotConfig:
     leverage: float
     market_type: str
     margin_mode: str
+    grid_count_unit: str = "lines"
     max_open_orders: int = 999999
     min_spread_between_orders: float = 0.0
     order_frequency: int = 0
+    amount_per_grid_pct: float = 0.0
 
     @classmethod
     def from_trading_config(cls, trading_config: Dict[str, Any]) -> "GridBotConfig":
@@ -74,11 +76,20 @@ class GridBotConfig:
         mt = str(tc.get("market_type") or "swap").strip().lower()
         if mt in ("futures", "future", "perp", "perpetual"):
             mt = "swap"
+        count_unit = str(
+            bp.get("gridCountUnit") or bp.get("grid_count_unit") or "lines"
+        ).strip().lower()
+        if count_unit not in ("lines", "cells"):
+            count_unit = "lines"
         return cls(
             upper_price=upper,
             lower_price=lower,
             grid_count=max(2, _int(bp.get("gridCount") or bp.get("grid_count"), 10)),
             amount_per_grid=_float(bp.get("amountPerGrid") or bp.get("amount_per_grid"), 0.0),
+            amount_per_grid_pct=_pct(
+                bp.get("amountPerGridPct") or bp.get("amount_per_grid_pct"),
+                0.0,
+            ),
             grid_mode=str(bp.get("gridMode") or bp.get("grid_mode") or "arithmetic").strip().lower(),
             grid_direction=direction,
             initial_position_pct=_pct(bp.get("initialPositionPct") or bp.get("initial_position_pct"), 0.0),
@@ -87,6 +98,7 @@ class GridBotConfig:
             leverage=max(1.0, _float(tc.get("leverage"), 1.0)),
             market_type=mt,
             margin_mode=str(tc.get("margin_mode") or tc.get("marginMode") or "cross").strip().lower(),
+            grid_count_unit=count_unit,
             max_open_orders=max(1, _int(bp.get("maxOpenOrders") or bp.get("max_open_orders"), 999999)),
             min_spread_between_orders=_pct(
                 bp.get("minSpreadBetweenOrders") or bp.get("min_spread_between_orders"),
@@ -94,6 +106,20 @@ class GridBotConfig:
             ),
             order_frequency=max(0, _int(bp.get("orderFrequency") or bp.get("order_frequency"), 0)),
         )
+
+    @property
+    def grid_line_count(self) -> int:
+        """Boundary-line count consumed by the live grid engine.
+
+        Existing saved bots omitted ``gridCountUnit`` and therefore retain the
+        historical line-count meaning.  New templates explicitly store
+        ``cells`` so N visible cells are materialized from N + 1 boundaries.
+        """
+        return self.grid_count + 1 if self.grid_count_unit == "cells" else self.grid_count
+
+    @property
+    def tradable_cell_count(self) -> int:
+        return max(1, self.grid_line_count - 1)
 
     def effective_bounds(self, runtime_params: Optional[Dict[str, Any]] = None) -> tuple[float, float]:
         rp = runtime_params if isinstance(runtime_params, dict) else {}

@@ -373,6 +373,60 @@ docker compose -f docker-compose.ghcr.yml logs --tail=100 frontend
 docker compose -f docker-compose.ghcr.yml logs --tail=100 backend
 ```
 
+### AI streaming stops after about 50–60 seconds
+
+Typical symptoms:
+
+- `/api/ai/chat/message/stream` returns partial content and then becomes a failed request in the browser after roughly 50–60 seconds;
+- the client subsequently falls back to the non-streaming `/api/ai/chat/message` endpoint;
+- the backend container did not restart or run out of memory, and `chat_message_stream failed` may be absent from backend logs.
+
+This usually means an outer reverse proxy, such as host Nginx or 1Panel OpenResty, is still using default proxy timeouts and response buffering. A 600-second timeout inside the Docker frontend does not help when the outer proxy closes the SSE connection first.
+
+Add an exact SSE location to every public domain that serves AI chat. Mobile H5 normally proxies to port `8889`; use port `8888` for the Web frontend:
+
+```nginx
+location = /api/ai/chat/message/stream {
+    proxy_pass http://127.0.0.1:8889;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection "";
+
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_request_buffering off;
+
+    proxy_connect_timeout 75s;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    send_timeout 600s;
+
+    add_header X-Accel-Buffering "no" always;
+    add_header Cache-Control "no-cache, no-transform" always;
+}
+```
+
+1Panel OpenResty commonly mounts site configuration and logs at:
+
+```text
+/opt/1panel/www/sites/<domain>/proxy/
+/opt/1panel/www/sites/<domain>/log/access.log
+/opt/1panel/www/sites/<domain>/log/error.log
+```
+
+Validate before reloading; replace the container name with the value from your installation:
+
+```bash
+docker exec <openresty-container> /usr/local/openresty/nginx/sbin/nginx -t
+docker exec <openresty-container> /usr/local/openresty/nginx/sbin/nginx -s reload
+```
+
+If the stream still fails, search the proxy error log for `upstream timed out`, `upstream prematurely closed connection`, `499`, `502`, and `504`. Also inspect the backend container's `RestartCount` and `OOMKilled` state.
+
 ### Exchange or LLM network requests need a proxy
 
 For backend runtime outbound requests, set `PROXY_URL` in `backend.env` or `backend_api_python/.env`.

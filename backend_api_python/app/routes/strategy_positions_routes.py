@@ -245,6 +245,23 @@ def get_positions():
                     or credential_id_from_exchange_config(exchange_config)
                     or 0
                 )
+                # Self-heal rows created by older JSONB parsing that lost the
+                # credential id. This only repairs ownership metadata; size
+                # and cost basis remain untouched.
+                if cred_id > 0:
+                    with get_db_connection() as db:
+                        cur = db.cursor()
+                        cur.execute(
+                            """
+                            UPDATE qd_strategy_positions
+                            SET credential_id = %s
+                            WHERE strategy_id = %s
+                              AND COALESCE(credential_id, 0) = 0
+                            """,
+                            (cred_id, int(strategy_id)),
+                        )
+                        db.commit()
+                        cur.close()
                 account_rows = list_account_positions(
                     user_id=int(user_id),
                     credential_id=cred_id if cred_id > 0 else None,
@@ -261,12 +278,28 @@ def get_positions():
                     market_type=market_type,
                     allowed_symbols=allowed,
                 )
+                from app.services.live_trading.position_ownership import (
+                    build_ownership_rows,
+                    list_reservations,
+                )
+
+                protected_rows = list_reservations(
+                    user_id=int(user_id),
+                    credential_id=cred_id,
+                    market_type=market_type,
+                )
                 account_reconciliation = reconcile_strategy_vs_account(
                     out,
                     account_rows,
                     allocated_rows=allocated_rows,
+                    protected_rows=protected_rows,
                 )
                 account_reconciliation["account_positions"] = account_rows
+                account_reconciliation["ownership"] = build_ownership_rows(
+                    account_rows=account_rows,
+                    allocated_rows=allocated_rows,
+                    reservation_rows=protected_rows,
+                )
             except Exception as e:
                 account_reconciliation = {
                     "status": "error",
@@ -360,5 +393,3 @@ def get_positions():
         logger.error(f"get_positions failed: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({'code': 0, 'msg': str(e), 'data': {'positions': [], 'items': []}}), 500
-
-

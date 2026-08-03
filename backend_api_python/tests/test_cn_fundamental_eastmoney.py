@@ -2,7 +2,6 @@ import pytest
 
 from app.data_sources import cn_fundamental_history as history_module
 from app.data_sources.cn_fundamental_history import fetch_eastmoney_annual_reports
-from app.services import external_data_request_logs as request_log_module
 
 
 @pytest.fixture(autouse=True)
@@ -49,24 +48,18 @@ def test_merges_statement_line_items_only_into_annual_main_periods():
  assert 'parent_equity_end' not in row['fields']
 
 
-class RecordingService:
- def __init__(self): self.entries = []
- def record(self, entry): self.entries.append(entry); return True
+def test_annual_transport_leaves_attempt_recording_to_data_router(monkeypatch):
+ from app.services import external_data_request_logs as request_log_module
 
+ calls = []
 
-def test_annual_backfill_records_each_eastmoney_provider_attempt(monkeypatch):
- service = RecordingService()
- monkeypatch.setattr(request_log_module, 'ExternalDataRequestLogService', lambda: service)
+ class RecordingService:
+  def record(self, entry): calls.append(entry); return True
+
+ monkeypatch.setattr(request_log_module, 'ExternalDataRequestLogService', RecordingService)
  fetch_eastmoney_annual_reports('600519', StatementSession())
- entries = [entry.normalized() for entry in service.entries]
- assert len(entries) == 4
- assert {entry['provider'] for entry in entries} == {'eastmoney'}
- assert {entry['data_domain'] for entry in entries} == {'fundamental_history'}
- assert {entry['call_source'] for entry in entries} == {'cn_fundamental_history'}
- assert {entry['operation'] for entry in entries} == {
-  'annual_main_report', 'annual_income_statement',
-  'annual_cashflow_statement', 'annual_balance_statement'
- }
+
+ assert calls == []
 
 
 def test_rate_limits_each_eastmoney_request(monkeypatch):

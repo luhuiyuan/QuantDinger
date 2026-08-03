@@ -651,6 +651,8 @@ tags:
   description: Interactive Brokers adapter (Internal)
 - name: Alpaca
   description: Alpaca adapter (Internal)
+- name: DataSources
+  description: External data source operations (Administrator)
 servers:
 - url: http://localhost:5000
   description: Backend direct (python run.py)
@@ -2471,6 +2473,39 @@ paths:
       schema:
         type: string
         minLength: 1
+  /api/market/cn/stocks/{symbol}/fundamentals:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketCnStocksSymbolFundamentals
+      summary: Get Api Market Cn Stocks Symbol Fundamentals
+      parameters:
+      - name: symbol
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: public
+    parameters:
+    - in: path
+      name: symbol
+      required: true
+      schema:
+        type: string
+        minLength: 1
   /api/market/cn/stocks/{symbol}/history:
     get:
       responses:
@@ -3103,6 +3138,494 @@ paths:
       operationId: getApiMarketHistoryDiskStatus
       summary: Get Api Market History Disk Status
       x-visibility: public
+  /api/market-history/fundamentals/capabilities:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistoryFundamentalsCapabilities
+      summary: Get Api Market History Fundamentals Capabilities
+      x-visibility: public
+  /api/market-history/fundamentals/sync-runs:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: postApiMarketHistoryFundamentalsSyncRuns
+      summary: Post Api Market History Fundamentals Sync Runs
+      x-visibility: public
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistoryFundamentalsSyncRuns
+      summary: Get Api Market History Fundamentals Sync Runs
+      x-visibility: public
+  /api/market-history/fundamentals/sync-runs/{run_id}:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistoryFundamentalsSyncRunsRunId
+      summary: Get Api Market History Fundamentals Sync Runs Run Id
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: public
+    parameters:
+    - in: path
+      name: run_id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/market-history/fundamentals/sync-runs/{run_id}/cancel:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: postApiMarketHistoryFundamentalsSyncRunsRunIdCancel
+      summary: Post Api Market History Fundamentals Sync Runs Run Id Cancel
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: public
+    parameters:
+    - in: path
+      name: run_id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/market-history/fundamentals/sync-runs/{run_id}/retry:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: postApiMarketHistoryFundamentalsSyncRunsRunIdRetry
+      summary: Post Api Market History Fundamentals Sync Runs Run Id Retry
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: public
+    parameters:
+    - in: path
+      name: run_id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/market-history/fundamentals/coverage:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistoryFundamentalsCoverage
+      summary: Get Api Market History Fundamentals Coverage
+      x-visibility: public
+  /api/market-history/fundamentals/quality-issues:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistoryFundamentalsQualityIssues
+      summary: Get Api Market History Fundamentals Quality Issues
+      x-visibility: public
+  /api/market-history/fundamentals/verification-targets:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Market
+      operationId: getApiMarketHistoryFundamentalsVerificationTargets
+      summary: Get Api Market History Fundamentals Verification Targets
+      x-visibility: public
+  /api/task-management/overview:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: getApiTaskManagementOverview
+      summary: Get Api Task Management Overview
+      x-visibility: internal
+  /api/task-management/definitions:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: getApiTaskManagementDefinitions
+      summary: Get Api Task Management Definitions
+      x-visibility: internal
+  /api/task-management/schedules:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: getApiTaskManagementSchedules
+      summary: Get Api Task Management Schedules
+      x-visibility: internal
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: postApiTaskManagementSchedules
+      summary: Post Api Task Management Schedules
+      x-visibility: internal
+  /api/task-management/schedules/{schedule_id}:
+    put:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: putApiTaskManagementSchedulesScheduleId
+      summary: Put Api Task Management Schedules Schedule Id
+      parameters:
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: schedule_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+  /api/task-management/runs:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: getApiTaskManagementRuns
+      summary: Get Api Task Management Runs
+      x-visibility: internal
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: postApiTaskManagementRuns
+      summary: Post Api Task Management Runs
+      x-visibility: internal
+  /api/task-management/runs/{run_id}:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: getApiTaskManagementRunsRunId
+      summary: Get Api Task Management Runs Run Id
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: run_id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/task-management/runs/{run_id}/cancel:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: postApiTaskManagementRunsRunIdCancel
+      summary: Post Api Task Management Runs Run Id Cancel
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: run_id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/task-management/runs/{run_id}/retry:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: postApiTaskManagementRunsRunIdRetry
+      summary: Post Api Task Management Runs Run Id Retry
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: internal
+    parameters:
+    - in: path
+      name: run_id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/task-management/logs:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - task_management
+      operationId: getApiTaskManagementLogs
+      summary: Get Api Task Management Logs
+      x-visibility: internal
   /api/ai/skills:
     get:
       responses:
@@ -3704,6 +4227,27 @@ paths:
       tags:
       - Indicator
       operationId: getApiIndicatorGetIndicatorParams
+      x-visibility: public
+  /api/indicator/chart-preview:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      summary: Return candles, indicator plots, and visual signals without creating
+        a task.
+      tags:
+      - Indicator
+      operationId: postApiIndicatorChartPreview
       x-visibility: public
   /api/indicator/aiGenerate:
     post:
@@ -4592,6 +5136,46 @@ paths:
       - Strategy
       operationId: getApiStrategiesPositions
       x-visibility: internal
+  /api/strategies/position-ownership:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Strategy
+      operationId: getApiStrategiesPositionOwnership
+      summary: Get Api Strategies Position Ownership
+      x-visibility: internal
+  /api/strategies/position-ownership/repair:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - Strategy
+      operationId: postApiStrategiesPositionOwnershipRepair
+      summary: Post Api Strategies Position Ownership Repair
+      x-visibility: internal
   /api/strategies/review-report:
     post:
       responses:
@@ -5434,6 +6018,672 @@ paths:
       operationId: getApiExternalDataRequestLogsSettings
       summary: Get Api External Data Request Logs Settings
       x-visibility: private
+  /api/data-sources/step-up:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesStepUp
+      summary: Post Api Data Sources Step Up
+      x-visibility: private
+  /api/data-sources/overview:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: getApiDataSourcesOverview
+      summary: Get Api Data Sources Overview
+      x-visibility: private
+  /api/data-sources/readiness:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: getApiDataSourcesReadiness
+      summary: Get Api Data Sources Readiness
+      x-visibility: private
+  /api/data-sources/instances:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: getApiDataSourcesInstances
+      summary: Get Api Data Sources Instances
+      x-visibility: private
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesInstances
+      summary: Post Api Data Sources Instances
+      x-visibility: private
+  /api/data-sources/instances/{instance_id}:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: getApiDataSourcesInstancesInstanceId
+      summary: Get Api Data Sources Instances Instance Id
+      parameters:
+      - name: instance_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: private
+    parameters:
+    - in: path
+      name: instance_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+  /api/data-sources/instances/{instance_id}/credentials:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesInstancesInstanceIdCredentials
+      summary: Post Api Data Sources Instances Instance Id Credentials
+      parameters:
+      - name: instance_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: private
+    parameters:
+    - in: path
+      name: instance_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+  /api/data-sources/instances/{instance_id}/{action}:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesInstancesInstanceIdAction
+      summary: Post Api Data Sources Instances Instance Id Action
+      parameters:
+      - name: instance_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: action
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: private
+    parameters:
+    - in: path
+      name: instance_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+    - in: path
+      name: action
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/data-sources/instances/{instance_id}/diagnostics/{capability_key}:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesInstancesInstanceIdDiagnosticsCapabilityKey
+      summary: Post Api Data Sources Instances Instance Id Diagnostics Capability
+        Key
+      parameters:
+      - name: instance_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: capability_key
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: private
+    parameters:
+    - in: path
+      name: instance_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+    - in: path
+      name: capability_key
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/data-sources/health/{state_id}/quarantine:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesHealthStateIdQuarantine
+      summary: Post Api Data Sources Health State Id Quarantine
+      parameters:
+      - name: state_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: private
+    parameters:
+    - in: path
+      name: state_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+  /api/data-sources/health/{state_id}/extend-circuit:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesHealthStateIdExtendCircuit
+      summary: Post Api Data Sources Health State Id Extend Circuit
+      parameters:
+      - name: state_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: private
+    parameters:
+    - in: path
+      name: state_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+  /api/data-sources/health/{state_id}/recovery-probes:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesHealthStateIdRecoveryProbes
+      summary: Post Api Data Sources Health State Id Recovery Probes
+      parameters:
+      - name: state_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: private
+    parameters:
+    - in: path
+      name: state_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+  /api/data-sources/policies:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: getApiDataSourcesPolicies
+      summary: Get Api Data Sources Policies
+      x-visibility: private
+  /api/data-sources/policies/{capability_key}:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: getApiDataSourcesPoliciesCapabilityKey
+      summary: Get Api Data Sources Policies Capability Key
+      parameters:
+      - name: capability_key
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: private
+    parameters:
+    - in: path
+      name: capability_key
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/data-sources/policies/{capability_key}/draft:
+    put:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: putApiDataSourcesPoliciesCapabilityKeyDraft
+      summary: Put Api Data Sources Policies Capability Key Draft
+      parameters:
+      - name: capability_key
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: private
+    parameters:
+    - in: path
+      name: capability_key
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/data-sources/policies/{capability_key}/preview:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: getApiDataSourcesPoliciesCapabilityKeyPreview
+      summary: Get Api Data Sources Policies Capability Key Preview
+      parameters:
+      - name: capability_key
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: private
+    parameters:
+    - in: path
+      name: capability_key
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/data-sources/policies/{capability_key}/{action}:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesPoliciesCapabilityKeyAction
+      summary: Post Api Data Sources Policies Capability Key Action
+      parameters:
+      - name: capability_key
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: action
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: private
+    parameters:
+    - in: path
+      name: capability_key
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    - in: path
+      name: action
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/data-sources/routed-requests/{routed_request_id}:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: getApiDataSourcesRoutedRequestsRoutedRequestId
+      summary: Get Api Data Sources Routed Requests Routed Request Id
+      parameters:
+      - name: routed_request_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      x-visibility: private
+    parameters:
+    - in: path
+      name: routed_request_id
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/data-sources/legacy-imports:
+    get:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: getApiDataSourcesLegacyImports
+      summary: Get Api Data Sources Legacy Imports
+      x-visibility: private
+  /api/data-sources/legacy-imports/{adapter_key}:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesLegacyImportsAdapterKey
+      summary: Post Api Data Sources Legacy Imports Adapter Key
+      parameters:
+      - name: adapter_key
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: private
+    parameters:
+    - in: path
+      name: adapter_key
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  /api/data-sources/cutovers:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesCutovers
+      summary: Post Api Data Sources Cutovers
+      x-visibility: private
+  /api/data-sources/cutovers/{cutover_id}/{action}:
+    post:
+      responses:
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanErrorEnvelope'
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HumanSuccessEnvelope'
+      tags:
+      - DataSources
+      operationId: postApiDataSourcesCutoversCutoverIdAction
+      summary: Post Api Data Sources Cutovers Cutover Id Action
+      parameters:
+      - name: cutover_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: action
+        in: path
+        required: true
+        schema:
+          type: string
+      x-visibility: private
+    parameters:
+    - in: path
+      name: cutover_id
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+    - in: path
+      name: action
+      required: true
+      schema:
+        type: string
+        minLength: 1
   /api/portfolio/positions:
     get:
       responses:

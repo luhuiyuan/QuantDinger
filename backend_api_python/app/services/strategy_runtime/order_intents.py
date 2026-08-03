@@ -88,6 +88,7 @@ class OrderIntentService:
         target_weight: Optional[float] = None,
         target_notional: Optional[float] = None,
         target_position_qty: Optional[float] = None,
+        client_order_id: str = "",
         payload: Dict[str, Any] | None = None,
     ) -> OrderIntent:
         key = str(idempotency_key or "").strip()[:180]
@@ -111,12 +112,12 @@ class OrderIntentService:
                      quantity, notional, limit_price, execution_algo,
                      portfolio_id, universe_id, rebalance_group_id,
                      target_weight, target_notional, target_position_qty,
-                     status, payload_json,
+                     status, client_order_id, payload_json,
                      created_at, updated_at)
-                    VALUES
+                VALUES
                     (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                      %s, %s, %s, %s, %s, %s,
-                     'intent_created', %s, NOW(), NOW())
+                     'intent_created', %s, %s, NOW(), NOW())
                     ON CONFLICT(strategy_run_id, idempotency_key) DO NOTHING
                     """,
                     (
@@ -139,6 +140,7 @@ class OrderIntentService:
                         target_weight,
                         target_notional,
                         target_position_qty,
+                        str(client_order_id or "")[:100],
                         json.dumps(safe_payload, ensure_ascii=False),
                     ),
                 )
@@ -173,6 +175,50 @@ class OrderIntentService:
         except Exception as exc:
             logger.warning("order intent create failed: %s", exc)
             return OrderIntent(0, key, "ephemeral", existing=False)
+
+    def statuses_by_client_order_ids(
+        self,
+        references: list[str] | set[str] | tuple[str, ...],
+    ) -> Dict[str, Dict[str, Any]]:
+        refs = [str(item or "").strip()[:100] for item in references if str(item or "").strip()]
+        if not refs:
+            return {}
+        try:
+            with get_db_connection() as db:
+                cur = db.cursor()
+                cur.execute(
+                    """
+                    SELECT
+                        soi.client_order_id,
+                        soi.status,
+                        COALESCE(SUM(sof.quantity), 0) AS filled_quantity,
+                        COALESCE(SUM(sof.notional), 0) AS filled_notional,
+                        COALESCE(SUM(sof.fee), 0) AS fee
+                    FROM strategy_order_intents soi
+                    LEFT JOIN strategy_order_fills sof
+                      ON sof.order_intent_id = soi.id
+                    WHERE soi.strategy_run_id = %s
+                      AND soi.client_order_id = ANY(%s)
+                    GROUP BY soi.id, soi.client_order_id, soi.status
+                    """,
+                    (self.strategy_run_id, refs),
+                )
+                rows = cur.fetchall() or []
+                cur.close()
+        except Exception as exc:
+            logger.debug("order intent status lookup skipped: %s", exc)
+            return {}
+        return {
+            str(row.get("client_order_id") or ""): {
+                "client_order_id": str(row.get("client_order_id") or ""),
+                "status": str(row.get("status") or "unknown"),
+                "filled_quantity": float(row.get("filled_quantity") or 0.0),
+                "filled_notional": float(row.get("filled_notional") or 0.0),
+                "fee": float(row.get("fee") or 0.0),
+            }
+            for row in rows
+            if str(row.get("client_order_id") or "")
+        }
 
     def create_from_signal(
         self,

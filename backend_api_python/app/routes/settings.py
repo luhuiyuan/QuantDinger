@@ -29,6 +29,12 @@ ROUTED_DATA_SOURCE_SECRET_KEYS = frozenset({
     'SEARCH_BING_API_KEY', 'SERPAPI_KEYS', 'ALPHA_VANTAGE_API_KEY',
 })
 
+# Security roots require a coordinated process restart after persistence.
+RESTART_REQUIRED_SETTINGS = {
+    'SECRET_KEY',
+    'CREDENTIAL_ENCRYPTION_KEY',
+}
+
 # ---------------------------------------------------------------
 # ---------------------------------------------------------------
 
@@ -684,8 +690,8 @@ CONFIG_SCHEMA = {
                 'key': 'SPOT_CLOSE_SAFETY_RATIO',
                 'label': 'Spot Close Safety Ratio',
                 'type': 'number',
-                'default': '0.998',
-                'description': 'When closing spot long, sell qty is capped to (exchange free base × this ratio), then floored to lot step. Lower if full close fails due to fees (valid range 0.9–1.0).'
+                'default': '1.0',
+                'description': 'When closing spot long, sell qty is capped to (exchange free base × this ratio), then floored to lot step. Base-asset fees are already deducted from strategy inventory; lower only if a venue still rejects full closes (valid range 0.9–1.0).'
             },
             {
                 'key': 'SPOT_OPEN_QUOTE_BUFFER',
@@ -1955,9 +1961,13 @@ def save_settings():
         current_env.update(updates)
         
         if write_env_file(current_env):
-            clear_config_cache()
-            reload_runtime_env()
-            refresh_runtime_services()
+            restart_keys = sorted(RESTART_REQUIRED_SETTINGS.intersection(updates))
+            hot_reload_keys = sorted(set(updates) - RESTART_REQUIRED_SETTINGS)
+
+            if hot_reload_keys:
+                clear_config_cache()
+                reload_runtime_env()
+                refresh_runtime_services()
 
             if 'ADMIN_EMAIL' in updates:
                 try:
@@ -1976,9 +1986,11 @@ def save_settings():
 
             response_data = {
                 'updated_keys': list(updates.keys()),
-                'requires_restart': False,
-                'hot_reloaded': True,
-                'services_refreshed': True
+                'restart_required_keys': restart_keys,
+                'hot_reloaded_keys': hot_reload_keys,
+                'requires_restart': bool(restart_keys),
+                'hot_reloaded': bool(hot_reload_keys),
+                'services_refreshed': bool(hot_reload_keys)
             }
             if admin_email_sync is not None:
                 response_data['admin_email_sync'] = admin_email_sync

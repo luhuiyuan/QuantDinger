@@ -30,6 +30,19 @@ def test_bybit_detect_hedge_from_position_list():
         assert client.is_hedge_position_mode(symbol="DOGE/USDT") is True
 
 
+def test_bybit_mode_lookup_failure_is_unknown_not_local_hint():
+    client = BybitClient(api_key="k", secret_key="s", category="linear", hedge_mode=True)
+    with patch.object(client, "get_positions", side_effect=RuntimeError("network down")):
+        assert client.is_hedge_position_mode(symbol="DOGE/USDT") is None
+
+
+def test_bybit_order_routing_can_use_explicit_hint_after_unknown_lookup():
+    client = BybitClient(api_key="k", secret_key="s", category="linear", hedge_mode=True)
+    with patch.object(client, "is_hedge_position_mode", return_value=None):
+        assert client._resolve_position_idx("long", symbol="DOGE/USDT") == 1
+        assert client._resolve_position_idx("short", symbol="DOGE/USDT") == 2
+
+
 def test_bybit_resolve_position_idx_one_way_always_zero():
     client = BybitClient(api_key="k", secret_key="s", category="linear")
     with patch.object(client, "is_hedge_position_mode", return_value=False):

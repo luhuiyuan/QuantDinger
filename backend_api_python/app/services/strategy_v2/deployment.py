@@ -75,6 +75,8 @@ class StrategyV2DeploymentService:
             "channels": list(payload.get("notificationChannels") or []),
             "targets": payload.get("notificationTargets") or {},
         }
+        source_metadata = self._object(source.get("metadata"))
+        source_runtime = self._object(source_metadata.get("last_run_config"))
         generated_runtime = payload.get("strategyRuntimeConfig") or payload.get("strategy_runtime_config") or {}
         if not isinstance(generated_runtime, dict):
             raise StrategyV2ContractError("strategyV2.runtimeConfigInvalid")
@@ -91,15 +93,40 @@ class StrategyV2DeploymentService:
             "stop_loss_pct",
             "take_profit_pct",
         }
+        # A visual robot is saved as a normal Strategy API V2 source before the
+        # live wizard opens.  The wizard only sends the source id and runtime
+        # account settings, so recover the whitelisted robot/executor contract
+        # from the source metadata.  Without this merge a grid source silently
+        # falls back to the generic bar-driven script runtime instead of the
+        # durable resting-order GridEngine.
         runtime_config = {
             key: value
-            for key, value in generated_runtime.items()
+            for key, value in source_runtime.items()
             if key in allowed_runtime_keys
         }
         runtime_config.update({
+            key: value
+            for key, value in generated_runtime.items()
+            if key in allowed_runtime_keys
+        })
+        manifest_metadata = manifest.metadata()
+        manifest_market_type = self._manifest_market_type(manifest_metadata)
+        symbol = self._manifest_symbol(manifest_metadata)
+        # Source metadata also contains the IDE's last run configuration.  That
+        # configuration may still carry the editor defaults (Crypto/BTC/USDT)
+        # even when the compiled source contract declares another instrument
+        # such as USStock:SPY.  A deployment must always follow the immutable
+        # compiled contract; otherwise the UI and parts of the runtime can
+        # observe different instruments for the same strategy.
+        runtime_config["symbol"] = symbol
+        runtime_config["market_type"] = manifest_market_type
+        self._normalize_grid_runtime_budget(runtime_config)
+        if str(runtime_config.get("bot_type") or "").strip().lower() == "grid":
+            runtime_config["position_ledger"] = "fills"
+        runtime_config.update({
             "api_version": 2,
             "script_source_id": source_id,
-            "strategy_manifest": manifest.metadata(),
+            "strategy_manifest": manifest_metadata,
             "initial_capital": initial_capital,
             "leverage_enabled": leverage_enabled,
             "leverage": leverage,
@@ -111,7 +138,6 @@ class StrategyV2DeploymentService:
             "account_risk": dict(account_risk),
         })
         market_category = manifest.markets[0] if len(manifest.markets) == 1 else "Mixed"
-        symbol = self._manifest_symbol(manifest.metadata())
         exchange_config = {"credential_id": credential_id, "exchange_id": exchange_id} if credential_id else {}
 
         with get_db_connection() as db:
@@ -159,6 +185,43 @@ class StrategyV2DeploymentService:
             db.commit()
             cur.close()
         return deployment_id
+
+    @staticmethod
+    def _object(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {}
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        return {}
+
+    @classmethod
+    def _normalize_grid_runtime_budget(cls, runtime_config: dict[str, Any]) -> None:
+        if str(runtime_config.get("bot_type") or "").strip().lower() != "grid":
+            return
+        bot_params = cls._object(runtime_config.get("bot_params"))
+        executor_config = cls._object(runtime_config.get("executor_config"))
+        try:
+            count = max(
+                1,
+                int(
+                    bot_params.get("gridCount")
+                    or bot_params.get("grid_count")
+                    or executor_config.get("grid_count")
+                    or 1
+                ),
+            )
+        except (TypeError, ValueError):
+            count = 1
+        if not (
+            bot_params.get("amountPerGridPct")
+            or bot_params.get("amount_per_grid_pct")
+        ):
+            bot_params["amountPerGridPct"] = 1.0 / float(count)
+        runtime_config["bot_params"] = bot_params
 
     @staticmethod
     def _credential_exchange(user_id: int, credential_id: int) -> str:

@@ -30,9 +30,6 @@ from app.services.live_trading.bitget_spot import BitgetSpotClient
 from app.services.live_trading.bybit import BybitClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient
 from app.services.live_trading.htx import HtxClient
-from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
-from app.services.live_trading.kraken import KrakenClient
-from app.services.live_trading.kraken_futures import KrakenFuturesClient
 from app.services.live_trading.okx import OkxClient
 
 
@@ -154,26 +151,6 @@ FILL_CONTRACT_CASES: Tuple[FillContractCase, ...] = (
         {"status": "finished", "filled_size": "100", "fill_price": "65000"},
         (1.0, 65000.0, "filled"),
         call_assert=_gate_call_assert,
-    ),
-    FillContractCase(
-        "coinbase_spot_done",
-        CoinbaseExchangeClient,
-        {"status": "done", "filled_size": "0.02", "executed_value": "1300.0"},
-        (0.02, 65000.0, "filled"),
-        market_type="spot",
-    ),
-    FillContractCase(
-        "kraken_spot_closed",
-        KrakenClient,
-        {"status": "closed", "vol_exec": "0.015", "cost": "975.0"},
-        (0.015, 65000.0, "filled"),
-        market_type="spot",
-    ),
-    FillContractCase(
-        "kraken_futures_filled",
-        KrakenFuturesClient,
-        {"status": "filled", "filledSize": "0.03", "avgFillPrice": "65010"},
-        (0.03, 65010.0, "filled"),
     ),
     FillContractCase(
         "htx_filled",

@@ -39,7 +39,11 @@ def _load_env_files_once() -> None:
     root_dir = backend_dir.parent
     for env_path in (root_dir / ".env", backend_dir / ".env"):
         if env_path.exists():
-            load_dotenv(env_path, override=True)
+            # Container/orchestrator environment is authoritative. In
+            # particular, process-role variables must not be replaced by a
+            # developer .env file or the API process can silently fall back to
+            # the legacy in-process trading runtime.
+            load_dotenv(env_path, override=False)
 
 
 def load_addon_config() -> Dict[str, Any]:
@@ -88,7 +92,7 @@ def load_addon_config() -> Dict[str, Any]:
         ('OPENROUTER_API_URL', 'openrouter.api_url', 'string'),
         ('OPENROUTER_MODEL', 'openrouter.model', 'string'),
         ('OPENROUTER_TEMPERATURE', 'openrouter.temperature', 'float'),
-        ('OPENROUTER_MAX_TOKENS', 'openrouter.max_tokens', 'int'),
+        ('LLM_MAX_TOKENS', 'llm.max_tokens', 'int'),
         ('OPENROUTER_TIMEOUT', 'openrouter.timeout', 'int'),
         ('OPENROUTER_CONNECT_TIMEOUT', 'openrouter.connect_timeout', 'int'),
         

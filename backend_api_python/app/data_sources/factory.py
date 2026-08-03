@@ -259,10 +259,14 @@ class DataSourceFactory:
         mt = (market_type or "").strip().lower()
         if mt in ("futures", "future", "perp", "perpetual"):
             mt = "swap"
-        if market == "Crypto" and (ex or mt == "swap"):
+        if market == "Crypto" and ex:
             from app.data_sources.crypto import CryptoDataSource
 
             return CryptoDataSource.for_exchange(ex, mt or "swap")
+        if market == "Crypto" and mt == "swap":
+            from app.data_sources.crypto import CryptoDataSource
+
+            return CryptoDataSource.for_public_market("swap")
         return cls.get_source(market)
 
     @classmethod

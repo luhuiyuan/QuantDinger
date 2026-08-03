@@ -59,7 +59,7 @@ def test_binance_uses_current_algo_order_endpoint():
     assert all(call[2]["reduceOnly"] == "true" for call in calls)
 
 
-def test_okx_uses_separate_reduce_only_algo_orders():
+def test_okx_hedge_protection_uses_position_side_without_net_only_reduce_flag():
     from app.services.live_trading.okx import OkxClient
 
     client = OkxClient.__new__(OkxClient)
@@ -72,10 +72,29 @@ def test_okx_uses_separate_reduce_only_algo_orders():
     result = place_native_protection_orders(client, _request())
 
     assert len(result) == 2
-    assert calls[0]["reduceOnly"] == "true"
+    assert all("reduceOnly" not in body for body in calls)
     assert calls[0]["tag"] == "broker"
     assert any("slTriggerPx" in body for body in calls)
     assert any("tpTriggerPx" in body for body in calls)
+
+
+def test_okx_net_protection_sets_reduce_only():
+    from app.services.live_trading.okx import OkxClient
+
+    client = OkxClient.__new__(OkxClient)
+    client.broker_code = ""
+    client._normalize_order_size = lambda **_kwargs: (Decimal("2"), 0)
+    client._resolve_pos_side = lambda **_kwargs: "net"
+    calls = []
+    client._signed_request = (
+        lambda method, path, json_body=None, params=None: calls.append(json_body)
+        or {"data": [{"algoId": "1"}]}
+    )
+
+    place_native_protection_orders(client, _request())
+
+    assert calls
+    assert all(body["reduceOnly"] == "true" for body in calls)
 
 
 def test_bitget_keeps_channel_header_path_and_position_side():
@@ -115,7 +134,7 @@ def test_gate_price_orders_use_reduce_only_signed_contract_size():
     from app.services.live_trading.gate import GateUsdtFuturesClient
 
     client = GateUsdtFuturesClient.__new__(GateUsdtFuturesClient)
-    client._resolve_order_size = lambda **_kwargs: ("-2", {"X-Gate-Size-Decimal": "1"})
+    client._resolve_order_size = lambda **_kwargs: ("-2", None)
     calls = []
     client._signed_request = lambda method, path, **kwargs: calls.append((path, kwargs)) or {"id": 1}
 
@@ -123,7 +142,25 @@ def test_gate_price_orders_use_reduce_only_signed_contract_size():
 
     assert len(calls) == 2
     assert all(kwargs["json_body"]["initial"]["reduce_only"] is True for _, kwargs in calls)
-    assert all(kwargs["json_body"]["initial"]["size"] == "-2" for _, kwargs in calls)
+    assert all(kwargs["json_body"]["initial"]["size"] == -2 for _, kwargs in calls)
+
+
+def test_gate_decimal_price_orders_use_string_amount():
+    from app.services.live_trading.gate import GateUsdtFuturesClient
+
+    client = GateUsdtFuturesClient.__new__(GateUsdtFuturesClient)
+    client._resolve_order_size = lambda **_kwargs: (
+        "-0.2",
+        {"X-Gate-Size-Decimal": "1"},
+    )
+    calls = []
+    client._signed_request = lambda method, path, **kwargs: calls.append((path, kwargs)) or {"id": 1}
+
+    place_native_protection_orders(client, _request())
+
+    assert len(calls) == 2
+    assert all(kwargs["json_body"]["initial"]["amount"] == "-0.2" for _, kwargs in calls)
+    assert all("size" not in kwargs["json_body"]["initial"] for _, kwargs in calls)
 
 
 def test_htx_uses_margin_mode_specific_position_tpsl_endpoint():

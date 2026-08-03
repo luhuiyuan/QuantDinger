@@ -56,6 +56,27 @@ class USStockDataSource(BaseDataSource):
         "Origin": "https://www.nasdaq.com",
         "Referer": "https://www.nasdaq.com/market-activity/stocks",
     }
+
+    @staticmethod
+    def _merge_every_n_sorted_bars(
+        bars: List[Dict[str, Any]], n: int
+    ) -> List[Dict[str, Any]]:
+        """Merge complete groups of ordered bars into larger OHLCV candles."""
+        if n <= 1 or len(bars) < n:
+            return bars
+        sorted_bars = sorted(bars, key=lambda item: item["time"])
+        merged = []
+        for index in range(0, len(sorted_bars) - len(sorted_bars) % n, n):
+            chunk = sorted_bars[index:index + n]
+            merged.append({
+                "time": chunk[0]["time"],
+                "open": chunk[0]["open"],
+                "high": max(item["high"] for item in chunk),
+                "low": min(item["low"] for item in chunk),
+                "close": chunk[-1]["close"],
+                "volume": round(sum(item["volume"] for item in chunk), 2),
+            })
+        return merged
     
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
         """获取美股实时报价。"""

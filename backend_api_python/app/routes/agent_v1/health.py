@@ -46,4 +46,6 @@ def whoami():
         "instruments": (token.get("instruments") or "*").split(","),
         "paper_only": bool(token.get("paper_only", True)),
         "rate_limit_per_min": int(token.get("rate_limit_per_min") or 60),
+        "max_order_notional": float(token.get("max_order_notional") or 1000),
+        "max_daily_notional": float(token.get("max_daily_notional") or 5000),
     })

@@ -69,7 +69,10 @@ def test_grid_startup_places_limits_when_client_ok():
 
     with patch("app.services.grid.engine.place_grid_limit_order") as place:
         place.return_value = MagicMock(exchange_order_id="ex1")
-        with patch("app.services.grid.engine.GridRestingOrderRepository") as repo_cls:
+        with patch(
+            "app.services.grid.engine.GridEngine._grid_entry_ownership_allowed",
+            return_value=(True, {}),
+        ), patch("app.services.grid.engine.GridRestingOrderRepository") as repo_cls:
             repo = repo_cls.return_value
             repo.has_open_for_cell.return_value = False
             repo.insert.return_value = 1
@@ -89,7 +92,13 @@ def test_grid_startup_places_limits_when_client_ok():
                         "initialPositionPct": 0,
                     },
                 },
-                {"exchange_id": "okx", "api_key": "k", "secret_key": "s", "passphrase": "p"},
+                {
+                    "exchange_id": "okx",
+                    "credential_id": 9,
+                    "api_key": "k",
+                    "secret_key": "s",
+                    "passphrase": "p",
+                },
                 user_id=1,
                 initial_capital=1000,
                 enqueue_market_fn=_enqueue,

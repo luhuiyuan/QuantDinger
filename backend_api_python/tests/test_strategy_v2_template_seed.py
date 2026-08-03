@@ -47,6 +47,22 @@ def test_strategy_v2_seed_templates_compile_and_expose_parameters():
         assert manifest.strategy_type == expected_type
 
 
+def test_macd_kdj_default_exposure_is_safe_without_user_enabled_leverage():
+    entry = next(
+        item for item in _seed_entries()
+        if item["key"] == "strategy_v2_macd_kdj"
+    )
+    schema = json.loads(entry["schema"])
+    target = next(
+        param for param in schema["params"]
+        if param["name"] == "target_pct"
+    )
+
+    assert target["default"] == 0.95
+    assert '# @param target_pct float 0.95 ' in entry["code"]
+    assert 'context.params.get("target_pct", 0.95)' in entry["code"]
+
+
 def test_portfolio_templates_use_fixed_ten_symbol_universe():
     portfolios = [item for item in _seed_entries() if item["asset_type"] == "portfolio_strategy"]
     for item in portfolios:

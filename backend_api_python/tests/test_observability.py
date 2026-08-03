@@ -3,7 +3,10 @@
 import json
 import logging
 
+from flask import Flask, Response, stream_with_context
+
 from app.observability.context import request_id_context
+from app.observability.http import init_http_observability
 from app.utils.logger import JsonFormatter
 
 
@@ -32,6 +35,26 @@ def test_prometheus_metrics_endpoint(client):
     assert "quantdinger_build_info" in body
     assert "quantdinger_http_requests_total" in body
     assert "quantdinger_workers_healthy" in body
+
+
+def test_streaming_request_teardown_is_idempotent():
+    app = Flask(__name__)
+    init_http_observability(app)
+
+    @app.get("/stream")
+    def stream_response():
+        @stream_with_context
+        def generate():
+            yield 'event: done\ndata: {"ok":true}\n\n'
+
+        return Response(generate(), mimetype="text/event-stream")
+
+    with app.test_client() as streaming_client:
+        response = streaming_client.get("/stream")
+        assert response.status_code == 200
+        assert response.get_data(as_text=True).endswith("\n\n")
+
+    assert request_id_context.get() == ""
 
 
 def test_json_formatter_includes_runtime_context(monkeypatch):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.grid.fill_units import parse_grid_order_fill
@@ -11,16 +12,165 @@ from app.services.live_trading.binance_spot import BinanceSpotClient
 from app.services.live_trading.bitget import BitgetMixClient
 from app.services.live_trading.bitget_spot import BitgetSpotClient
 from app.services.live_trading.bybit import BybitClient
-from app.services.live_trading.coinbase_exchange import CoinbaseExchangeClient
 from app.services.live_trading.gate import GateSpotClient, GateUsdtFuturesClient, to_gate_currency_pair
 from app.services.live_trading.htx import HtxClient
-from app.services.live_trading.kraken import KrakenClient
-from app.services.live_trading.kraken_futures import KrakenFuturesClient
 from app.services.live_trading.okx import OkxClient
 from app.services.live_trading.symbols import to_okx_spot_inst_id, to_okx_swap_inst_id
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class GridMarketOrderExecution:
+    """Synchronous grid market fill plus the exchange identity and actual fee."""
+
+    ok: bool = False
+    filled: float = 0.0
+    avg_price: float = 0.0
+    exchange_order_id: str = ""
+    client_order_id: str = ""
+    commission: float = 0.0
+    commission_ccy: str = ""
+    commission_quote: Optional[float] = None
+    fees_by_ccy: Dict[str, float] = field(default_factory=dict)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    def __iter__(self):
+        # Preserve the historical ``ok, filled, avg = ...`` contract.
+        yield self.ok
+        yield self.filled
+        yield self.avg_price
+
+
+def normalize_grid_order_quantity(
+    client: BaseRestClient,
+    *,
+    symbol: str,
+    quantity: float,
+    market_type: str,
+    exchange_config: Optional[Dict[str, Any]] = None,
+) -> float:
+    """Floor a grid quantity to the exchange's real trade unit.
+
+    The returned value is always base-asset quantity, even when the exchange
+    order endpoint accepts contracts.  Returning zero means the configured
+    grid budget is too small; callers must not round it up because doing so can
+    sell more than the strategy-owned cell quantity.
+    """
+    qty = float(quantity or 0.0)
+    if qty <= 0:
+        return 0.0
+    mt = str(market_type or "swap").strip().lower()
+    if mt in ("futures", "future", "perp", "perpetual"):
+        mt = "swap"
+    cfg = exchange_config if isinstance(exchange_config, dict) else {}
+    try:
+        if isinstance(client, (BinanceFuturesClient, BinanceSpotClient)):
+            normalized, _precision = client._normalize_quantity(
+                symbol=str(symbol),
+                quantity=qty,
+                for_market=False,
+            )
+            return max(0.0, float(normalized or 0.0))
+
+        if isinstance(client, OkxClient):
+            inst_id = (
+                to_okx_spot_inst_id(str(symbol))
+                if mt == "spot"
+                else to_okx_swap_inst_id(str(symbol))
+            )
+            normalized, _precision = client._normalize_order_size(
+                inst_id=inst_id,
+                market_type=mt,
+                size=qty,
+            )
+            order_size = max(0.0, float(normalized or 0.0))
+            if order_size <= 0 or mt == "spot":
+                return order_size
+            instrument = client.get_instrument(inst_type="SWAP", inst_id=inst_id) or {}
+            contract_value = float(instrument.get("ctVal") or 0.0)
+            return order_size * contract_value if contract_value > 0 else 0.0
+
+        if isinstance(client, BitgetMixClient):
+            product_type = str(
+                cfg.get("product_type")
+                or cfg.get("productType")
+                or "USDT-FUTURES"
+            )
+            normalized, _precision = client._normalize_size(
+                symbol=str(symbol),
+                product_type=product_type,
+                base_size=qty,
+            )
+            contracts = max(0.0, float(normalized or 0.0))
+            if contracts <= 0:
+                return 0.0
+            contract = client.get_contract(
+                symbol=str(symbol),
+                product_type=product_type,
+            ) or {}
+            contract_size = float(
+                contract.get("contractSize")
+                or contract.get("contractSz")
+                or contract.get("ctVal")
+                or 0.0
+            )
+            return contracts * contract_size if contract_size > 0 else contracts
+
+        if isinstance(client, BybitClient):
+            normalized, _precision = client._normalize_qty(
+                symbol=str(symbol),
+                qty=qty,
+            )
+            return max(0.0, float(normalized or 0.0))
+
+        if isinstance(client, GateUsdtFuturesClient):
+            contract = to_gate_currency_pair(str(symbol))
+            size_text, _headers = client._resolve_order_size(
+                contract=contract,
+                side="buy",
+                base_size=qty,
+            )
+            contracts = abs(float(size_text or 0.0))
+            if contracts <= 0:
+                return 0.0
+            return client.contracts_signed_to_base_qty(
+                contract=contract,
+                contracts_signed=contracts,
+            )
+
+        if isinstance(client, HtxClient) and mt != "spot":
+            contracts = int(client._base_to_contracts(symbol=str(symbol), qty=qty) or 0)
+            if contracts <= 0:
+                return 0.0
+            contract = client.get_contract_info(symbol=str(symbol)) or {}
+            contract_size = float(
+                contract.get("contract_size")
+                or contract.get("contractSize")
+                or 0.0
+            )
+            return contracts * contract_size if contract_size > 0 else 0.0
+
+        if mt == "spot":
+            from app.services.live_trading.spot_sizing import normalize_spot_base_quantity
+
+            return max(
+                0.0,
+                float(
+                    normalize_spot_base_quantity(
+                        client,
+                        symbol=str(symbol),
+                        quantity=qty,
+                        for_market=False,
+                    )
+                    or 0.0
+                ),
+            )
+    except Exception as exc:
+        logger.warning("grid quantity normalization failed for %s: %s", symbol, exc)
+        return 0.0
+    return qty
 
 
 def make_grid_initial_client_order_id(strategy_id: int, leg: str = "") -> str:
@@ -160,24 +310,6 @@ def place_grid_limit_order(
             pos_side=pos_side or ("long" if sd == "buy" else "short"),
             client_order_id=coid or None,
         )
-    if isinstance(client, CoinbaseExchangeClient):
-        return client.place_limit_order(
-            symbol=str(symbol), side=sd, size=qty, price=px, client_order_id=coid or None
-        )
-    if isinstance(client, KrakenClient):
-        return client.place_limit_order(
-            symbol=str(symbol), side=sd, size=qty, price=px, client_order_id=coid or None
-        )
-    if isinstance(client, KrakenFuturesClient):
-        return client.place_limit_order(
-            symbol=str(symbol),
-            side=sd,
-            size=qty,
-            price=px,
-            reduce_only=reduce_only,
-            post_only=post_only,
-            client_order_id=coid or None,
-        )
     if isinstance(client, GateSpotClient):
         return client.place_limit_order(
             symbol=str(symbol), side=sd, size=qty, price=px, client_order_id=coid or None
@@ -222,6 +354,7 @@ def wait_grid_market_fill(
     exchange_order_id: str = "",
     client_order_id: str = "",
     max_wait_sec: float = 15.0,
+    details: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, float]:
     """Poll until market order fill is known. Returns (filled_qty, avg_price)."""
     mt = str(market_type or "swap").strip().lower()
@@ -239,6 +372,8 @@ def wait_grid_market_fill(
                 client_oid=coid,
                 max_wait_sec=max_wait_sec,
             )
+            if details is not None and isinstance(q, dict):
+                details.update(q)
             return float(q.get("filled") or 0), float(q.get("avg_price") or 0)
         if isinstance(client, BitgetSpotClient) and hasattr(client, "wait_for_fill"):
             q = client.wait_for_fill(
@@ -247,6 +382,8 @@ def wait_grid_market_fill(
                 client_order_id=coid,
                 max_wait_sec=max_wait_sec,
             )
+            if details is not None and isinstance(q, dict):
+                details.update(q)
             return float(q.get("filled") or 0), float(q.get("avg_price") or 0)
         if isinstance(client, GateUsdtFuturesClient) and hasattr(client, "wait_for_fill"):
             contract = to_gate_currency_pair(str(symbol))
@@ -255,6 +392,8 @@ def wait_grid_market_fill(
                 contract=contract,
                 max_wait_sec=max_wait_sec,
             )
+            if details is not None and isinstance(q, dict):
+                details.update(q)
             return float(q.get("filled") or 0), float(q.get("avg_price") or 0)
         if hasattr(client, "wait_for_fill"):
             kwargs: Dict[str, Any] = {
@@ -272,6 +411,8 @@ def wait_grid_market_fill(
                 kwargs["market_type"] = mt
             q = client.wait_for_fill(**kwargs)
             if isinstance(q, dict):
+                if details is not None:
+                    details.update(q)
                 filled = float(q.get("filled") or 0)
                 avg = float(q.get("avg_price") or 0)
                 if filled <= 0:
@@ -311,7 +452,7 @@ def execute_grid_market_order(
     leverage: float = 1.0,
     max_wait_sec: float = 15.0,
     client_order_id: Optional[str] = None,
-) -> Tuple[bool, float, float]:
+) -> GridMarketOrderExecution:
     """
     Place a synchronous market order for grid initial/risk paths.
 
@@ -323,7 +464,7 @@ def execute_grid_market_order(
     sig = str(signal_type or "").strip().lower()
     qty = float(quantity or 0)
     if qty <= 0 and not sig.startswith("close_"):
-        return False, 0.0, 0.0
+        return GridMarketOrderExecution()
 
     coid = str(client_order_id or "").strip()
     if not coid:
@@ -359,9 +500,10 @@ def execute_grid_market_order(
         )
     except Exception as e:
         logger.warning("execute_grid_market_order place failed: %s", e)
-        return False, 0.0, 0.0
+        return GridMarketOrderExecution(client_order_id=coid)
 
     ex_oid = str(getattr(res, "exchange_order_id", None) or "")
+    details: Dict[str, Any] = {}
     filled, avg = wait_grid_market_fill(
         client,
         symbol=str(symbol),
@@ -370,8 +512,38 @@ def execute_grid_market_order(
         exchange_order_id=ex_oid,
         client_order_id=coid,
         max_wait_sec=max_wait_sec,
+        details=details,
     )
-    return filled > 0, filled, avg
+    from app.services.pending_orders.fee_reconciliation import (
+        fee_breakdown_snapshot,
+        fee_breakdown_to_quote,
+        fee_storage_values,
+    )
+
+    fees = fee_breakdown_snapshot(details)
+    commission, commission_ccy = fee_storage_values(fees)
+    commission_quote = (
+        fee_breakdown_to_quote(
+            client,
+            symbol=str(symbol),
+            fees=fees,
+            fill_price=float(avg or 0.0),
+        )
+        if fees and avg > 0
+        else None
+    )
+    return GridMarketOrderExecution(
+        ok=filled > 0,
+        filled=filled,
+        avg_price=avg,
+        exchange_order_id=ex_oid,
+        client_order_id=coid,
+        commission=commission,
+        commission_ccy=commission_ccy,
+        commission_quote=commission_quote,
+        fees_by_ccy=fees,
+        raw=details,
+    )
 
 
 def cancel_grid_order(

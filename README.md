@@ -44,6 +44,23 @@
     <img src="docs/badges/docker-compose.svg" alt="Docker Compose">
     <a href="https://github.com/OpenByteInc/QuantDinger/releases/latest"><img src="docs/badges/latest-release.svg" alt="Latest release"></a>
   </p>
+
+  <p><sub>SUPPORTED BY</sub></p>
+  <p>
+    <a href="https://www.atlascloud.ai/" title="Atlas Cloud — AI inference sponsor">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="https://www.atlascloud.ai/logo-white.svg">
+        <img src="https://www.atlascloud.ai/logo.svg" alt="Atlas Cloud" width="142">
+      </picture>
+    </a>
+    &nbsp;&nbsp;&nbsp;&nbsp;
+    <a href="https://aws.amazon.com/" title="Amazon Web Services — cloud infrastructure sponsor">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="https://a0.awsstatic.com/libra-css/images/logos/aws_smile-header-desktop-en-white_59x35.png">
+        <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" alt="Amazon Web Services" width="70">
+      </picture>
+    </a>
+  </p>
 </div>
 
 > QuantDinger can submit real orders when live trading is explicitly enabled.
@@ -339,7 +356,7 @@ not include credentials, account data, or exploitable details in public issues.
 | --- | --- |
 | Indicators | Python chart overlays, markers, bands, and signals. |
 | Strategies | Strategy API V2 intents, sizing, risk, backtests, and live runtime. |
-| Crypto | Binance, OKX, Bitget, Bybit, Gate, HTX, Coinbase Exchange, Kraken, and adapter extensions. |
+| Crypto | Binance, OKX, Bitget, Bybit, Gate, HTX, and adapter extensions. |
 | Traditional brokers | IBKR and Alpaca workflows. |
 | AI providers | OpenRouter, OpenAI-compatible APIs, Google, DeepSeek, Grok, MiniMax, and custom endpoints. |
 | Automation | Human API, Agent Gateway, MCP server, internal Task Runs, schedules, and notifications. |
@@ -591,10 +608,40 @@ arising from use or misuse of the software.
 
 ## Sponsors
 
-We sincerely thank the following sponsor for supporting QuantDinger's continued
-development and open-source community:
+QuantDinger's continued development and open-source community are supported by:
 
-- [AtlasCloud](https://www.atlascloud.ai/)
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <a href="https://www.atlascloud.ai/">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="https://www.atlascloud.ai/logo-white.svg">
+          <img src="https://www.atlascloud.ai/logo.svg" alt="Atlas Cloud" width="190">
+        </picture>
+      </a>
+      <br><br>
+      <strong>Atlas Cloud</strong>
+      <br>
+      <sub>AI inference sponsor</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="https://aws.amazon.com/">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="https://a0.awsstatic.com/libra-css/images/logos/aws_smile-header-desktop-en-white_59x35.png">
+          <img src="https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg" alt="Amazon Web Services" width="100">
+        </picture>
+      </a>
+      <br><br>
+      <strong>Amazon Web Services</strong>
+      <br>
+      <sub>Cloud infrastructure sponsor</sub>
+    </td>
+  </tr>
+</table>
+
+We are grateful to [Atlas Cloud](https://www.atlascloud.ai/) for supporting AI
+model inference and to [Amazon Web Services](https://aws.amazon.com/) for
+supporting the cloud infrastructure that helps QuantDinger serve its community.
 
 ## Support the project
 

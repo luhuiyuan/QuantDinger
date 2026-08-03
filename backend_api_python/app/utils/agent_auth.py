@@ -21,8 +21,9 @@ from datetime import datetime
 from functools import wraps
 from typing import Any, Callable, Iterable, Optional
 
-from flask import g, jsonify, request
+from flask import current_app, g, jsonify, make_response, request
 
+from app.config.redis_urls import cache_redis_url
 from app.utils.db import get_db_connection
 from app.utils.logger import get_logger
 
@@ -71,6 +72,8 @@ def _ensure_schema() -> None:
             instruments TEXT NOT NULL DEFAULT '*',
             paper_only BOOLEAN NOT NULL DEFAULT TRUE,
             rate_limit_per_min INTEGER NOT NULL DEFAULT 60,
+            max_order_notional DECIMAL(24,8) NOT NULL DEFAULT 1000,
+            max_daily_notional DECIMAL(24,8) NOT NULL DEFAULT 5000,
             status VARCHAR(20) NOT NULL DEFAULT 'active',
             expires_at TIMESTAMP,
             last_used_at TIMESTAMP,
@@ -136,6 +139,42 @@ def _ensure_schema() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_agent_paper_orders_user
             ON qd_agent_paper_orders(user_id, created_at DESC);
+
+        ALTER TABLE qd_agent_tokens
+            ADD COLUMN IF NOT EXISTS max_order_notional DECIMAL(24,8) NOT NULL DEFAULT 1000;
+        ALTER TABLE qd_agent_tokens
+            ADD COLUMN IF NOT EXISTS max_daily_notional DECIMAL(24,8) NOT NULL DEFAULT 5000;
+
+        CREATE TABLE IF NOT EXISTS qd_agent_idempotency (
+            id BIGSERIAL PRIMARY KEY,
+            agent_token_id INTEGER NOT NULL REFERENCES qd_agent_tokens(id) ON DELETE CASCADE,
+            method VARCHAR(8) NOT NULL,
+            route VARCHAR(200) NOT NULL,
+            idempotency_key VARCHAR(120) NOT NULL,
+            request_hash VARCHAR(64) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'started',
+            response_body JSONB,
+            response_status INTEGER,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(agent_token_id, method, route, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_idempotency_created
+            ON qd_agent_idempotency(created_at);
+
+        CREATE TABLE IF NOT EXISTS qd_agent_notional_reservations (
+            id BIGSERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES qd_users(id) ON DELETE CASCADE,
+            agent_token_id INTEGER NOT NULL REFERENCES qd_agent_tokens(id) ON DELETE CASCADE,
+            idempotency_key VARCHAR(120) NOT NULL,
+            notional DECIMAL(24,8) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'reserved',
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(agent_token_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_notional_daily
+            ON qd_agent_notional_reservations(agent_token_id, created_at);
         """
         try:
             with get_db_connection() as db:
@@ -203,23 +242,109 @@ def list_matches(item: str, allowlist: list[str]) -> bool:
     return any(needle == a.strip().upper() for a in allowlist)
 
 
-# ─────────────────────────── rate limit (in-process) ───────────────────────────
+# ─────────────────────────── distributed rate limit ───────────────────────────
 
 _rate_state: dict[int, list[float]] = {}
 _rate_lock = threading.Lock()
+_redis_rate_client = None
+_redis_rate_lock = threading.Lock()
+_redis_rate_warned = False
 
 
-def _check_rate_limit(token_id: int, limit_per_min: int) -> bool:
+def _memory_rate_limit(key: str, limit_per_min: int) -> dict[str, int | bool]:
     now = time.time()
     window_start = now - 60.0
+    state_key = hash(key)
     with _rate_lock:
-        bucket = [t for t in _rate_state.get(token_id, []) if t >= window_start]
+        bucket = [t for t in _rate_state.get(state_key, []) if t >= window_start]
         if len(bucket) >= max(1, int(limit_per_min)):
-            _rate_state[token_id] = bucket
-            return False
+            _rate_state[state_key] = bucket
+            reset = max(1, int((bucket[0] + 60.0) - now)) if bucket else 60
+            return {
+                "allowed": False,
+                "limit": max(1, int(limit_per_min)),
+                "remaining": 0,
+                "reset": reset,
+            }
         bucket.append(now)
-        _rate_state[token_id] = bucket
-        return True
+        _rate_state[state_key] = bucket
+        return {
+            "allowed": True,
+            "limit": max(1, int(limit_per_min)),
+            "remaining": max(0, int(limit_per_min) - len(bucket)),
+            "reset": max(1, int((bucket[0] + 60.0) - now)),
+        }
+
+
+def _get_redis_rate_client():
+    global _redis_rate_client
+    if _redis_rate_client is not None:
+        return _redis_rate_client
+    with _redis_rate_lock:
+        if _redis_rate_client is None:
+            import redis
+
+            _redis_rate_client = redis.Redis.from_url(
+                cache_redis_url(),
+                socket_connect_timeout=0.25,
+                socket_timeout=0.25,
+                decode_responses=True,
+            )
+        return _redis_rate_client
+
+
+def _rate_limit_one(key: str, limit_per_min: int) -> dict[str, int | bool]:
+    global _redis_rate_warned
+    limit = max(1, int(limit_per_min))
+    try:
+        if current_app.config.get("TESTING") or os.getenv("AGENT_RATE_LIMIT_BACKEND", "").lower() == "memory":
+            return _memory_rate_limit(key, limit)
+    except RuntimeError:
+        pass
+
+    minute = int(time.time() // 60)
+    redis_key = f"quantdinger:agent-rate:v1:{key}:{minute}"
+    try:
+        client = _get_redis_rate_client()
+        count, ttl = client.eval(
+            """
+            local count = redis.call('INCR', KEYS[1])
+            if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+            local ttl = redis.call('TTL', KEYS[1])
+            return {count, ttl}
+            """,
+            1,
+            redis_key,
+            65,
+        )
+        count = int(count)
+        ttl = max(1, int(ttl))
+        return {
+            "allowed": count <= limit,
+            "limit": limit,
+            "remaining": max(0, limit - count),
+            "reset": ttl,
+        }
+    except Exception as exc:
+        if not _redis_rate_warned:
+            logger.warning("agent_auth: Redis rate limiter unavailable; using process-local fallback: %s", exc)
+            _redis_rate_warned = True
+        return _memory_rate_limit(key, limit)
+
+
+def _check_rate_limit(token_id: int, user_id: int, limit_per_min: int) -> dict[str, int | bool]:
+    """Enforce both per-token and aggregate tenant quotas."""
+    token_decision = _rate_limit_one(f"token:{int(token_id)}", limit_per_min)
+    if not bool(token_decision["allowed"]):
+        return token_decision
+    try:
+        tenant_limit = max(1, int(os.getenv("AGENT_TENANT_RATE_LIMIT_PER_MIN", "600")))
+    except Exception:
+        tenant_limit = 600
+    tenant_decision = _rate_limit_one(f"tenant:{int(user_id)}", tenant_limit)
+    if not bool(tenant_decision["allowed"]):
+        return tenant_decision
+    return token_decision
 
 
 # ─────────────────────────── verification ───────────────────────────
@@ -239,7 +364,8 @@ def _lookup_token(raw_token: str) -> Optional[dict]:
         cur.execute(
             """
             SELECT id, user_id, name, scopes, markets, instruments,
-                   paper_only, rate_limit_per_min, status, expires_at
+                   paper_only, rate_limit_per_min, max_order_notional,
+                   max_daily_notional, status, expires_at
             FROM qd_agent_tokens
             WHERE token_hash = %s
             """,
@@ -361,6 +487,119 @@ def _err(code: int, msg: str, details: Any = None, retriable: bool = False, stat
     return jsonify(body), status
 
 
+def _with_rate_headers(response, decision: dict[str, int | bool]):
+    response.headers["X-RateLimit-Limit"] = str(decision.get("limit", 0))
+    response.headers["X-RateLimit-Remaining"] = str(decision.get("remaining", 0))
+    response.headers["X-RateLimit-Reset"] = str(decision.get("reset", 0))
+    if response.status_code == 429:
+        response.headers["Retry-After"] = str(decision.get("reset", 1))
+    return response
+
+
+def _request_fingerprint() -> str:
+    body = request.get_data(cache=True) or b""
+    raw = b"\n".join(
+        [
+            request.method.upper().encode("utf-8"),
+            request.path.encode("utf-8"),
+            request.query_string,
+            body,
+        ]
+    )
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _reserve_idempotency(token_id: int, key: str) -> tuple[str, Optional[dict]]:
+    request_hash = _request_fingerprint()
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            INSERT INTO qd_agent_idempotency
+              (agent_token_id, method, route, idempotency_key, request_hash, status)
+            VALUES (%s, %s, %s, %s, %s, 'started')
+            ON CONFLICT (agent_token_id, method, route, idempotency_key) DO NOTHING
+            """,
+            (int(token_id), request.method.upper(), request.path, key, request_hash),
+        )
+        inserted = bool(cur.rowcount)
+        if inserted:
+            db.commit()
+            cur.close()
+            return "reserved", None
+        cur.execute(
+            """
+            SELECT request_hash, status, response_body, response_status, updated_at
+            FROM qd_agent_idempotency
+            WHERE agent_token_id = %s AND method = %s AND route = %s
+              AND idempotency_key = %s
+            """,
+            (int(token_id), request.method.upper(), request.path, key),
+        )
+        row = cur.fetchone()
+        if row and row.get("request_hash") == request_hash and row.get("status") == "started":
+            try:
+                stale_after = max(
+                    60,
+                    int(os.getenv("AGENT_IDEMPOTENCY_IN_PROGRESS_TTL_SEC", "900")),
+                )
+            except Exception:
+                stale_after = 900
+            cur.execute(
+                """
+                UPDATE qd_agent_idempotency
+                SET updated_at = NOW()
+                WHERE agent_token_id = %s AND method = %s AND route = %s
+                  AND idempotency_key = %s AND status = 'started'
+                  AND updated_at < NOW() - (%s * INTERVAL '1 second')
+                """,
+                (
+                    int(token_id),
+                    request.method.upper(),
+                    request.path,
+                    key,
+                    stale_after,
+                ),
+            )
+            if cur.rowcount:
+                db.commit()
+                cur.close()
+                return "reserved", None
+        cur.close()
+    if not row:
+        return "in_progress", None
+    if row.get("request_hash") != request_hash:
+        return "mismatch", row
+    if row.get("status") == "completed":
+        return "completed", row
+    return "in_progress", row
+
+
+def _complete_idempotency(token_id: int, key: str, response) -> None:
+    payload = response.get_json(silent=True)
+    with get_db_connection() as db:
+        cur = db.cursor()
+        cur.execute(
+            """
+            UPDATE qd_agent_idempotency
+            SET status = 'completed', response_body = %s::jsonb,
+                response_status = %s, updated_at = NOW()
+            WHERE agent_token_id = %s AND method = %s AND route = %s
+              AND idempotency_key = %s
+            """,
+            (
+                json.dumps(payload, default=str),
+                int(response.status_code),
+                int(token_id),
+                request.method.upper(),
+                request.path,
+                key,
+            ),
+        )
+        db.commit()
+        cur.close()
+
+
 def agent_required(scope: str = SCOPE_R):
     """Flask decorator: enforce token auth + scope + rate limit + audit.
 
@@ -406,37 +645,91 @@ def agent_required(scope: str = SCOPE_R):
                 _audit(scope, 403, {"granted": sorted(scopes)}, int((time.time() - t0) * 1000))
                 return resp, code
 
-            if not _check_rate_limit(row["id"], int(row.get("rate_limit_per_min") or 60)):
+            rate = _check_rate_limit(
+                row["id"],
+                row["user_id"],
+                int(row.get("rate_limit_per_min") or 60),
+            )
+            if not bool(rate["allowed"]):
                 g.agent_token = row
                 resp, code = _err(429, "Rate limit exceeded for this token", retriable=True, status=429)
                 _audit(scope, 429, {"limit_per_min": row.get("rate_limit_per_min")}, int((time.time() - t0) * 1000))
-                return resp, code
+                return _with_rate_headers(make_response(resp, code), rate)
 
             g.agent_token = row
             g.agent_user_id = int(row["user_id"])
+            idempotency_key = (request.headers.get("Idempotency-Key") or "").strip()
+            needs_idempotency = request.method.upper() not in {"GET", "HEAD", "OPTIONS"} and scope in {
+                SCOPE_W, SCOPE_B, SCOPE_N, SCOPE_T,
+            }
+            if needs_idempotency:
+                if not idempotency_key:
+                    response = make_response(*_err(
+                        400,
+                        "Idempotency-Key header is required for mutating agent calls",
+                        status=400,
+                    ))
+                    _audit(scope, 400, response.get_json(silent=True), int((time.time() - t0) * 1000))
+                    return _with_rate_headers(response, rate)
+                if len(idempotency_key) > 120:
+                    response = make_response(*_err(400, "Idempotency-Key exceeds 120 characters", status=400))
+                    _audit(scope, 400, response.get_json(silent=True), int((time.time() - t0) * 1000))
+                    return _with_rate_headers(response, rate)
+                try:
+                    idem_state, idem_row = _reserve_idempotency(row["id"], idempotency_key)
+                except Exception as exc:
+                    logger.error("agent_auth: idempotency reservation failed: %s", exc, exc_info=True)
+                    response = make_response(*_err(
+                        503,
+                        "Idempotency service unavailable; request was not executed",
+                        retriable=True,
+                        status=503,
+                    ))
+                    _audit(scope, 503, response.get_json(silent=True), int((time.time() - t0) * 1000))
+                    return _with_rate_headers(response, rate)
+                if idem_state == "mismatch":
+                    response = make_response(*_err(
+                        409,
+                        "Idempotency-Key was already used with a different request",
+                        status=409,
+                    ))
+                    _audit(scope, 409, response.get_json(silent=True), int((time.time() - t0) * 1000))
+                    return _with_rate_headers(response, rate)
+                if idem_state == "in_progress":
+                    response = make_response(*_err(
+                        409,
+                        "An identical request with this Idempotency-Key is still in progress",
+                        retriable=True,
+                        status=409,
+                    ))
+                    _audit(scope, 409, response.get_json(silent=True), int((time.time() - t0) * 1000))
+                    return _with_rate_headers(response, rate)
+                if idem_state == "completed" and idem_row is not None:
+                    response = make_response(
+                        jsonify(idem_row.get("response_body")),
+                        int(idem_row.get("response_status") or 200),
+                    )
+                    response.headers["Idempotent-Replayed"] = "true"
+                    _audit(scope, response.status_code, response.get_json(silent=True), int((time.time() - t0) * 1000))
+                    return _with_rate_headers(response, rate)
 
             try:
-                response = fn(*args, **kwargs)
+                response = make_response(fn(*args, **kwargs))
             except Exception as exc:
                 logger.error(f"agent route raised: {exc}", exc_info=True)
-                _audit(scope, 500, {"error": str(exc)[:500]}, int((time.time() - t0) * 1000))
-                return _err(500, "Internal server error", details=str(exc), status=500)
+                response = make_response(*_err(500, "Internal server error", details=str(exc), status=500))
 
-            status_code = 200
-            payload_summary: Any = None
-            if isinstance(response, tuple) and len(response) >= 2:
-                status_code = int(response[1])
-                first = response[0]
-                if hasattr(first, "get_json"):
-                    payload_summary = first.get_json(silent=True)
-            elif hasattr(response, "status_code"):
-                status_code = int(response.status_code)
-                if hasattr(response, "get_json"):
-                    payload_summary = response.get_json(silent=True)
+            status_code = int(response.status_code)
+            payload_summary: Any = response.get_json(silent=True)
+            if needs_idempotency and idempotency_key:
+                try:
+                    _complete_idempotency(row["id"], idempotency_key, response)
+                except Exception as exc:
+                    logger.error("agent_auth: failed to persist idempotent response: %s", exc, exc_info=True)
 
             _touch_token_last_used(row["id"])
             _audit(scope, status_code, payload_summary, int((time.time() - t0) * 1000))
-            return response
+            return _with_rate_headers(response, rate)
 
         return wrapper
 

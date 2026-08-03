@@ -15,6 +15,7 @@ class ProtectionSpec:
     trailing_stop_pct: float = 0.0
     trailing_activation_pct: float = 0.0
     time_limit_seconds: int = 0
+    trailing_rebase_on_scale_in: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stop_loss_pct", _ratio(self.stop_loss_pct, maximum=1.0))
@@ -26,6 +27,11 @@ class ProtectionSpec:
             _ratio(self.trailing_activation_pct, maximum=5.0),
         )
         object.__setattr__(self, "time_limit_seconds", max(0, int(self.time_limit_seconds or 0)))
+        object.__setattr__(
+            self,
+            "trailing_rebase_on_scale_in",
+            _boolean(self.trailing_rebase_on_scale_in, default=True),
+        )
 
     @property
     def enabled(self) -> bool:
@@ -57,6 +63,10 @@ class ProtectionSpec:
             trailing_stop_pct=source.get("trailing_stop_pct"),
             trailing_activation_pct=source.get("trailing_activation_pct"),
             time_limit_seconds=source.get("time_limit_seconds"),
+            trailing_rebase_on_scale_in=source.get(
+                "trailing_rebase_on_scale_in",
+                True,
+            ),
         )
         return spec if spec.enabled else None
 
@@ -70,6 +80,7 @@ class ProtectionState:
     opened_at: pd.Timestamp
     highest_price: float
     lowest_price: float
+    trailing_active: bool = False
 
     @classmethod
     def open(
@@ -90,7 +101,39 @@ class ProtectionState:
             opened_at=pd.Timestamp(opened_at),
             highest_price=price,
             lowest_price=price,
+            trailing_active=False,
         )
+
+    def apply_scale_in(
+        self,
+        *,
+        entry_price: float,
+        fill_price: float,
+        spec: ProtectionSpec | None = None,
+        scaled_at: object = None,
+    ) -> None:
+        """Update a same-side basket without discarding active protection."""
+        self.entry_price = float(entry_price or self.entry_price)
+        if spec is not None:
+            self.spec = spec
+        reference = float(fill_price or self.entry_price)
+        if reference <= 0:
+            reference = self.entry_price
+        if self.spec.trailing_rebase_on_scale_in:
+            # Compatibility mode: same behavior as the original runtime,
+            # where a protected add-on opened a fresh protection state.
+            self.trailing_active = False
+            self.highest_price = max(self.entry_price, reference)
+            self.lowest_price = min(self.entry_price, reference)
+            if scaled_at is not None:
+                self.opened_at = pd.Timestamp(scaled_at)
+            return
+        if self.trailing_active:
+            return
+        # Before activation the enlarged basket starts a fresh peak/trough
+        # reference. Historical extremes belong to a smaller position.
+        self.highest_price = max(self.entry_price, reference)
+        self.lowest_price = min(self.entry_price, reference)
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -101,6 +144,7 @@ class ProtectionState:
             "opened_at": self.opened_at.isoformat(),
             "highest_price": self.highest_price,
             "lowest_price": self.lowest_price,
+            "trailing_active": bool(self.trailing_active),
         }
 
     @classmethod
@@ -119,6 +163,7 @@ class ProtectionState:
         state.highest_price = max(entry_price, _number(value.get("highest_price"), entry_price))
         lowest = _number(value.get("lowest_price"), entry_price)
         state.lowest_price = min(entry_price, lowest if lowest > 0 else entry_price)
+        state.trailing_active = bool(value.get("trailing_active"))
         return state
 
 
@@ -249,10 +294,20 @@ class ProtectionEngine:
         if spec.trailing_stop_pct <= 0:
             return None
         if state.side == "long":
-            if state.highest_price < state.entry_price * (1 + spec.trailing_activation_pct):
+            if (
+                not state.trailing_active
+                and state.highest_price >= state.entry_price * (1 + spec.trailing_activation_pct)
+            ):
+                state.trailing_active = True
+            if not state.trailing_active:
                 return None
             return state.highest_price * (1 - spec.trailing_stop_pct)
-        if state.lowest_price > state.entry_price * (1 - spec.trailing_activation_pct):
+        if (
+            not state.trailing_active
+            and state.lowest_price <= state.entry_price * (1 - spec.trailing_activation_pct)
+        ):
+            state.trailing_active = True
+        if not state.trailing_active:
             return None
         return state.lowest_price * (1 + spec.trailing_stop_pct)
 
@@ -308,3 +363,14 @@ def _number(value: object, default: float = 0.0) -> float:
         return float(default)
     return number if number == number else float(default)
 
+
+def _boolean(value: object, *, default: bool) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
