@@ -21,10 +21,11 @@ from app.services.live_trading.execution import place_order_from_signal
 from app.services.live_trading.factory import create_client
 from app.services.live_trading.records import (
     ensure_position_ledger_schema,
-    fetch_allocated_position_size,
-    fetch_position_size_for_side,
     normalize_strategy_symbol,
     strategy_allowed_symbols,
+)
+from app.services.live_trading.account_configuration import (
+    requires_derivatives_account_configuration,
 )
 from app.services.live_trading.strategy_position_sync import (
     strategy_uses_fill_ledger,
@@ -44,6 +45,7 @@ from app.services.live_trading.leg_context import (
     credential_id_from_exchange_config,
 )
 from app.services.live_trading.position_query import resolve_reduce_only_quantity
+from app.services.live_trading.position_ownership import supports_position_coexistence
 from app.utils.pnl import calc_notional_value
 from app.services.live_trading.base import LiveTradingError, is_file_descriptor_exhausted
 from app.services.pending_orders.fill_records import (
@@ -74,6 +76,10 @@ from app.services.pending_orders.live_order_phases import (
     maker_limit_price,
     wait_live_order_fill,
 )
+from app.services.pending_orders.entry_position_guard import (
+    evaluate_entry_position_guard,
+    strategy_allows_simultaneous_legs as _strategy_allows_simultaneous_legs,
+)
 from app.services.grid.exchange_orders import query_grid_order_fill
 from app.services.pending_orders.position_sync_cache import (
     exchange_sync_backoff_sec,
@@ -89,6 +95,15 @@ from app.services.pending_order_position_sync import PendingOrderPositionSyncMix
 from app.services.pending_orders.sent_order_recovery import (
     is_final_fill, normalize_live_order_status,
     tracked_fill_baseline,
+)
+from app.services.pending_orders.order_quantities import (
+    exchange_quantity_snapshot,
+    reconciled_queue_status,
+)
+from app.services.pending_orders.broker_support import (
+    broker_order_type as _broker_order_type,
+    broker_protection_prices as _broker_protection_prices,
+    redact_exchange_json as _redact_exchange_json,
 )
 from app.services.live_trading.binance import BinanceFuturesClient
 from app.services.live_trading.binance_spot import BinanceSpotClient
@@ -106,7 +121,6 @@ from app.services.strategy_lifecycle import (
     is_fatal_exchange_error,
     should_skip_position_sync,
 )
-from app.services.strategy_live_guard import resolve_strategy_direction_mode
 
 # Lazy import IBKR to avoid ImportError if ib_insync not installed
 IBKRClient = None
@@ -118,55 +132,6 @@ AlpacaClient = None
 logger = get_logger(__name__)
 
 ALPACA_FILL_DELTA_EPSILON = 1e-8
-
-
-def _strategy_allows_simultaneous_legs(strategy: Dict[str, Any]) -> bool:
-    """Return whether one strategy intentionally owns both derivative legs."""
-    return resolve_strategy_direction_mode(strategy) in {"both", "neutral"}
-
-
-def _broker_order_type(payload: Dict[str, Any], ref_price: float) -> Tuple[str, float]:
-    order_type = str(payload.get("order_type") or "market").strip().lower()
-    if order_type == "maker_then_market":
-        raise LiveTradingError("maker_then_market is not supported by broker execution")
-    if order_type not in ("market", "limit"):
-        raise LiveTradingError(f"unsupported_broker_order_type:{order_type}")
-    limit_price = float(payload.get("limit_price") or 0.0)
-    if order_type == "limit" and limit_price <= 0:
-        limit_price = float(ref_price or 0.0)
-    if order_type == "limit" and limit_price <= 0:
-        raise LiveTradingError("broker_limit_price_required")
-    return order_type, limit_price
-
-
-def _broker_protection_prices(
-    payload: Dict[str, Any],
-    *,
-    signal_type: str,
-    entry_price: float,
-) -> Tuple[float, float]:
-    sig = str(signal_type or "").strip().lower()
-    if sig not in ("open_long", "add_long", "open_short", "add_short") or entry_price <= 0:
-        return 0.0, 0.0
-    from app.services.live_trading.native_protection import protection_prices_from_payload
-
-    stop, take, _trailing, _activation = protection_prices_from_payload(
-        payload,
-        entry_price=float(entry_price),
-        pos_side="short" if "short" in sig else "long",
-    )
-    return float(stop or 0.0), float(take or 0.0)
-
-
-def _redact_exchange_json(value: str) -> str:
-    from app.services.live_trading.partner_attribution import redact_partner_attribution
-
-    text_value = str(value or "")
-    try:
-        parsed = json.loads(text_value or "{}")
-    except Exception:
-        return str(redact_partner_attribution(text_value))
-    return json.dumps(redact_partner_attribution(parsed), ensure_ascii=False)
 
 
 class PendingOrderWorker(PendingOrderPositionSyncMixin):
@@ -1064,11 +1029,21 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                 commission_quote=cumulative_quote_fee,
             )
 
-        queue_status = "sent"
-        if exchange_status == "filled" and cumulative_avg > 0:
-            queue_status = "filled"
-        elif exchange_status == "cancelled":
-            queue_status = "cancelled"
+        requested_qty = max(
+            0.0,
+            float(payload.get("amount") or row.get("amount") or aggregate_filled or 0.0),
+        )
+        queue_status, executable_qty = reconciled_queue_status(
+            client,
+            exchange_id=exchange_id,
+            symbol=symbol,
+            market_type=market_type,
+            requested=requested_qty,
+            filled=aggregate_filled,
+            avg_price=aggregate_avg,
+            exchange_status=exchange_status,
+            exchange_config=exchange_config if isinstance(exchange_config, dict) else {},
+        )
 
         self._update_live_sent_order_snapshot(
             order_id=order_id,
@@ -1081,6 +1056,8 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                     "status": exchange_status,
                     "filled": aggregate_filled,
                     "avg_price": aggregate_avg,
+                    "requested_qty": requested_qty,
+                    "executable_qty": executable_qty,
                     "live_fill_sync": {
                         "tracked_filled": cumulative_filled,
                         "tracked_avg_price": cumulative_avg,
@@ -1789,63 +1766,34 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
             append_strategy_log(strategy_id, "error", f"Order rejected because the exchange position snapshot failed: {symbol}")
             return
 
-        if not reduce_only and market_type == "swap":
+        ownership_enabled = supports_position_coexistence(market_type, exchange_id)
+        if not reduce_only and ownership_enabled:
             credential_id = credential_id_from_exchange_config(exchange_config)
-            expected_qty = fetch_allocated_position_size(
+            guard = evaluate_entry_position_guard(
+                client=client,
                 strategy_id=int(strategy_id),
+                user_id=int(cfg.get("user_id") or order_row.get("user_id") or 1),
                 credential_id=int(credential_id or 0),
+                exchange_id=str(exchange_id or ""),
                 market_type=str(market_type),
                 symbol=str(symbol),
                 side=str(pos_side),
+                strategy_config=cfg,
+                exchange_config=exchange_config if isinstance(exchange_config, dict) else {},
+                account_qty=float(pre_position_qty),
             )
-            tolerance = max(1e-8, expected_qty * 0.001)
-            if abs(pre_position_qty - expected_qty) > tolerance:
-                error = (
-                    "position_drift_detected:"
-                    f"side={pos_side},exchange={pre_position_qty},allocated={expected_qty}"
-                )
-                self._mark_failed(order_id=order_id, error=error)
-                _notify_live_best_effort(status="failed", error=error)
-                append_strategy_log(strategy_id, "error", f"Order rejected because account and strategy positions differ: {symbol} {pos_side}")
+            phases_ownership = guard.ownership
+            if guard.error:
+                self._mark_failed(order_id=order_id, error=guard.error)
+                _notify_live_best_effort(status="failed", error=guard.error)
+                if guard.log_message:
+                    append_strategy_log(strategy_id, guard.log_level, guard.log_message)
                 return
-
-            if not _strategy_allows_simultaneous_legs(cfg):
-                opposite_side = "short" if str(pos_side) == "long" else "long"
-                local_opposite = fetch_position_size_for_side(int(strategy_id), str(symbol), opposite_side)
-                if local_opposite > 1e-8:
-                    try:
-                        live_opposite = float(
-                            query_exchange_position_size(
-                                client=client,
-                                symbol=str(symbol),
-                                pos_side=opposite_side,
-                                market_type=str(market_type),
-                                exchange_config=exchange_config if isinstance(exchange_config, dict) else {},
-                                strict=True,
-                            )
-                            or 0.0
-                        )
-                    except Exception as e:
-                        error = f"opposite_position_snapshot_failed:{e}"
-                        self._mark_failed(order_id=order_id, error=error)
-                        _notify_live_best_effort(status="failed", error=error)
-                        return
-                    if live_opposite > 1e-8:
-                        error = (
-                            "opposite_position_still_open:"
-                            f"side={opposite_side},exchange={live_opposite},local={local_opposite}"
-                        )
-                        self._mark_failed(order_id=order_id, error=error)
-                        _notify_live_best_effort(status="failed", error=error)
-                        append_strategy_log(
-                            strategy_id,
-                            "warning",
-                            f"Reverse entry rejected until the opposite position is fully closed: {symbol}",
-                        )
-                        return
 
         # Collect raw exchange interactions / intermediate states for debugging & persistence.
         phases: Dict[str, Any] = {"pre_position_qty": pre_position_qty}
+        if not reduce_only and ownership_enabled:
+            phases["position_ownership"] = phases_ownership
 
         if not reduce_only and market_type == "swap":
             try:
@@ -1899,12 +1847,23 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                     market_type=str(market_type or "swap"),
                     exchange_config=exchange_config,
                     allow_exchange_fallback=False,
+                    user_id=int(cfg.get("user_id") or order_row.get("user_id") or 1),
+                    credential_id=int(credential_id_from_exchange_config(exchange_config) or 0),
                 )
                 if close_meta:
                     phases["close_size_resolve"] = close_meta
             except Exception as e:
+                error = f"protected_position_check_failed:{e}"
                 logger.error(f"[RiskControl] Failed to resolve close quantity: {e}")
                 phases["close_size_resolve_error"] = str(e)
+                self._mark_failed(order_id=order_id, error=error)
+                _notify_live_best_effort(status="failed", error=error)
+                append_strategy_log(
+                    strategy_id,
+                    "error",
+                    f"Close rejected because protected inventory could not be verified: {symbol}",
+                )
+                return
 
         # Ensure ref price exists (used by maker pricing, fallbacks, and local DB snapshots).
         if ref_price <= 0:
@@ -1914,7 +1873,10 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
             except Exception:
                 pass
 
-        if market_type == "swap":
+        if requires_derivatives_account_configuration(
+            market_type=market_type,
+            reduce_only=reduce_only,
+        ):
             try:
                 from app.services.live_trading.account_configuration import configure_derivatives_account
 
@@ -1985,6 +1947,12 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                 )
                 phases["spot_prepare_error"] = str(e)
 
+        if market_type == "swap" and exchange_id == "bitget":
+            amount, phases["exchange_quantity_normalization"] = exchange_quantity_snapshot(
+                client, exchange_id=exchange_id, symbol=symbol, market_type=market_type,
+                requested=amount, exchange_config=exchange_config,
+            )
+
         self._log_live_order_sizing(
             strategy_id=strategy_id,
             client=client,
@@ -2028,10 +1996,18 @@ class PendingOrderWorker(PendingOrderPositionSyncMixin):
                     market_type=str(market_type or "swap"),
                     exchange_config=exchange_config,
                     allow_exchange_fallback=False,
+                    user_id=int(cfg.get("user_id") or order_row.get("user_id") or 1),
+                    credential_id=int(credential_id_from_exchange_config(exchange_config) or 0),
                 )
                 if retry_meta:
                     phases["close_size_retry"].update(retry_meta)
                 remaining = float(amount or 0.0)
+                if remaining > 0 and market_type == "swap" and exchange_id == "bitget":
+                    amount, phases["exchange_quantity_normalization"] = exchange_quantity_snapshot(
+                        client, exchange_id=exchange_id, symbol=symbol, market_type=market_type,
+                        requested=remaining, exchange_config=exchange_config, source="close_size_retry",
+                    )
+                    remaining = float(amount or 0.0)
                 if remaining > 0:
                     logger.info(
                         "[CloseRetry] Resolved close qty=%s for strategy=%s %s %s",

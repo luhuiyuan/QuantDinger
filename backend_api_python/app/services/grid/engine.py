@@ -81,6 +81,8 @@ class GridEngine:
         self._initial_market_attempts = 0
         self._initial_market_max_attempts = 3
         self._last_entry_order_ts = 0.0
+        self._entry_ownership_cache: Dict[str, Tuple[float, bool, Dict[str, Any]]] = {}
+        self._ownership_check_errors: set[str] = set()
 
     @property
     def stop_requested(self) -> bool:
@@ -247,6 +249,186 @@ class GridEngine:
                 pos_side,
                 e,
             )
+            return 0.0
+
+    def _credential_id(self) -> int:
+        from app.services.live_trading.leg_context import credential_id_from_exchange_config
+
+        return int(credential_id_from_exchange_config(self.exchange_config) or 0)
+
+    def _grid_entry_ownership_allowed(
+        self,
+        client: Any,
+        pos_side: str,
+        *,
+        force: bool = False,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Run the same account/L3 ownership guard used by queued strategies."""
+        from app.services.live_trading.position_ownership import supports_position_coexistence
+
+        side = str(pos_side or "").strip().lower()
+        exchange_id = str(self.exchange_config.get("exchange_id") or "").strip().lower()
+        market_type = str(self.cfg.market_type or "swap")
+        credential_id = self._credential_id()
+        if not supports_position_coexistence(market_type, exchange_id):
+            return True, {}
+
+        # Unit/offline grid engines have neither an exchange nor credential.
+        # A resolved live exchange without a credential must fail closed.
+        if credential_id <= 0:
+            if not exchange_id:
+                return True, {}
+            error_key = f"credential:{side}"
+            if error_key not in self._ownership_check_errors:
+                append_strategy_log(
+                    self.strategy_id,
+                    "error",
+                    f"Grid entry rejected because position ownership has no credential: {self.symbol} {side}",
+                )
+                self._ownership_check_errors.add(error_key)
+            return False, {"reason": "position_ownership_credential_missing"}
+
+        now = time.time()
+        cached = self._entry_ownership_cache.get(side)
+        if not force and cached and now - float(cached[0]) <= 1.0:
+            return bool(cached[1]), dict(cached[2])
+
+        try:
+            from app.services.live_trading.position_query import query_exchange_position_size
+            from app.services.pending_orders.entry_position_guard import evaluate_entry_position_guard
+
+            account_qty = query_exchange_position_size(
+                client=client,
+                symbol=self.symbol,
+                pos_side=side,
+                market_type=market_type,
+                exchange_config=self.exchange_config,
+                strict=True,
+            )
+            guard = evaluate_entry_position_guard(
+                client=client,
+                strategy_id=self.strategy_id,
+                user_id=self.user_id,
+                credential_id=credential_id,
+                exchange_id=exchange_id,
+                market_type=market_type,
+                symbol=self.symbol,
+                side=side,
+                strategy_config={
+                    "bot_type": "grid",
+                    "trading_config": self.trading_config,
+                },
+                exchange_config=self.exchange_config,
+                account_qty=float(account_qty or 0.0),
+            )
+            metadata = dict(guard.ownership or {})
+            allowed = not bool(guard.error)
+            self._entry_ownership_cache[side] = (now, allowed, metadata)
+            self._ownership_check_errors.discard(f"snapshot:{side}")
+            if guard.log_message:
+                append_strategy_log(
+                    self.strategy_id,
+                    guard.log_level or "error",
+                    guard.log_message,
+                )
+            return allowed, metadata
+        except Exception as exc:
+            error_key = f"snapshot:{side}"
+            if error_key not in self._ownership_check_errors:
+                append_strategy_log(
+                    self.strategy_id,
+                    "error",
+                    f"Grid entry rejected because position ownership could not be verified: "
+                    f"{self.symbol} {side}; {exc}",
+                )
+                self._ownership_check_errors.add(error_key)
+            metadata = {"reason": "position_ownership_snapshot_failed", "error": str(exc)}
+            self._entry_ownership_cache[side] = (now, False, metadata)
+            return False, metadata
+
+    def _resolve_grid_exit_quantity(
+        self,
+        client: Any,
+        *,
+        pos_side: str,
+        requested_qty: float,
+    ) -> float:
+        """Cap a resting exit to strategy inventory and the protected floor."""
+        from app.services.live_trading.position_ownership import supports_position_coexistence
+        from app.services.live_trading.position_query import resolve_reduce_only_quantity
+
+        exchange_id = str(self.exchange_config.get("exchange_id") or "").strip().lower()
+        market_type = str(self.cfg.market_type or "swap")
+        credential_id = self._credential_id()
+        if (
+            supports_position_coexistence(market_type, exchange_id)
+            and exchange_id
+            and credential_id <= 0
+        ):
+            append_strategy_log(
+                self.strategy_id,
+                "error",
+                f"Grid exit rejected because protected inventory has no credential: {self.symbol} {pos_side}",
+            )
+            return 0.0
+
+        try:
+            resolved, meta = resolve_reduce_only_quantity(
+                strategy_id=self.strategy_id,
+                symbol=self.symbol,
+                pos_side=str(pos_side or ""),
+                requested_amount=float(requested_qty or 0.0),
+                client=client,
+                market_type=market_type,
+                exchange_config=self.exchange_config,
+                allow_exchange_fallback=False,
+                user_id=self.user_id,
+                credential_id=credential_id,
+            )
+
+            # Existing resting exits already reserve part of the safe strategy
+            # quantity.  New exits may only use the unreserved remainder.
+            existing = 0.0
+            try:
+                for order in self._orders.list_open(self.strategy_id):
+                    if not order.reduce_only and not str(order.purpose or "").endswith("_exit"):
+                        continue
+                    if str(order.pos_side or "") != str(pos_side or ""):
+                        continue
+                    existing += max(
+                        0.0,
+                        float(order.quantity or 0.0) - float(order.processed_fill_qty or 0.0),
+                    )
+            except Exception:
+                existing = 0.0
+            budgets = [max(0.0, float(meta.get("db_size") or 0.0))]
+            if "exchange_strategy_available" in meta:
+                budgets.append(max(0.0, float(meta.get("exchange_strategy_available") or 0.0)))
+            elif float(meta.get("exchange_size") or 0.0) > 0:
+                budgets.append(max(0.0, float(meta.get("exchange_size") or 0.0)))
+            safe_total = min(budgets) if budgets else 0.0
+            amount = min(max(0.0, float(resolved or 0.0)), max(0.0, safe_total - existing))
+
+            if market_type == "spot" and amount > 0:
+                from app.services.live_trading.spot_sizing import clamp_spot_close_quantity
+
+                amount, _spot_meta = clamp_spot_close_quantity(
+                    client,
+                    symbol=self.symbol,
+                    requested_qty=amount,
+                )
+            self._ownership_check_errors.discard(f"exit:{pos_side}")
+            return max(0.0, float(amount or 0.0))
+        except Exception as exc:
+            error_key = f"exit:{pos_side}"
+            if error_key not in self._ownership_check_errors:
+                append_strategy_log(
+                    self.strategy_id,
+                    "error",
+                    f"Grid exit rejected because protected inventory could not be verified: "
+                    f"{self.symbol} {pos_side}; {exc}",
+                )
+                self._ownership_check_errors.add(error_key)
             return 0.0
 
     def set_initial_exchange_baseline(self, *, long_size: float = 0.0, short_size: float = 0.0) -> None:
@@ -659,6 +841,44 @@ class GridEngine:
             return 0
         if self._runtime_params.get("waterfall_pause"):
             return 0
+        direction = self.cfg.grid_direction
+        entry_sides = (
+            ("long", "short")
+            if direction == "neutral"
+            else ((direction,) if direction in ("long", "short") else ())
+        )
+        allowed_sides: Dict[str, bool] = {}
+        if entry_sides:
+            try:
+                ownership_client = self._create_client()
+            except Exception as exc:
+                append_strategy_log(
+                    self.strategy_id,
+                    "error",
+                    f"Grid entries rejected because the exchange position could not be verified: {exc}",
+                )
+                return 0
+            for pos_side in entry_sides:
+                allowed, metadata = self._grid_entry_ownership_allowed(
+                    ownership_client,
+                    pos_side,
+                    force=True,
+                )
+                allowed_sides[pos_side] = allowed
+                if allowed:
+                    continue
+                self.cancel_entry_orders_on_exchange(pos_side=pos_side)
+                if str(metadata.get("reason") or "") in {
+                    "account_below_protected_allocation",
+                    "position_ownership_snapshot_failed",
+                    "position_ownership_credential_missing",
+                }:
+                    # A negative/unknown snapshot can make already-resting exits
+                    # exceed strategy-safe inventory.  Cancel them and let exit
+                    # coverage rebuild from the verified budget.
+                    self.cancel_exit_orders_on_exchange(pos_side=pos_side)
+        if entry_sides and not any(allowed_sides.values()):
+            return 0
         now = time.time()
         if self.cfg.order_frequency > 0 and self._last_entry_order_ts > 0:
             if now - self._last_entry_order_ts < float(self.cfg.order_frequency):
@@ -676,7 +896,6 @@ class GridEngine:
         remaining_slots = max(0, int(self.cfg.max_open_orders or 0) - int(open_entries or 0))
         if remaining_slots <= 0:
             return 0
-        direction = self.cfg.grid_direction
         if direction == "neutral":
             open_by_purpose = {"long_entry": 0, "short_entry": 0}
             for order in self._orders.list_open(self.strategy_id):
@@ -711,6 +930,8 @@ class GridEngine:
                 for purpose in purposes:
                     side = "buy" if purpose == "long_entry" else "sell"
                     pos_side = "long" if purpose == "long_entry" else "short"
+                    if not allowed_sides.get(pos_side, True):
+                        continue
                     target_price = "lower_price" if purpose == "long_entry" else "upper_price"
                     pool = candidates[purpose]
                     while next_index[purpose] < len(pool):
@@ -745,7 +966,11 @@ class GridEngine:
         for cell in cells:
             if placed >= remaining_slots:
                 break
-            if direction in ("long", "neutral") and cell.lower_price < current_price:
+            if (
+                direction in ("long", "neutral")
+                and allowed_sides.get("long", True)
+                and cell.lower_price < current_price
+            ):
                 if self._cell_allows_entry(cell.index, "long_entry", cell_states):
                     if self._place_limit(cell, "long_entry", "buy", cell.lower_price, reduce_only=False, pos_side="long"):
                         placed += 1
@@ -753,7 +978,11 @@ class GridEngine:
                         self._last_entry_order_ts = now
                         if placed >= remaining_slots:
                             break
-            if direction in ("short", "neutral") and cell.upper_price > current_price:
+            if (
+                direction in ("short", "neutral")
+                and allowed_sides.get("short", True)
+                and cell.upper_price > current_price
+            ):
                 if self._cell_allows_entry(cell.index, "short_entry", cell_states):
                     if self._place_limit(cell, "short_entry", "sell", cell.upper_price, reduce_only=False, pos_side="short"):
                         placed += 1
@@ -1195,6 +1424,26 @@ class GridEngine:
         coid = make_grid_client_order_id(self.strategy_id, cell.index, purpose)
         try:
             client = self._create_client()
+            if not reduce_only:
+                allowed, metadata = self._grid_entry_ownership_allowed(client, pos_side)
+                if not allowed:
+                    self.cancel_entry_orders_on_exchange(pos_side=pos_side)
+                    if str(metadata.get("reason") or "") in {
+                        "account_below_protected_allocation",
+                        "position_ownership_snapshot_failed",
+                        "position_ownership_credential_missing",
+                    }:
+                        self.cancel_exit_orders_on_exchange(pos_side=pos_side)
+                    return False
+            else:
+                qty = self._resolve_grid_exit_quantity(
+                    client,
+                    pos_side=pos_side,
+                    requested_qty=qty,
+                )
+                qty = self._normalize_grid_base_qty(qty, px)
+                if qty <= 0:
+                    return False
             # Exit (reduce-only) orders may need to cross when price is above/below the grid line.
             post_only = (
                 not reduce_only
@@ -1502,39 +1751,61 @@ class GridEngine:
                 logger.debug("grid boundary auto-stop sid=%s: %s", self.strategy_id, e)
         return True
 
-    def cancel_entry_orders_on_exchange(self) -> None:
+    def _cancel_position_orders_on_exchange(
+        self,
+        *,
+        pos_side: str = "",
+        exits: bool,
+    ) -> None:
         open_orders = self._orders.list_open(self.strategy_id)
         try:
             client = self._create_client()
         except Exception as e:
             logger.warning(
-                "grid cancel_entry_orders create_client failed sid=%s: %s",
+                "grid cancel ownership orders create_client failed sid=%s exits=%s: %s",
                 self.strategy_id,
+                exits,
                 e,
             )
             append_strategy_log(
                 self.strategy_id,
                 "error",
-                f"Grid cancel entry orders failed (exchange client): {e}",
+                f"Grid cancel protected orders failed (exchange client): {e}",
             )
             client = None
         for o in open_orders:
-            if o.reduce_only or str(o.purpose or "").endswith("_exit"):
+            is_exit = bool(o.reduce_only or str(o.purpose or "").endswith("_exit"))
+            if is_exit != bool(exits):
                 continue
-            if client:
-                try:
-                    cancel_grid_order(
-                        client,
-                        symbol=self.symbol,
-                        market_type=self.cfg.market_type,
-                        exchange_order_id=o.exchange_order_id,
-                        client_order_id=o.client_order_id,
-                        exchange_config=self.exchange_config,
-                    )
-                except Exception as e:
-                    logger.debug("cancel grid entry: %s", e)
+            if pos_side and str(o.pos_side or "") != str(pos_side):
+                continue
+            if not client:
+                continue
+            try:
+                cancel_grid_order(
+                    client,
+                    symbol=self.symbol,
+                    market_type=self.cfg.market_type,
+                    exchange_order_id=o.exchange_order_id,
+                    client_order_id=o.client_order_id,
+                    exchange_config=self.exchange_config,
+                )
+            except Exception as e:
+                logger.warning(
+                    "cancel grid ownership order failed sid=%s oid=%s: %s",
+                    self.strategy_id,
+                    o.exchange_order_id or o.client_order_id,
+                    e,
+                )
+                continue
             if o.id:
                 self._orders.update_status(int(o.id), status="cancelled")
+
+    def cancel_entry_orders_on_exchange(self, *, pos_side: str = "") -> None:
+        self._cancel_position_orders_on_exchange(pos_side=pos_side, exits=False)
+
+    def cancel_exit_orders_on_exchange(self, *, pos_side: str = "") -> None:
+        self._cancel_position_orders_on_exchange(pos_side=pos_side, exits=True)
 
     def cancel_all_orders_on_exchange(self) -> None:
         open_orders = self._orders.list_open(self.strategy_id)

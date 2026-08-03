@@ -56,18 +56,29 @@ def query_exchange_position_size(
     cfg = exchange_config if isinstance(exchange_config, dict) else {}
     sym = str(symbol or "").strip()
 
-    # Spot long close = sell base balance.
+    # Spot ownership is the complete base inventory.  Sell sizing has a
+    # separate free/available clamp because locked balances are still owned.
     if mt == "spot":
         if side != "long":
             return 0.0
         try:
-            from app.services.live_trading.spot_sizing import get_spot_free_base_balance
+            from app.services.live_trading.spot_sizing import get_spot_total_base_balance
 
-            return max(0.0, float(get_spot_free_base_balance(client, symbol=sym) or 0.0))
+            return max(
+                0.0,
+                float(
+                    get_spot_total_base_balance(
+                        client,
+                        symbol=sym,
+                        strict=strict,
+                    )
+                    or 0.0
+                ),
+            )
         except Exception as e:
             if strict:
                 raise
-            logger.debug("spot free balance query failed symbol=%s: %s", sym, e)
+            logger.debug("spot total balance query failed symbol=%s: %s", sym, e)
             return 0.0
 
     try:
@@ -244,6 +255,8 @@ def resolve_reduce_only_quantity(
     market_type: str,
     exchange_config: Optional[Dict[str, Any]] = None,
     allow_exchange_fallback: bool = False,
+    user_id: int = 0,
+    credential_id: int = 0,
 ) -> Tuple[float, Dict[str, Any]]:
     """
     Choose a safe close/reduce base quantity.
@@ -311,6 +324,27 @@ def resolve_reduce_only_quantity(
             pos_side,
         )
         meta["filled_from"] = "none"
+
+    # In advanced coexistence mode the manual baseline is a hard floor.  Even
+    # a reduce-only strategy exit may use only quantity above that floor.
+    if int(user_id or 0) > 0 and int(credential_id or 0) > 0:
+        from app.services.live_trading.position_ownership import protected_quantity
+
+        # Deliberately fail closed.  If the protection ledger cannot be read,
+        # the caller must reject the exit instead of risking manual inventory.
+        protected = protected_quantity(
+            user_id=int(user_id),
+            credential_id=int(credential_id),
+            market_type=market_type,
+            symbol=symbol,
+            side=pos_side,
+        )
+        available = max(0.0, float(exch_size or 0.0) - float(protected or 0.0))
+        meta["protected_manual_qty"] = protected
+        meta["exchange_strategy_available"] = available
+        if amount > available:
+            amount = available
+            meta["capped_by"] = "protected_manual_position"
 
     meta["resolved"] = amount
     return amount, meta

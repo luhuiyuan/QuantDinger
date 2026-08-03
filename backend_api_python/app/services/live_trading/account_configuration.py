@@ -7,6 +7,49 @@ from typing import Any, Dict
 from app.services.live_trading.base import LiveTradingError
 
 
+def requires_derivatives_account_configuration(*, market_type: str, reduce_only: bool) -> bool:
+    """Only opening derivative orders may mutate symbol account settings."""
+    market = str(market_type or "").strip().lower()
+    return market in {"swap", "future", "futures", "perp", "perpetual"} and not bool(reduce_only)
+
+
+def _is_binance_unknown_timeout(exc: BaseException | str) -> bool:
+    text = str(exc or "").lower()
+    return (
+        "-1007" in text
+        or "execution status unknown" in text
+        or ("http 408" in text and "timeout" in text)
+    )
+
+
+def _confirm_binance_configuration(
+    client: Any,
+    *,
+    symbol: str,
+    margin_mode: str,
+    leverage: int,
+    require_margin: bool,
+    require_leverage: bool,
+) -> Dict[str, Any]:
+    observed = client.get_symbol_configuration(symbol=symbol) or {}
+    observed_mode = normalize_margin_mode(str(observed.get("margin_mode") or ""))
+    try:
+        observed_leverage = int(float(observed.get("leverage") or 0))
+    except Exception:
+        observed_leverage = 0
+    if require_margin and observed_mode != margin_mode:
+        raise LiveTradingError(
+            f"Binance configuration timeout could not be confirmed: "
+            f"margin_mode expected={margin_mode}, observed={observed_mode}"
+        )
+    if require_leverage and observed_leverage != int(leverage):
+        raise LiveTradingError(
+            f"Binance configuration timeout could not be confirmed: "
+            f"leverage expected={int(leverage)}, observed={observed_leverage}"
+        )
+    return observed
+
+
 def normalize_margin_mode(value: str) -> str:
     raw = str(value or "cross").strip().lower()
     if raw in {"cross", "crossed"}:
@@ -49,13 +92,40 @@ def configure_derivatives_account(
     }
 
     if isinstance(client, BinanceFuturesClient):
+        margin_confirmed_after_timeout = False
         try:
             client.set_margin_type(symbol=symbol, margin_mode=mode)
         except Exception as exc:
             text = str(exc).lower()
             if "-4046" not in text and "no need to change margin type" not in text:
-                raise LiveTradingError(f"Binance margin mode setup failed: {exc}") from exc
-        client.set_leverage(symbol=symbol, leverage=target_leverage)
+                if not _is_binance_unknown_timeout(exc):
+                    raise LiveTradingError(f"Binance margin mode setup failed: {exc}") from exc
+                observed = _confirm_binance_configuration(
+                    client,
+                    symbol=symbol,
+                    margin_mode=mode,
+                    leverage=target_leverage,
+                    require_margin=True,
+                    require_leverage=False,
+                )
+                details["readback_after_margin_timeout"] = observed
+                margin_confirmed_after_timeout = True
+        try:
+            client.set_leverage(symbol=symbol, leverage=target_leverage)
+        except Exception as exc:
+            if not _is_binance_unknown_timeout(exc):
+                raise
+            observed = _confirm_binance_configuration(
+                client,
+                symbol=symbol,
+                margin_mode=mode,
+                leverage=target_leverage,
+                require_margin=True,
+                require_leverage=True,
+            )
+            details["readback_after_leverage_timeout"] = observed
+        if margin_confirmed_after_timeout:
+            details["margin_mode_confirmed_after_timeout"] = True
         return details
 
     if isinstance(client, OkxClient):

@@ -80,6 +80,226 @@ def test_config_from_trading_config_initial_pct():
     assert cfg.grid_direction == "long"
 
 
+def test_grid_drift_cancels_same_side_entries_and_unsafe_exits(monkeypatch):
+    from app.services.grid.engine import GridEngine
+
+    engine = GridEngine(
+        42,
+        "BTC/USDT",
+        {
+            "market_type": "spot",
+            "bot_params": {
+                "upperPrice": 110,
+                "lowerPrice": 90,
+                "gridCount": 5,
+                "amountPerGrid": 10,
+                "gridDirection": "long",
+            },
+        },
+        {"exchange_id": "binance", "credential_id": 7},
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *a, **k: False,
+    )
+    engine._bootstrapped = True
+    cancelled = []
+    monkeypatch.setattr(
+        engine,
+        "_grid_entry_ownership_allowed",
+        lambda *_a, **_k: (False, {"reason": "account_below_protected_allocation"}),
+    )
+    monkeypatch.setattr(
+        engine,
+        "cancel_entry_orders_on_exchange",
+        lambda *, pos_side="": cancelled.append(("entry", pos_side)),
+    )
+    monkeypatch.setattr(
+        engine,
+        "cancel_exit_orders_on_exchange",
+        lambda *, pos_side="": cancelled.append(("exit", pos_side)),
+    )
+
+    assert engine.sync_grid_orders(100.0) == 0
+    assert cancelled == [("entry", "long"), ("exit", "long")]
+
+
+def test_grid_direct_resting_entry_cannot_bypass_ownership_guard(monkeypatch):
+    from app.services.grid.engine import GridEngine
+    from app.services.grid.levels import GridCellSpec
+
+    engine = GridEngine(
+        42,
+        "BTC/USDT",
+        {
+            "market_type": "swap",
+            "bot_params": {"gridCount": 5, "gridDirection": "long"},
+        },
+        {"exchange_id": "binance", "credential_id": 7},
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *a, **k: False,
+    )
+    cancelled = []
+    monkeypatch.setattr(engine, "_normalize_grid_base_qty", lambda qty, _price: qty)
+    monkeypatch.setattr(
+        engine,
+        "_grid_entry_ownership_allowed",
+        lambda *_a, **_k: (False, {"reason": "unallocated_account_position"}),
+    )
+    monkeypatch.setattr(
+        engine,
+        "cancel_entry_orders_on_exchange",
+        lambda *, pos_side="": cancelled.append(pos_side),
+    )
+    monkeypatch.setattr(
+        "app.services.grid.engine.place_grid_limit_order",
+        lambda *_a, **_k: pytest.fail("blocked grid entry must not reach exchange"),
+    )
+
+    placed = engine._place_limit(
+        GridCellSpec(index=1, lower_price=99.0, upper_price=101.0),
+        "long_entry",
+        "buy",
+        99.0,
+        reduce_only=False,
+        pos_side="long",
+        quantity=0.01,
+    )
+
+    assert placed is False
+    assert cancelled == ["long"]
+
+
+def test_grid_entry_guard_uses_live_account_snapshot_and_shared_ownership_logic(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services.grid.engine import GridEngine
+
+    engine = GridEngine(
+        42,
+        "BTC/USDT",
+        {"market_type": "spot", "bot_params": {"gridCount": 5}},
+        {"exchange_id": "binance", "credential_id": 7},
+        user_id=3,
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *a, **k: False,
+    )
+    observed = {}
+
+    def fake_query(**kwargs):
+        observed["query"] = kwargs
+        return 1.25
+
+    def fake_guard(**kwargs):
+        observed["guard"] = kwargs
+        return SimpleNamespace(
+            ownership={
+                "status": "drift_blocked",
+                "reason": "unallocated_account_position",
+            },
+            error="position_drift_detected",
+            log_message="ownership drift",
+            log_level="error",
+        )
+
+    monkeypatch.setattr(
+        "app.services.live_trading.position_query.query_exchange_position_size",
+        fake_query,
+    )
+    monkeypatch.setattr(
+        "app.services.pending_orders.entry_position_guard.evaluate_entry_position_guard",
+        fake_guard,
+    )
+    monkeypatch.setattr("app.services.grid.engine.append_strategy_log", lambda *_a, **_k: None)
+
+    allowed, metadata = engine._grid_entry_ownership_allowed(
+        object(),
+        "long",
+        force=True,
+    )
+
+    assert allowed is False
+    assert metadata["reason"] == "unallocated_account_position"
+    assert observed["query"]["strict"] is True
+    assert observed["guard"]["account_qty"] == pytest.approx(1.25)
+    assert observed["guard"]["credential_id"] == 7
+    assert observed["guard"]["strategy_config"]["bot_type"] == "grid"
+
+
+def test_grid_exit_fails_closed_when_protected_inventory_lookup_fails(monkeypatch):
+    from app.services.grid.engine import GridEngine
+
+    engine = GridEngine(
+        42,
+        "BTC/USDT",
+        {"market_type": "swap", "bot_params": {"gridCount": 5}},
+        {"exchange_id": "binance", "credential_id": 7},
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *a, **k: False,
+    )
+    logs = []
+    monkeypatch.setattr(
+        "app.services.live_trading.position_query.resolve_reduce_only_quantity",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("ownership database unavailable")),
+    )
+    monkeypatch.setattr(
+        "app.services.grid.engine.append_strategy_log",
+        lambda *args, **_kwargs: logs.append(args),
+    )
+
+    assert engine._resolve_grid_exit_quantity(
+        object(),
+        pos_side="long",
+        requested_qty=0.5,
+    ) == 0.0
+    assert any("protected inventory could not be verified" in str(row[-1]) for row in logs)
+
+
+def test_grid_exit_budget_subtracts_existing_resting_exits(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services.grid.engine import GridEngine
+
+    engine = GridEngine(
+        42,
+        "BTC/USDT",
+        {"market_type": "swap", "bot_params": {"gridCount": 5}},
+        {"exchange_id": "binance", "credential_id": 7},
+        create_client_fn=lambda: object(),
+        enqueue_market=lambda *a, **k: False,
+    )
+    monkeypatch.setattr(
+        "app.services.live_trading.position_query.resolve_reduce_only_quantity",
+        lambda **_kwargs: (
+            0.8,
+            {
+                "db_size": 1.0,
+                "exchange_size": 1.4,
+                "exchange_strategy_available": 0.9,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        engine._orders,
+        "list_open",
+        lambda _strategy_id: [
+            SimpleNamespace(
+                reduce_only=True,
+                purpose="long_exit",
+                pos_side="long",
+                quantity=0.4,
+                processed_fill_qty=0.0,
+            ),
+        ],
+    )
+
+    amount = engine._resolve_grid_exit_quantity(
+        object(),
+        pos_side="long",
+        requested_qty=0.8,
+    )
+
+    assert amount == pytest.approx(0.5)
+
+
 def test_grid_count_unit_preserves_legacy_bots_and_supports_exact_cell_counts():
     legacy = GridBotConfig.from_trading_config({
         "bot_params": {

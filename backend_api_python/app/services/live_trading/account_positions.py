@@ -186,6 +186,7 @@ def reconcile_strategy_vs_account(
     account_rows: List[Dict[str, Any]],
     *,
     allocated_rows: Optional[List[Dict[str, Any]]] = None,
+    protected_rows: Optional[List[Dict[str, Any]]] = None,
     eps: float = 1e-8,
     size_tolerance_ratio: float = 0.01,
 ) -> Dict[str, Any]:
@@ -215,43 +216,79 @@ def reconcile_strategy_vs_account(
     allocations: Dict[tuple, float] = aggregate(
         allocated_rows if allocated_rows is not None else (local_rows or [])
     )
+    include_ownership = protected_rows is not None
+    protected: Dict[tuple, float] = {}
+    for row in protected_rows or []:
+        if str(row.get("coexistence_mode") or "strict") != "advanced":
+            continue
+        sym = normalize_strategy_symbol(
+            str(row.get("symbol_canonical") or row.get("symbol") or "")
+        ).upper()
+        side = str(row.get("side") or "").strip().lower()
+        if not sym or side not in ("long", "short"):
+            continue
+        try:
+            qty = max(0.0, float(row.get("manual_reserved_qty") or 0.0))
+        except Exception:
+            qty = 0.0
+        if qty > eps:
+            protected[(sym, side)] = protected.get((sym, side), 0.0) + qty
     acct: Dict[tuple, float] = aggregate(account_rows or [])
 
     notes: List[str] = []
     status = "ok"
-    for key in set(allocations.keys()) | set(acct.keys()):
+    for key in set(allocations.keys()) | set(protected.keys()) | set(acct.keys()):
         allocated_size = float(allocations.get(key, 0.0))
+        protected_size = float(protected.get(key, 0.0))
+        expected_size = allocated_size + protected_size
         account_size = float(acct.get(key, 0.0))
         sym, side = key
-        if allocated_size <= eps and account_size <= eps:
+        if expected_size <= eps and account_size <= eps:
             continue
-        if allocated_size > eps and account_size <= eps:
-            notes.append(f"strategy_only:{sym}:{side}:allocated={allocated_size}")
+        if expected_size > eps and account_size <= eps:
+            note = f"strategy_only:{sym}:{side}:allocated={allocated_size}"
+            if include_ownership:
+                note = (
+                    f"strategy_only:{sym}:{side}:strategy={allocated_size}:"
+                    f"protected={protected_size}:account=0"
+                )
+            notes.append(note)
             status = "strategy_only" if status == "ok" else "mismatch"
-        elif allocated_size <= eps and account_size > eps:
-            notes.append(f"account_only:{sym}:{side}:account={account_size}")
+        elif expected_size <= eps and account_size > eps:
+            note = f"account_only:{sym}:{side}:account={account_size}"
+            if include_ownership:
+                note += ":strategy=0:protected=0"
+            notes.append(note)
             status = "account_only" if status == "ok" else "mismatch"
         else:
-            tol = max(eps, allocated_size * size_tolerance_ratio)
-            if abs(allocated_size - account_size) > tol:
-                notes.append(
-                    f"size_mismatch:{sym}:{side}:allocated={allocated_size}:account={account_size}"
-                )
+            tol = max(eps, expected_size * size_tolerance_ratio)
+            if abs(expected_size - account_size) > tol:
+                note = f"size_mismatch:{sym}:{side}:allocated={allocated_size}:account={account_size}"
+                if include_ownership:
+                    note = (
+                        f"size_mismatch:{sym}:{side}:account={account_size}:strategy={allocated_size}:"
+                        f"protected={protected_size}:unknown={account_size - expected_size}"
+                    )
+                notes.append(note)
                 status = "mismatch"
 
     shares: List[Dict[str, Any]] = []
     for key, local_size in sorted(local.items()):
         sym, side = key
         allocated_size = float(allocations.get(key, 0.0))
+        protected_size = float(protected.get(key, 0.0))
         account_size = float(acct.get(key, 0.0))
-        shares.append({
+        share = {
             "symbol": sym,
             "side": side,
             "strategy_size": local_size,
             "allocated_size": allocated_size,
             "account_size": account_size,
             "allocation_share": local_size / allocated_size if allocated_size > eps else 0.0,
-        })
+        }
+        if include_ownership:
+            share["protected_size"] = protected_size
+        shares.append(share)
     return {
         "status": status,
         "notes": notes,

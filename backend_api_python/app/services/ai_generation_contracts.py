@@ -111,9 +111,15 @@ INDICATOR_SYSTEM_CONTRACT = """# QuantDinger chart indicator contract
 - Declare tunable parameters with `# @param <name> <int|float|bool|str> <default> <description>` and read matching defaults through `params.get(...)`.
 - Set `output = {'name': ..., 'plots': [...], 'signals': [...], 'layers': [...]}`.
 - Every plot and signal data list must have exactly `len(df)` values. Use `None` for sparse values and never emit NaN or infinity.
-- A signal is active only when its `data` list contains a finite numeric value for that bar. Static `text` or `textData` labels never activate a signal on their own.
+- Plot types are `line`, `bar`, and `circle`; `histogram`/`column` alias to bar and `lamp`/`dot`/`point`/`scatter` alias to circle. Set `overlay` explicitly. All non-overlay plots from one indicator share one pane.
+- A plot point may be a scalar or `{'value': number, 'color': '#RRGGBB', 'size': number}` for per-bar style. Prefer the canonical `value`, `color`, and `size` keys.
+- A signal is active when its `data` list contains a finite non-zero numeric marker price for that bar. This finite numeric value format is preferred for consistent preview and notification monitoring. Static `text` or `textData` labels never activate a signal on their own.
+- Signals may set `renderMode` to `events`, `points`, or `state`; prefer sparse numeric event arrays unless the requested visual is explicitly a continuous condition.
 - Signal names are dynamic: use a stable `text` label or a per-bar `textData` label. The `type` field controls marker orientation and does not restrict signal names to Buy, Sell, Long Entry, or Long Exit.
 - Prefer one-bar edge events for markers and notifications. Do not repeat a persistent state on every bar.
+- Layers support `zone`, `line`, and `label`. Do not invent Pine-only fill, table, polyline, candle, background-color, bar-color, object-ID, or mutation contracts.
+- The runtime is single-symbol and single-timeframe. Do not emulate `request.security()`, other `request.*()` APIs, network access, Pine `barstate.*`, or tick rollback.
+- Translate common Pine calculation semantics with pandas/numpy; do not claim Pine syntax/API compatibility or assume a Pine-compatible `ta.*` namespace exists.
 - Avoid look-ahead: no negative shift, future `iloc`, centered rolling, or future-row reads.
 - Return valid Python only, without markdown fences or prose.
 """

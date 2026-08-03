@@ -416,6 +416,17 @@ short_position = get_position(g.symbol, position_side="short")
 
 Do not treat <code>get_position(symbol)</code> as a synthetic net position in hedge mode. <code>get_positions()</code> may contain leg-aware keys such as <code>symbol::long</code> and <code>symbol::short</code>. Use <code>abs(position.amount)</code> when checking whether a leg is open.
 
+Do not confuse these definitions from different layers:
+
+| Name | Layer | Meaning |
+| --- | --- | --- |
+| <code>direction_mode</code> | strategy manifest | allowed capability: <code>long_only</code>, <code>short_only</code>, <code>both</code>, or <code>neutral</code> |
+| <code>position_side</code> | position/order | <code>long</code> or <code>short</code> leg in swap hedge mode; spot has long inventory only |
+| order value/target | strategy source | requested quantity, value, or weight change/target; short targets are negative in source |
+| <code>open/add/reduce/close</code> | runtime order intent | canonical action derived from synchronized position and target delta; submitted quantity is absolute |
+| <code>execution_mode</code> | deployment | <code>signal</code> emits signals, while <code>live</code> submits real orders |
+| <code>coexistence_mode</code> | account ownership | <code>strict</code> or <code>advanced</code> manual/strategy inventory policy; it is not trade direction |
+
 Order functions:
 
 | Function | Meaning |
@@ -805,9 +816,22 @@ Mixed-market live deployment is unsupported. Other markets cannot be forced thro
 ### Position ownership, reconciliation, and account risk
 
 - A live strategy owns only its allocated strategy position. Manual holdings and positions owned by another strategy are not available for it to close.
-- Before placing a close or reversal, the runtime reconciles strategy allocation, database state, and the exchange snapshot. A mismatch blocks the order rather than risking a user's unrelated holding.
+- Advanced coexistence supports both Crypto spot and derivatives. Baselines are keyed by credential, market type, canonical symbol, and position leg; spot has long inventory only, while derivatives use long/short legs.
+- The reconciliation identity is <code>account position = strategy allocation + protected manual position + unknown delta</code>. New entries require the unknown delta to remain within tolerance.
+
+| Ownership mode | Protected manual position | Behavior |
+| --- | --- | --- |
+| <code>strict</code> (default) | always 0 | unallocated account inventory pauses same-side entries/adds; it never auto-closes a position |
+| <code>advanced</code> | records <code>account position - strategy position</code> after explicit confirmation | strategy inventory may coexist with that floor; any later unknown delta pauses entries/adds again |
+
+- Drift pauses same-side opens/adds only. The first state transition logs account, strategy, protected, and unknown quantities; an unchanged blocked state does not spam duplicate logs.
+- Grid strategies run the same ownership check on every resting-order sync. Drift cancels unfilled entry orders on that leg. If the account is below its protected allocation or the protection ledger cannot be verified, potentially oversized exits are also cancelled and rebuilt from strategy inventory, existing exits, and the protected floor.
+- Closes/reductions remain available but are capped by the strategy ledger, actual exchange inventory, and protected baseline. They can never cross protected manual inventory, and are not a tool for absorbing an unknown delta.
+- The Ownership & Repair page exposes <code>protect_manual</code> (record the current delta and enable advanced mode), <code>strict_mode</code> (clear the floor and return to strict mode), and <code>recheck</code> (refresh and reconcile). These actions update ownership records only and never trade automatically.
+- Advanced coexistence is QuantDinger ledger isolation, not physical venue isolation. Spot inventory still shares the account balance; same-side derivatives still share venue entry price, margin, and liquidation risk.
 - Same account/exchange/market/symbol/leg ownership is exclusive. Confirmed hedge mode can allow separate long-only and short-only strategies on opposite legs; <code>both</code>/<code>neutral</code> reserves both.
 - Minimum quantity, quantity step, minimum notional, available margin, leverage, and venue caps are applied after strategy sizing. The final submitted quantity can differ from the raw request.
+- Only derivative opens/adds configure margin mode and leverage. Closes/reductions skip account configuration so a configuration endpoint failure cannot block an exit. After Binance HTTP 408, <code>-1007</code>, or “execution status unknown,” the runtime reads configuration back and proceeds only when observed margin mode/leverage matches the target.
 - Optional account-risk limits can reject orders for gross notional, estimated margin, gross leverage, or per-symbol notional. Treat those as risk warnings that require configuration or sizing changes, not as reasons to bypass the guard.
 - Market data, private WebSocket events, and periodic REST reconciliation work together. WebSocket improves latency; REST remains the recovery source after disconnects or missed events.
 
@@ -838,7 +862,9 @@ Allowed import roots are <code>numpy</code>, <code>pandas</code>, <code>math</co
 | <code>strategyV2.dualDirectionHedgeModeRequired:...</code> | account is not in hedge mode | enable venue hedge/dual-side mode |
 | <code>strategyV2.hedgeModeUnknown:...</code> | account mode could not be confirmed | repair credential/API access and retry |
 | <code>strategyV2.liveLegConflict:...</code> | another live strategy owns the leg | stop/reconfigure the conflicting strategy |
-| position/account mismatch | strategy allocation differs from venue | reconcile or stop-and-repair; do not bypass |
+| <code>position_drift_detected:...</code> | account, strategy, and protected baseline contain an unknown delta | recheck, protect manual inventory, or restore strict mode in Ownership & Repair; do not bypass |
+| <code>unallocated_account_position</code> | account position exceeds strategy plus protected inventory | verify and protect the delta as manual inventory, or restore equality manually |
+| <code>account_below_protected_allocation</code> | account position is below strategy plus protected inventory | stop new entries and reconcile venue, strategy ledger, and baseline |
 | invalid amount/minimum notional | rounded quantity cannot be submitted | increase capital/weight or choose a suitable instrument |
 | account-risk rejection | configured account exposure limit exceeded | reduce size/leverage or deliberately revise the limit |
 | <code>strategyV2.runtimeFailed:...</code> | handler raised | inspect the named handler and cause |
@@ -888,6 +914,7 @@ Martingale rules:
 - [ ] No future rows, negative shifts, or centered rolling.
 - [ ] Long exits and short entries are independent.
 - [ ] Hedge-mode code reads and writes explicit <code>position_side</code> legs.
+- [ ] <code>direction_mode</code>, <code>position_side</code>, <code>execution_mode</code>, and account <code>coexistence_mode</code> are not conflated.
 - [ ] Exposure is capped; grid, DCA, martingale, and scaling layers have hard limits.
 - [ ] Every order has an auditable reason.
 - [ ] Retryable/working orders use stable client IDs and do not advance state before confirmation.
@@ -900,3 +927,4 @@ Martingale rules:
 - [ ] Robustness is tested across periods and cost assumptions.
 - [ ] At least one successful backtest exists before publication.
 - [ ] Credentials, market, balance, lot size, and notifications are checked before live use.
+- [ ] Reusing existing spot or derivative inventory includes an explicit strict/advanced ownership choice and verified protected baseline.

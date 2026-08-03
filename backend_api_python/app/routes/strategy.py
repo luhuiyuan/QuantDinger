@@ -37,6 +37,7 @@ from app.routes import strategy_ledger_routes  # noqa: E402,F401
 from app.routes import strategy_logs_routes  # noqa: E402,F401
 from app.routes import strategy_notifications  # noqa: E402,F401
 from app.routes import strategy_positions_routes  # noqa: E402,F401
+from app.routes import strategy_position_ownership_routes  # noqa: E402,F401
 from app.routes import strategy_review_routes  # noqa: E402,F401
 
 

@@ -16,6 +16,7 @@ def _row(*, filled: float, avg_price: float):
         "market_type": "swap",
         "exchange_id": "binance",
         "exchange_order_id": "exchange-41",
+        "amount": 1.0,
         "filled": filled,
         "avg_price": avg_price,
         "payload_json": '{"strategy_id":9,"strategy_run_id":3,"order_intent_id":5}',
@@ -105,6 +106,66 @@ def test_live_sent_sync_finalizes_after_restart_without_duplicate_fill(monkeypat
     assert persisted == []
     assert snapshots[0]["status"] == "filled"
     assert snapshots[0]["exchange_status"] == "filled"
+
+
+def test_bitget_precision_normalized_fill_releases_residual_sent_order(monkeypatch):
+    class Client:
+        def normalize_base_order_size(self, *, symbol, product_type, base_size):
+            assert symbol == "BTC/USDT"
+            assert product_type == "USDT-FUTURES"
+            assert base_size == pytest.approx(0.037993191620)
+            return 0.0379
+
+    row = _row(filled=0.0379, avg_price=62_519.1)
+    row.update({
+        "exchange_id": "bitget",
+        "amount": 0.037993191620,
+        "payload_json": (
+            '{"strategy_id":9,"strategy_run_id":3,"order_intent_id":5,'
+            '"amount":0.037993191620}'
+        ),
+    })
+    worker = object.__new__(worker_module.PendingOrderWorker)
+    worker._claim_live_sent_order = lambda order_id: dict(row)
+    snapshots = []
+    worker._update_live_sent_order_snapshot = lambda **kwargs: snapshots.append(kwargs)
+    monkeypatch.setattr(
+        worker_module,
+        "load_strategy_configs",
+        lambda strategy_id: {"user_id": 7, "exchange_config": {"exchange_id": "bitget"}},
+    )
+    monkeypatch.setattr(worker_module, "resolve_exchange_config", lambda cfg, user_id: dict(cfg))
+    monkeypatch.setattr(worker_module, "create_client", lambda cfg, market_type: Client())
+    monkeypatch.setattr(
+        worker_module,
+        "query_grid_order_fill",
+        lambda *args, **kwargs: (0.0379, 62_519.1, "partial"),
+    )
+    monkeypatch.setattr(worker_module, "persist_strategy_fill", lambda **kwargs: None)
+    monkeypatch.setattr(worker_module, "append_strategy_log", lambda *args, **kwargs: None)
+
+    worker._sync_one_live_sent_order(row)
+
+    assert snapshots[0]["status"] == "filled"
+    assert snapshots[0]["filled"] == pytest.approx(0.0379)
+
+
+def test_bitget_executable_quantity_uses_base_unit_after_contract_rounding():
+    class Client:
+        def normalize_base_order_size(self, **kwargs):
+            assert kwargs["base_size"] == pytest.approx(0.037993191620)
+            return 0.0379
+
+    from app.services.pending_orders.order_quantities import exchange_executable_base_quantity
+
+    assert exchange_executable_base_quantity(
+        Client(),
+        exchange_id="bitget",
+        symbol="BTC/USDT",
+        market_type="swap",
+        requested=0.037993191620,
+        exchange_config={"product_type": "USDT-FUTURES"},
+    ) == pytest.approx(0.0379)
 
 
 def test_live_sent_sync_tracks_market_leg_without_overwriting_limit_fill(monkeypatch):

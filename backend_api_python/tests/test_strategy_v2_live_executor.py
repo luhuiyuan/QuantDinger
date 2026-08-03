@@ -1,3 +1,5 @@
+import inspect
+
 import pandas as pd
 
 from app.services.strategy_v2 import OrderIntent
@@ -410,15 +412,24 @@ def test_demo_account_price_overrides_public_market_price(monkeypatch):
     assert prices["Crypto:BTC/USDT@binance:swap"] == 63_943.1
 
 
-def test_live_frame_latest_bar_is_aligned_to_execution_account_price():
+def test_live_frame_latest_completed_bar_is_not_overwritten_by_execution_price():
     frame = _frame(price=64_294.6)
-    key = "Crypto:BTC/USDT@binance:swap"
+    before = frame.iloc[-1][["open", "high", "low", "close"]].tolist()
 
-    aligned = TradingExecutor._align_latest_frame_prices({key: frame}, {key: 63_943.1})
-
-    assert aligned[key].iloc[-1][["open", "high", "low", "close"]].tolist() == [
-        63_943.1,
-        63_943.1,
-        63_943.1,
-        63_943.1,
+    # Signal frames come only from the completed-candle fetch path. Execution
+    # account prices are passed separately to protection/equity evaluation.
+    assert not hasattr(TradingExecutor, "_align_latest_frame_prices")
+    assert frame.iloc[-1][["open", "high", "low", "close"]].tolist() == before == [
+        64_294.6,
+        64_294.6,
+        64_294.6,
+        64_294.6,
     ]
+
+
+def test_live_loop_does_not_use_realtime_price_hook_for_strategy_orders():
+    source = inspect.getsource(TradingExecutor._run_strategy_loop)
+
+    assert ".evaluate_price_tick(" not in source
+    assert ".evaluate_equity_risk(" in source
+    assert ".evaluate_protections(" in source

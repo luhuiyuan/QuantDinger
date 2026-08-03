@@ -208,6 +208,10 @@ def test_runner_startup_places_both_neutral_legs_in_hedge_mode(monkeypatch):
     )
     monkeypatch.setattr("app.services.grid.runner.append_strategy_log", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("app.services.grid.engine.append_strategy_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "app.services.grid.engine.GridEngine._grid_entry_ownership_allowed",
+        lambda *_args, **_kwargs: (True, {}),
+    )
     monkeypatch.setattr("app.services.grid.poller.sync_strategy_grid_orders", lambda _sid: 0)
 
     with patch("app.services.grid.engine.place_grid_limit_order") as place:
@@ -241,7 +245,11 @@ def test_runner_startup_places_both_neutral_legs_in_hedge_mode(monkeypatch):
                             "maxOpenOrders": 2,
                         },
                     },
-                    {"exchange_id": "bitget", "product_type": "USDT-FUTURES"},
+                    {
+                        "exchange_id": "bitget",
+                        "credential_id": 9,
+                        "product_type": "USDT-FUTURES",
+                    },
                     user_id=1,
                     initial_capital=100,
                     enqueue_market_fn=lambda *args, **kwargs: True,

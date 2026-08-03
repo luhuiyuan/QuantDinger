@@ -109,6 +109,104 @@ def test_resolve_caps_to_db_when_smaller(monkeypatch):
     assert meta.get("capped_by") == "db"
 
 
+def test_resolve_preserves_advanced_manual_position_floor(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.live_trading.position_query.fetch_position_size_for_side",
+        lambda *_a, **_k: 0.015,
+    )
+    monkeypatch.setattr(
+        "app.services.live_trading.position_query.query_exchange_position_size",
+        lambda **_k: 0.02,
+    )
+    monkeypatch.setattr(
+        "app.services.live_trading.position_ownership.protected_quantity",
+        lambda **_k: 0.01,
+    )
+    amount, meta = resolve_reduce_only_quantity(
+        strategy_id=1,
+        symbol="BTC/USDT",
+        pos_side="long",
+        requested_amount=0.015,
+        client=MagicMock(),
+        market_type="swap",
+        exchange_config={},
+        user_id=1,
+        credential_id=2,
+    )
+    assert amount == pytest.approx(0.01)
+    assert meta["protected_manual_qty"] == pytest.approx(0.01)
+    assert meta["capped_by"] == "protected_manual_position"
+
+
+def test_resolve_fails_closed_when_protected_position_lookup_fails(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.live_trading.position_query.fetch_position_size_for_side",
+        lambda *_a, **_k: 0.015,
+    )
+    monkeypatch.setattr(
+        "app.services.live_trading.position_query.query_exchange_position_size",
+        lambda **_k: 0.025,
+    )
+
+    def fail_protection(**_kwargs):
+        raise RuntimeError("ownership database unavailable")
+
+    monkeypatch.setattr(
+        "app.services.live_trading.position_ownership.protected_quantity",
+        fail_protection,
+    )
+
+    with pytest.raises(RuntimeError, match="ownership database unavailable"):
+        resolve_reduce_only_quantity(
+            strategy_id=1,
+            symbol="BTC/USDT",
+            pos_side="long",
+            requested_amount=0.015,
+            client=MagicMock(),
+            market_type="spot",
+            exchange_config={},
+            user_id=1,
+            credential_id=2,
+        )
+
+
+def test_spot_position_query_uses_total_inventory_including_locked():
+    from app.services.live_trading.binance_spot import BinanceSpotClient
+    from app.services.live_trading.position_query import query_exchange_position_size
+
+    client = MagicMock(spec=BinanceSpotClient)
+    client.get_account.return_value = {
+        "balances": [{"asset": "BTC", "free": "0.6", "locked": "0.4"}],
+    }
+
+    qty = query_exchange_position_size(
+        client=client,
+        symbol="BTC/USDT",
+        pos_side="long",
+        market_type="spot",
+        strict=True,
+    )
+
+    assert qty == pytest.approx(1.0)
+
+
+def test_strict_spot_position_query_propagates_exchange_snapshot_failure():
+    from app.services.live_trading.binance_spot import BinanceSpotClient
+    from app.services.live_trading.position_query import query_exchange_position_size
+
+    client = MagicMock(spec=BinanceSpotClient)
+    client.get_account.side_effect = RuntimeError("spot account unavailable")
+
+    with pytest.raises(RuntimeError, match="spot account unavailable"):
+        query_exchange_position_size(
+            client=client,
+            symbol="BTC/USDT",
+            pos_side="long",
+            market_type="spot",
+            strict=True,
+        )
+
+
 def test_okx_net_mode_long_position(monkeypatch):
     from app.services.live_trading.okx import OkxClient
     from app.services.live_trading.position_query import query_exchange_position_size

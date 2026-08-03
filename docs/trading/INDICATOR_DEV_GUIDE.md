@@ -9,6 +9,8 @@ The most important boundary is: **an indicator is for chart analysis, not trade 
 
 An indicator cannot place orders, backtest, run live trading, read an account, manage positions, enable leverage, or execute stop-loss/take-profit rules. To trade an idea, convert its visual signals into a Strategy API V2 strategy, then verify, backtest, and deploy that strategy separately.
 
+The TradingView/Pine compatibility target is: **preserve the calculation and visual semantics of common single-symbol, single-timeframe indicators, not Pine syntax, every Pine API, or Pine's tick-by-tick execution model.** Pine migrations must rewrite formulas in Python/pandas and return the result through the <code>output</code> contract in this guide.
+
 ---
 
 ## 1. Build a minimal indicator first
@@ -248,7 +250,35 @@ Each plot normally contains:
 | <code>data</code> | list | values/<code>None</code>, length <code>len(df)</code> |
 | <code>color</code> | str | preferably <code>#RRGGBB</code> |
 | <code>overlay</code> | bool | <code>True</code> on price chart, <code>False</code> in a pane |
-| <code>type</code> | optional str | commonly <code>line</code>; other current renderer styles may be used |
+| <code>type</code> | optional str | <code>line</code>, <code>bar</code>, or <code>circle</code>; see aliases below |
+
+Public plot types:
+
+| Input | Normalized result | Typical Pine equivalent |
+| --- | --- | --- |
+| <code>line</code> | connected line | <code>plot(..., style=plot.style_line)</code> |
+| <code>bar</code>, <code>histogram</code>, <code>column</code> | columns from a baseline | histogram/columns |
+| <code>circle</code>, <code>dot</code>, <code>point</code>, <code>scatter</code> | circles | circles/scatter |
+| <code>lamp</code> | lamp dots; three or more lamp series in one pane are arranged into rows | an approximation for state panels |
+
+Style fields apply by figure type:
+
+- Common: <code>color</code>, <code>opacity</code>.
+- Line: <code>lineWidth</code> and <code>lineStyle</code>/<code>style</code>, such as <code>solid</code> or <code>dashed</code>.
+- Bar and circle: <code>size</code>/<code>radius</code>, <code>borderColor</code>, and <code>borderSize</code>; bars also accept <code>baseValue</code>.
+- All <code>overlay=False</code> plots from one indicator share one pane. They do not automatically create several panes as separate Pine scripts would.
+
+For Pine-like series colors or dynamic point sizes, a <code>data</code> entry may be an object instead of a scalar:
+
+~~~python
+dynamic_points = [
+    None,
+    {"value": 102.5, "color": "#22C55E", "size": 4},
+    {"value": 101.8, "color": "#EF4444", "size": 6},
+]
+~~~
+
+Value aliases are <code>value</code>, <code>y</code>, and <code>data</code>; color aliases are <code>color</code>, <code>fillColor</code>, and <code>backgroundColor</code>; size aliases are <code>size</code>, <code>radius</code>, and <code>r</code>. New code should use the canonical <code>value/color/size</code> fields.
 
 ~~~python
 plots = [
@@ -308,10 +338,22 @@ Rules:
 
 - <code>type</code> is commonly <code>buy</code> or <code>sell</code>. It controls marker orientation, not the signal name.
 - <code>text</code> is the stable name. Optional <code>textData</code> can provide a per-bar label.
-- Only a finite numeric <code>data[i]</code> activates a signal on bar i.
+- The most stable format for both rendering and notification monitoring is a finite, non-zero marker price in <code>data[i]</code>.
 - <code>text</code> and <code>textData</code> never activate a signal by themselves.
 - Empty positions must contain real <code>None</code> values.
 - Mark one-bar events by default instead of repeating a persistent state.
+
+Compatibility formats also accept <code>True</code>, or <code>{"active": True, "price": ..., "text": ..., "color": ...}</code>. When a boolean has no price, the renderer anchors it around the current candle's high or low. For consistent preview, saved signal monitoring, and future clients, new indicators should prefer the “price or <code>None</code>” form and use point objects only when per-point text or color is required.
+
+<code>renderMode</code> controls how persistent conditions become markers:
+
+| Value | Behavior |
+| --- | --- |
+| <code>events</code> (explicit event mode) | every non-empty event point is rendered and can notify |
+| <code>points</code> / <code>markers</code> / <code>raw</code> | explicitly preserve every active point |
+| <code>state</code> / <code>continuous</code> / <code>condition</code> | render and notify only on the False → True edge |
+
+When the mode is omitted, the runtime identifies high-density active series as persistent state and applies edge behavior. Public indicators should not depend on that heuristic; generate sparse events directly or set <code>renderMode</code> explicitly.
 
 Convert a state into its rising edge:
 
@@ -409,7 +451,43 @@ Layers remain visual objects. They do not represent real orders, positions, or h
 
 ---
 
-## 10. pandas and numpy type traps
+## 10. TradingView/Pine capability mapping
+
+QuantDinger does not execute Pine source. Migration means preserving indicator meaning, numerical timing, and visual expression with Python/pandas. This table is the current contract boundary:
+
+| TradingView/Pine capability | Current status | QuantDinger equivalent or limit |
+| --- | --- | --- |
+| OHLCV, history references, rolling windows | Supported | <code>df</code>, <code>shift</code>, <code>rolling</code>, <code>ewm</code> |
+| <code>input.int/float/bool/string</code> | Core semantics supported | <code># @param</code>; Pine group, inline, confirm, and dedicated color/source/timeframe/symbol controls are not available |
+| Common <code>ta.*</code> indicators | Calculation semantics are implementable | use pandas/numpy; the indicator runtime has no Pine-compatible <code>ta</code> namespace, so smoothing, warmup, and NaN behavior must be verified |
+| <code>plot()</code>, histogram, circles | Common subset supported | line/bar/circle plots, overlay/pane placement, and per-point colors/sizes |
+| <code>plotshape()</code>, <code>plotchar()</code> | Main event semantics supported | use <code>signals</code>; use <code>textData</code> or point objects for dynamic text |
+| <code>hline()</code>, line, box, label | Common static results supported | line/zone/label layers; each run returns a final object list, without Pine object IDs, mutation methods, or garbage-collection semantics |
+| <code>alert()</code>, <code>alertcondition()</code> | Partially supported | emit <code>signals</code>, then configure monitoring after saving; indicator code does not directly notify or trade |
+| arrays, maps, user functions, state calculations | Python equivalents available | use list/dict, functions, and pandas Series; calculation is vectorized over the DataFrame, not Pine's per-bar <code>var</code>/<code>varip</code> model |
+| <code>fill()</code>, linefill, <code>bgcolor()</code>, <code>barcolor()</code> | No first-class equivalent yet | a fixed range may be approximated with a zone; this is not full fill, background, or candle-color compatibility |
+| area/step/cross/arrow, <code>plotcandle()</code>/<code>plotbar()</code> | Not supported yet | an unknown <code>type</code> currently falls back to line; do not rely on that fallback |
+| table, polyline, dynamic drawing lifecycle | Not supported yet | do not emit undefined objects |
+| <code>request.security()</code>, <code>request.*()</code>, cross-symbol/MTF | Not supported yet | indicators receive only the current chart DataFrame and cannot fetch network or exchange data |
+| <code>barstate.*</code>, tick updates, rollback | Different execution model | the runtime recalculates from the received DataFrame; confirmed-bar events are the reproducible baseline |
+| strategy.*, orders, positions, backtesting | Outside indicator scope | convert to Strategy API V2 |
+
+The recommended acceptance criterion for “most features are consistent” is therefore: common single-symbol, single-timeframe indicators produce equivalent values and event bars from the same OHLCV, parameters, and confirmed candles. It does not mean Pine source runs directly, and it excludes multi-timeframe requests, tick state, and advanced drawing objects until those contracts are implemented.
+
+For every Pine migration:
+
+1. Record the Pine version, inputs, source series, and indicator timeframe.
+2. Match exact SMA/EMA/RMA/WMA, standard-deviation, ATR, and crossover definitions; matching names are not enough.
+3. Match warmup, <code>na</code> propagation, division-by-zero handling, and the first valid bar.
+4. Separate persistent conditions from one-time events; a Pine condition series must not become a notification on every bar.
+5. Compare numerical tolerance, event bar indexes, and drawing anchors on a fixed OHLCV fixture.
+6. If the Pine script uses a “not supported yet” row, simplify it, document an approximation, or extend the platform contract first. Never label it fully compatible in documentation or code comments.
+
+See TradingView's official Pine documentation for its capability categories: [Visuals overview](https://www.tradingview.com/pine-script-docs/visuals/overview/), [Inputs](https://www.tradingview.com/pine-script-docs/concepts/inputs/), [Other timeframes and data](https://www.tradingview.com/pine-script-docs/concepts/other-timeframes-and-data/), and [Bar states](https://www.tradingview.com/pine-script-docs/concepts/bar-states/).
+
+---
+
+## 11. pandas and numpy type traps
 
 The most common failure is treating a numpy ndarray as a pandas Series.
 
@@ -447,7 +525,7 @@ Always pass <code>index=df.index</code>. Otherwise the new RangeIndex can silent
 
 ---
 
-## 11. Avoid look-ahead and repainting
+## 12. Avoid look-ahead and repainting
 
 An indicator may use only the current and earlier bars. Do not use:
 
@@ -471,7 +549,7 @@ If a signal requires the current close to confirm, its converted strategy should
 
 ---
 
-## 12. Sandbox and safety rules
+## 13. Sandbox and safety rules
 
 Allowed computational modules include numpy, pandas, math, json, datetime, time, collections, functools, itertools, statistics, decimal, fractions, and copy. Since <code>pd</code> and <code>np</code> are preloaded, imports are normally unnecessary.
 
@@ -487,7 +565,7 @@ Validation has a timeout. Avoid unbounded loops, explosive recursion, and unnece
 
 ---
 
-## 13. Complete tutorial: dual EMA viewer
+## 14. Complete tutorial: dual EMA viewer
 
 ~~~python
 # @param fast_len int 12 Fast EMA period range=5:30:1
@@ -594,7 +672,7 @@ How it works:
 
 ---
 
-## 14. Validation, debugging, and common errors
+## 15. Validation, debugging, and common errors
 
 Use this workflow after each meaningful change:
 
@@ -623,7 +701,7 @@ Use this workflow after each meaningful change:
 
 ---
 
-## 15. Semantic checklist before strategy conversion
+## 16. Semantic checklist before strategy conversion
 
 Answer these questions before converting:
 
@@ -642,7 +720,7 @@ Always verify and backtest generated strategy code again. Marketplace publicatio
 
 ---
 
-## 16. Pre-publication checklist
+## 17. Pre-publication checklist
 
 - [ ] Name and description exist and make no return claims.
 - [ ] Comments, identifiers, metadata, and default labels are English.

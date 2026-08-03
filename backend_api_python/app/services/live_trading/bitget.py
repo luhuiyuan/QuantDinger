@@ -568,6 +568,40 @@ class BitgetMixClient(BaseRestClient):
             return (Decimal("0"), size_precision)
         return (qty, size_precision)
 
+    def normalize_base_order_size(
+        self,
+        *,
+        symbol: str,
+        product_type: str = "USDT-FUTURES",
+        base_size: float,
+    ) -> float:
+        """Return the base-asset quantity Bitget can actually submit.
+
+        ``_normalize_size`` returns the exchange order unit (contracts on some
+        instruments).  Fill APIs are normalized back to base quantity, so the
+        durable completion check must compare against the same unit.
+        """
+        normalized_size, _precision = self._normalize_size(
+            symbol=symbol,
+            product_type=product_type,
+            base_size=base_size,
+        )
+        if normalized_size <= 0:
+            return 0.0
+        contract: Dict[str, Any] = {}
+        try:
+            contract = self.get_contract(symbol=symbol, product_type=product_type) or {}
+        except Exception:
+            contract = {}
+        contract_size = self._to_dec(
+            contract.get("contractSize")
+            or contract.get("contractSz")
+            or contract.get("ctVal")
+            or "0"
+        )
+        base_quantity = normalized_size * contract_size if contract_size > 0 else normalized_size
+        return float(base_quantity)
+
     def _normalize_price(self, *, symbol: str, product_type: str, price: float) -> Tuple[Decimal, Optional[int]]:
         """
         Normalize Bitget mix limit price using contract metadata (best-effort).

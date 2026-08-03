@@ -73,15 +73,19 @@ def _pick_cost_from_row(row: Dict[str, Any], *keys: str) -> float:
     return 0.0
 
 
-def _spot_holding(total: float, available: float, avg_cost: float = 0.0) -> Dict[str, float]:
+def _spot_holding(
+    total: float,
+    available: Optional[float],
+    avg_cost: float = 0.0,
+) -> Dict[str, float]:
     t = max(0.0, float(total or 0.0))
-    a = max(0.0, float(available or 0.0))
+    # ``0`` is a valid available balance when the whole holding is locked.
+    # Only a genuinely absent value may fall back to total.
+    a = t if available is None else max(0.0, float(available or 0.0))
     if t <= 0 and a <= 0:
         return {"total": 0.0, "available": 0.0, "avg_cost": 0.0}
     if t <= 0:
         t = a
-    if a <= 0:
-        a = t
     return {
         "total": t,
         "available": a,
@@ -89,7 +93,12 @@ def _spot_holding(total: float, available: float, avg_cost: float = 0.0) -> Dict
     }
 
 
-def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, float]:
+def get_spot_base_holding(
+    client: BaseRestClient,
+    *,
+    symbol: str,
+    strict: bool = False,
+) -> Dict[str, float]:
     """
     Best-effort spot base-asset holding (total + available/free).
 
@@ -113,6 +122,8 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
                     locked = _pick_free_from_row(b, "locked")
                     return _spot_holding(free + locked, free)
     except Exception as e:
+        if strict:
+            raise
         logger.warning("spot base holding (binance): %s", e)
 
     try:
@@ -137,6 +148,8 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
                         )
                         return _spot_holding(total, avail, avg_cost)
     except Exception as e:
+        if strict:
+            raise
         logger.warning("spot base holding (okx): %s", e)
 
     try:
@@ -155,6 +168,8 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
                     locked = _pick_free_from_row(row, "locked", "freeze")
                     return _spot_holding(avail + locked, avail)
     except Exception as e:
+        if strict:
+            raise
         logger.warning("spot base holding (gate): %s", e)
 
     try:
@@ -177,6 +192,8 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
                     )
                     return _spot_holding(total, avail, avg_cost)
     except Exception as e:
+        if strict:
+            raise
         logger.warning("spot base holding (bitget): %s", e)
 
     try:
@@ -201,6 +218,8 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
                         )
                         return _spot_holding(total, avail, avg_cost)
     except Exception as e:
+        if strict:
+            raise
         logger.warning("spot base holding (bybit): %s", e)
 
     try:
@@ -217,6 +236,8 @@ def get_spot_base_holding(client: BaseRestClient, *, symbol: str) -> Dict[str, f
                     avail = _pick_free_from_row(item, "available", "balance")
                     return _spot_holding(total, avail)
     except Exception as e:
+        if strict:
+            raise
         logger.warning("spot base holding (htx): %s", e)
 
     return {"total": 0.0, "available": 0.0, "avg_cost": 0.0}
@@ -229,6 +250,23 @@ def get_spot_free_base_balance(client: BaseRestClient, *, symbol: str) -> float:
     """
     holding = get_spot_base_holding(client, symbol=symbol)
     return max(0.0, float(holding.get("available") or 0.0))
+
+
+def get_spot_total_base_balance(
+    client: BaseRestClient,
+    *,
+    symbol: str,
+    strict: bool = False,
+) -> float:
+    """Best-effort total base inventory, including exchange-locked quantity.
+
+    Ownership and drift checks must use the whole account inventory.  Open
+    limit orders can move quantity from ``available`` to ``locked`` without
+    changing ownership, so using the sellable balance here would create a
+    false negative drift.
+    """
+    holding = get_spot_base_holding(client, symbol=symbol, strict=strict)
+    return max(0.0, float(holding.get("total") or 0.0))
 
 
 def fetch_spot_last_price(client: BaseRestClient, *, symbol: str) -> float:

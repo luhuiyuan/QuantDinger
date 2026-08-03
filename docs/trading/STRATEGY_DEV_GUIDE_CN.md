@@ -418,6 +418,17 @@ short_position = get_position(g.symbol, position_side="short")
 
 在 hedge mode 下，不要把 <code>get_position(symbol)</code> 当成自动合成的净仓位。<code>get_positions()</code> 可能包含 <code>symbol::long</code>、<code>symbol::short</code> 这样的分腿键。判断某条腿是否有仓时建议使用 <code>abs(position.amount)</code>。
 
+不要混淆下面几个不同层级的定义：
+
+| 名称 | 所属层级 | 含义 |
+| --- | --- | --- |
+| <code>direction_mode</code> | 策略清单 | 策略被允许使用的方向能力：<code>long_only</code>、<code>short_only</code>、<code>both</code> 或 <code>neutral</code> |
+| <code>position_side</code> | 仓位/订单 | 合约 hedge mode 中的 <code>long</code> 或 <code>short</code> 分腿；现货只有 long 库存 |
+| 订单 value/target | 策略源码 | 希望增减或达到的数量、价值、权重；做空目标在源码中使用负数 |
+| <code>open/add/reduce/close</code> | 运行时订单意图 | 引擎根据当前同步仓位和目标差额生成的标准动作，提交数量使用绝对值 |
+| <code>execution_mode</code> | 部署 | <code>signal</code> 只发信号，<code>live</code> 才提交真实订单 |
+| <code>coexistence_mode</code> | 账户仓位归属 | <code>strict</code> 或 <code>advanced</code>，决定用户仓位怎样与策略仓位共存；它不是交易方向 |
+
 订单函数：
 
 | 函数 | 含义 |
@@ -807,9 +818,22 @@ def rebalance(context, data):
 ### 仓位归属、对账与账户风控
 
 - 实盘策略只能管理分配给自己的策略仓位。用户手工持仓和其他策略拥有的仓位不能被该策略平掉。
-- 平仓或反手前，运行时会核对策略分配、数据库状态和交易所仓位快照。发现不一致时会阻止订单，避免误平用户无关仓位。
+- Crypto 现货和合约都支持高级共存。归属基线按账户凭证、市场类型、规范标的和持仓腿分别记录；现货只有 long 库存，合约按 long/short 分腿。
+- 核对恒等式是：<code>账户仓位 = 策略分配仓位 + 用户保护仓位 + 未知差额</code>。允许继续开仓要求未知差额处于容差范围内。
+
+| 归属模式 | 用户保护仓位 | 行为 |
+| --- | --- | --- |
+| <code>strict</code>（默认） | 固定为 0 | 账户出现未分配仓位时暂停该方向开仓/加仓，不会自动平仓 |
+| <code>advanced</code> | 用户确认时记录 <code>账户仓位 - 策略仓位</code> | 策略可以与该保护基线共存；后续产生新的未知差额时仍暂停开仓/加仓 |
+
+- 漂移只暂停同方向的新开仓和加仓，并在状态首次变化时记录一次包含账户、策略、保护和未知数量的日志；相同状态不会反复刷日志。
+- 网格策略会在每次挂单同步时执行同一归属核对。发生漂移会撤销该持仓腿尚未成交的 entry 挂单；账户低于保护分配或无法确认保护账本时，也会撤销可能超量的 exit 挂单，再按策略仓位、已有退出挂单和保护基线重新计算安全退出数量。
+- 平仓和减仓保持可用，但数量同时受策略账本、交易所实际仓位和用户保护基线约束，绝不会越过保护仓位。平仓不是修复未知差额的工具。
+- “持仓归属与修复”页面提供：<code>protect_manual</code>（把当前差额设为用户保护基线并启用高级共存）、<code>strict_mode</code>（清除基线并恢复严格模式）和 <code>recheck</code>（重新拉取并核对）。这些动作只修改归属记录，不会自动开仓或平仓。
+- 高级共存是 QuantDinger 的账本隔离，不是交易所物理隔离。现货同币种仍共享账户余额；合约同方向仓位仍共享交易所均价、保证金和强平风险。
 - 同账户/交易所/市场/标的/持仓腿采用独占归属。确认 hedge mode 后，可以由两个 long-only、short-only 策略分别使用相反腿；<code>both</code>/<code>neutral</code> 会占用两条腿。
 - 策略计算后还会应用最小数量、数量步长、最小名义金额、可用保证金、杠杆和交易所上限，最终提交数量可能与原始请求不同。
+- 只有合约开仓/加仓会设置保证金模式和杠杆；平仓/减仓跳过账户配置，避免配置接口故障阻塞退出。Binance 返回 HTTP 408、<code>-1007</code> 或“execution status unknown”时，运行时会回读保证金模式/杠杆；只有回读与目标一致才继续开仓。
 - 可选账户风控会按总名义敞口、预计保证金、总杠杆或单标的敞口拒绝订单。这类结果是需要调整配置或仓位的风控警告，不能绕过保护。
 - 行情、私有 WebSocket 事件与定期 REST 对账共同工作。WebSocket 提供低延迟，REST 仍是断线或漏事件后的恢复来源。
 
@@ -842,7 +866,9 @@ def rebalance(context, data):
 | <code>strategyV2.dualDirectionHedgeModeRequired:...</code> | 账户没有开启双向持仓 | 在交易所开启 hedge/双向持仓模式 |
 | <code>strategyV2.hedgeModeUnknown:...</code> | 无法确认账户持仓模式 | 修复凭证/API 权限后重试 |
 | <code>strategyV2.liveLegConflict:...</code> | 另一实盘策略已占用该腿 | 停止或调整冲突策略 |
-| 仓位/账户不一致 | 策略分配仓位与交易所不同 | 对账或停机修复，不能绕过 |
+| <code>position_drift_detected:...</code> | 账户、策略和保护基线存在未知差额 | 在“持仓归属与修复”中重新核对、保护用户仓位或恢复严格模式；不要绕过 |
+| <code>unallocated_account_position</code> | 账户仓位高于策略仓位与保护基线之和 | 核对后将差额登记为用户保护仓位，或手工恢复一致 |
+| <code>account_below_protected_allocation</code> | 账户仓位低于策略仓位与保护基线之和 | 停止新增订单并核对交易所、策略账本和保护基线 |
 | 数量无效/低于最小名义金额 | 取整后无法提交 | 增加资金/权重或更换合适标的 |
 | 账户风控拒绝 | 超出账户配置的敞口上限 | 降低仓位/杠杆，或有意调整限制 |
 | <code>strategyV2.runtimeFailed:...</code> | 回调运行异常 | 根据处理器名和原始异常修复 |
@@ -892,6 +918,7 @@ DCA 规则：
 - [ ] 不使用未来行、负 shift 或居中 rolling。
 - [ ] 多头离场与空头入场独立。
 - [ ] 双向持仓代码显式读取和操作 <code>position_side</code> 分腿。
+- [ ] 已区分 <code>direction_mode</code>、<code>position_side</code>、<code>execution_mode</code> 与账户 <code>coexistence_mode</code>。
 - [ ] 仓位有明确上限；网格、DCA、马丁和加仓层数有硬限制。
 - [ ] 订单都有可审计 reason。
 - [ ] 可重试/活动订单使用稳定客户端 ID，并且确认前不推进状态。
@@ -904,3 +931,4 @@ DCA 规则：
 - [ ] 已用不同时间区间和成本假设做稳健性测试。
 - [ ] 已有至少一次成功回测后再发布。
 - [ ] live 前先确认凭证、市场、余额、最小交易单位和通知。
+- [ ] 复用已有现货或合约仓位时，已在持仓修复页面确认严格/高级共存模式及用户保护基线。

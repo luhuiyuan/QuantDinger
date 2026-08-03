@@ -157,6 +157,8 @@ def _signal_marker_price(value: Any, fallback: float) -> float:
 
 def _signal_render_mode(signal: Dict[str, Any], data: List[Any]) -> str:
     raw_mode = str(signal.get("renderMode") or signal.get("mode") or "").strip().lower()
+    if raw_mode in ("event", "events"):
+        return "events"
     if raw_mode in ("point", "points", "marker", "markers", "raw"):
         return "points"
     if raw_mode in ("state", "continuous", "condition"):

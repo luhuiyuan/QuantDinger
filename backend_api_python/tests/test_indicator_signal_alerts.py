@@ -147,6 +147,25 @@ def test_signal_alert_points_mode_allows_consecutive_markers():
     assert signal["bar_index"] == 2
 
 
+def test_signal_alert_events_mode_keeps_dense_events_explicit():
+    service = IndicatorSignalAlertService()
+    output = {
+        "signals": [
+            {
+                "type": "buy",
+                "text": "Long Entry",
+                "renderMode": "events",
+                "data": [None, 10.0, 11.0, None],
+            }
+        ]
+    }
+
+    signal = service._latest_matching_signal(output, _df(4), ["any"])
+
+    assert signal is not None
+    assert signal["bar_index"] == 2
+
+
 def test_signal_alert_payload_uses_profile_notification_defaults(monkeypatch):
     monkeypatch.setattr(
         indicator_signal_alerts,

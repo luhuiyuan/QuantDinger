@@ -1051,3 +1051,29 @@ class BinanceFuturesClient(BaseRestClient):
             return rows
         sym = to_binance_futures_symbol(want)
         return [p for p in rows if isinstance(p, dict) and str(p.get("symbol") or "") == sym]
+
+    def get_symbol_configuration(self, *, symbol: str) -> Dict[str, Any]:
+        """Read back symbol-level margin mode and leverage from positionRisk.
+
+        Binance documents both ``marginType`` and ``leverage`` on
+        ``GET /fapi/v2/positionRisk``.  This read is used to resolve the
+        ambiguous outcome of a ``-1007`` timeout from configuration POSTs.
+        """
+        rows = self.get_positions(symbol=symbol) or []
+        row = next((item for item in rows if isinstance(item, dict)), None)
+        if not row:
+            raise LiveTradingError(f"Binance symbol configuration unavailable: {symbol}")
+        mode = str(row.get("marginType") or "").strip().lower()
+        if mode in {"cross", "crossed"}:
+            mode = "cross"
+        elif mode in {"isolated", "iso"}:
+            mode = "isolated"
+        try:
+            leverage = int(float(row.get("leverage") or 0))
+        except Exception:
+            leverage = 0
+        return {
+            "symbol": str(row.get("symbol") or to_binance_futures_symbol(symbol)),
+            "margin_mode": mode,
+            "leverage": leverage,
+        }
