@@ -6,7 +6,12 @@ from datetime import timedelta
 import pytest
 
 from app.services.data_routing.diagnostics import ProviderCapabilityTestService
-from app.services.data_routing.health import HealthState, ProviderHealthError, ProviderHealthManager
+from app.services.data_routing.health import (
+    HealthState,
+    PostgresHealthRepository,
+    ProviderHealthError,
+    ProviderHealthManager,
+)
 from app.services.data_routing.models import AdapterErrorClassification
 from tests.test_data_router import Clock, Resolver, Runtime, build_router
 
@@ -37,6 +42,25 @@ class Repo:
     def append_evidence(self, state_id, **values): self.evidence.append((state_id, values))
     def create_probe(self, probe, *, requested_by): self.probes[probe.probe_id] = probe
     def complete_probe(self, probe_id, *, status, result): self.probes[probe_id] = (status, result)
+
+
+def test_recoverable_state_query_does_not_confuse_jsonb_operator_with_placeholder():
+    class Cursor:
+        def execute(self, query, params=()):
+            converted = query.replace("?", "%s")
+            if converted.count("%s") != len(params):
+                raise IndexError("tuple index out of range")
+            assert "jsonb_exists(failure_window, 'permanent')" in query
+
+        def fetchall(self): return []
+        def close(self): pass
+
+    class DB:
+        def cursor(self): return Cursor()
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+
+    assert PostgresHealthRepository(lambda: DB()).list_recoverable_states(limit=5) == ()
 
 
 def capability(manager_router):

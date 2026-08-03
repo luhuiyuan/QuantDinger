@@ -454,7 +454,7 @@ class PostgresHealthRepository:
                     """SELECT * FROM qd_provider_health_states
                        WHERE circuit_state='open' AND health_status<>'quarantined'
                          AND circuit_until IS NOT NULL AND circuit_until<=NOW()
-                         AND NOT (failure_window ? 'permanent')
+                         AND NOT jsonb_exists(failure_window, 'permanent')
                        ORDER BY circuit_until,id LIMIT %s""",
                     (max(1, min(int(limit), 50)),),
                 )
