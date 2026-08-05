@@ -9,6 +9,7 @@ from app.services.data_routing.quota import (
     QuotaReservation,
     SafetySlice,
     SafetySlicePool,
+    quota_bucket_contracts,
 )
 from tests.test_data_router import Clock, OBJECT_SCHEMA, Runtime, build_router
 
@@ -137,6 +138,15 @@ def test_unknown_limit_without_safety_budget_and_oversized_background_chunk_are_
 
     assert not invalid.allowed and invalid.reason == "quota_model_invalid"
     assert not plan.allowed and plan.action == "defer"
+
+
+def test_top_level_unknown_limit_safety_budget_applies_to_listed_buckets():
+    definition = AdapterDefinition(
+        "catalog_style", "1", "Catalog style", "tests.adapters.catalog", OBJECT_SCHEMA, OBJECT_SCHEMA,
+        frozenset({"quote"}), {"buckets": ["requests"], "unknown_limit_safety_budget": 30}, Runtime(Clock(), []),
+    )
+
+    assert quota_bucket_contracts(definition) == {"requests": {"unknown_safety_limit": 30}}
 
 
 def test_provider_observation_is_bounded_to_declared_bucket_and_merged_by_repository():

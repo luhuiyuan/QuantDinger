@@ -198,12 +198,55 @@ class PostgresProviderCredentialRepository:
             try:
                 cur.execute(
                     """UPDATE qd_provider_credentials SET validation_summary=%s::jsonb
-                       WHERE id=%s AND status='pending' RETURNING instance_id""",
+                       WHERE id=%s AND status='pending'
+                       RETURNING instance_id,credential_schema_version""",
                     (_evidence(results), credential_id),
                 )
                 row = cur.fetchone()
-                if row and initial_credential:
-                    cur.execute("UPDATE qd_provider_instances SET lifecycle_status='validation_failed',updated_at=NOW() WHERE id=%s AND lifecycle_status IN ('draft','validation_failed')", (row["instance_id"],))
+                if row:
+                    for result in results:
+                        status = "ineligible" if result.outcome == "ineligible" else "unverified"
+                        cur.execute(
+                            """INSERT INTO qd_provider_instance_capabilities
+                               (instance_id,capability_key,eligibility_status,adapter_version,capability_version,
+                                verification_evidence,last_verified_at,next_verification_at)
+                               VALUES (%s,%s,%s,%s,%s,%s::jsonb,NULL,NOW()+INTERVAL '7 days')
+                               ON CONFLICT (instance_id,capability_key) DO UPDATE SET
+                                eligibility_status=CASE
+                                  WHEN qd_provider_instance_capabilities.eligibility_status='disabled' THEN 'disabled'
+                                  ELSE EXCLUDED.eligibility_status
+                                END,
+                                adapter_version=EXCLUDED.adapter_version,
+                                capability_version=EXCLUDED.capability_version,
+                                verification_evidence=EXCLUDED.verification_evidence,
+                                last_verified_at=NULL,
+                                next_verification_at=EXCLUDED.next_verification_at,
+                                updated_at=NOW()""",
+                            (
+                                row["instance_id"], result.capability_key, status,
+                                row["credential_schema_version"],
+                                str(result.evidence.get("capability_version") or ""),
+                                json.dumps(dict(result.evidence)),
+                            ),
+                        )
+                    if initial_credential:
+                        cur.execute("UPDATE qd_provider_instances SET lifecycle_status='validation_failed',updated_at=NOW() WHERE id=%s AND lifecycle_status IN ('draft','validation_failed')", (row["instance_id"],))
+                db.commit()
+            finally:
+                cur.close()
+
+    def ensure_declared_capabilities(self, instance_id: int, *, adapter_version: str, capability_versions: Mapping[str, str]) -> None:
+        with self._connection() as db:
+            cur = db.cursor()
+            try:
+                for capability_key, capability_version in capability_versions.items():
+                    cur.execute(
+                        """INSERT INTO qd_provider_instance_capabilities
+                           (instance_id,capability_key,eligibility_status,adapter_version,capability_version,verification_evidence)
+                           VALUES (%s,%s,'unverified',%s,%s,'{"code":"not_yet_verified","status":"declared"}'::jsonb)
+                           ON CONFLICT (instance_id,capability_key) DO NOTHING""",
+                        (instance_id, capability_key, adapter_version, capability_version),
+                    )
                 db.commit()
             finally:
                 cur.close()

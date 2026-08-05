@@ -145,6 +145,7 @@ class TDXProvider:
         self._api: SimpleNamespace | None = None
         self._client = None
         self.selected_host = ""
+        self._ranked_hosts: tuple[str, ...] = ()
 
     @property
     def provider_version(self) -> str:
@@ -165,6 +166,7 @@ class TDXProvider:
         )
         latency = {host: seconds for host, seconds in ranked}
         self.selected_host = ranked[0][0] if ranked else ""
+        self._ranked_hosts = tuple(host for host, _ in ranked)
         return [
             ProviderProbe(
                 host=host,
@@ -184,14 +186,30 @@ class TDXProvider:
             probes = self.probe_hosts()
             if not any(probe.healthy for probe in probes):
                 raise TDXProviderUnavailable("No reachable TDX hosts")
-        self._client = api.client(
-            self.selected_host,
-            timeout=self.settings.provider_timeout_seconds,
-            auto_reconnect=True,
-            heartbeat_interval=15.0,
-        )
-        self._client.connect()
-        return self
+        candidates = self._ranked_hosts or (self.selected_host,)
+        last_error: Exception | None = None
+        for host in candidates:
+            if not host:
+                continue
+            client = api.client(
+                host,
+                timeout=self.settings.provider_timeout_seconds,
+                auto_reconnect=True,
+                heartbeat_interval=15.0,
+            )
+            try:
+                client.connect()
+            except api.retryable as exc:
+                last_error = exc
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                continue
+            self.selected_host = host
+            self._client = client
+            return self
+        raise TDXProviderUnavailable(str(last_error or "No reachable TDX hosts")) from last_error
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         del exc_type, exc_value, traceback
@@ -290,6 +308,19 @@ class TDXProvider:
             for record in records
         ]
         return sorted(actions, key=lambda item: (item.event_date, item.category, item.event_name))
+
+    def fetch_market_quotes(self, instruments: Sequence[CNInstrument]) -> list[dict]:
+        """Fetch one bounded batch of current quotes without selecting a Provider."""
+        if not instruments:
+            return []
+        client = self._require_client()
+        api = self._get_api()
+        stocks = [
+            (api.market.SH if instrument.exchange == "SH" else api.market.SZ, instrument.code)
+            for instrument in instruments
+        ]
+        frame = self._call(lambda: client.get_security_quotes(stocks))
+        return frame.to_dict("records") if frame is not None else []
 
     def fetch_instrument_metadata(
         self,

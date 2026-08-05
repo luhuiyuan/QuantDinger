@@ -98,6 +98,26 @@ def test_snapshot_service_raises_when_no_cache_exists():
         service.get_snapshot()
 
 
+def test_detail_returns_immediately_when_background_quote_is_unavailable(monkeypatch):
+    class _Repository:
+        def get_quote(self, _instrument):
+            return None
+
+    class _MustNotRefresh:
+        def get_snapshot(self):
+            raise AssertionError("detail request must not refresh the full-market provider")
+
+    monkeypatch.setattr(
+        "app.services.market.cn_stock_quote_snapshots.CNStockQuoteSnapshotRepository",
+        _Repository,
+    )
+    service = CNStockDetailService(snapshot_service=_MustNotRefresh(), cache=_Cache())
+    result = service.detail(_identity())
+    assert result["quote"] is None
+    assert result["quoteStatus"] == "unavailable"
+    assert result["snapshot"]["source"] == "background-refresh-pending"
+
+
 def test_market_breadth_uses_cn_price_limit_rules():
     rows = [
         _row("600519", "贵州茅台", 110, 100),

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from functools import partial
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .catalog import bind_adapter_transport
 
@@ -116,6 +117,327 @@ def _asia_subject(subject: Mapping[str, Any], constraints: Mapping[str, Any]):
     return is_hk, symbol, timeframe, limit, subject.get("before_time")
 
 
+def _snapshot_timeout(config: Mapping[str, Any], deadline: datetime) -> int:
+    configured = max(1, int(config.get("timeout_seconds") or 8))
+    remaining = max(1, int((deadline - datetime.now(timezone.utc)).total_seconds()))
+    return min(configured, remaining)
+
+
+def _snapshot_batches(values: Iterable[Any], batch_size: int) -> Iterable[list[Any]]:
+    batch: list[Any] = []
+    for value in values:
+        if value:
+            batch.append(value)
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _snapshot_symbols(subject: Mapping[str, Any], config: Mapping[str, Any]) -> list[str]:
+    requested = [str(symbol).strip() for symbol in (subject.get("symbols") or []) if str(symbol).strip()]
+    if requested:
+        return requested
+    from app.utils.db import get_db_connection
+
+    maximum = max(1, min(int(config.get("snapshot_max_symbols") or 6000), 7000))
+    with get_db_connection() as db:
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """SELECT symbol FROM qd_market_symbols
+                   WHERE market='CNStock' AND is_active=1
+                   ORDER BY symbol ASC LIMIT %s""",
+                (maximum,),
+            )
+            return [str(row["symbol"]).strip() for row in (cur.fetchall() or []) if row.get("symbol")]
+        finally:
+            cur.close()
+
+
+def _normalize_snapshot_rows(records: Iterable[Mapping[str, Any]], *, source: str, fetched_at: str) -> list[dict[str, Any]]:
+    from app.services.market.cn_stock_market import normalize_cn_snapshot_row
+
+    return [
+        normalized
+        for record in records
+        if (normalized := normalize_cn_snapshot_row(dict(record), as_of=fetched_at, source=source))
+    ]
+
+
+def _snapshot_payload(rows: list[dict[str, Any]], *, source: str, fetched_at: str) -> dict[str, Any]:
+    if not rows:
+        raise ValueError("A-share snapshot returned no normalized Shanghai/Shenzhen rows")
+    return {"rows": rows, "asOf": fetched_at, "source": source}
+
+
+def _tencent_snapshot(subject, config, deadline):
+    from app.data_sources.tencent import fetch_quote_map, normalize_cn_code, parse_quote_to_market_row
+
+    symbols = _snapshot_symbols(subject, config)
+    if not symbols:
+        raise ValueError("A-share snapshot requires an active local symbol universe")
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    rows: list[dict[str, Any]] = []
+    batch_size = max(1, min(int(config.get("snapshot_batch_size") or 80), 120))
+    for symbols_batch in _snapshot_batches(symbols, batch_size):
+        if datetime.now(timezone.utc) >= deadline:
+            raise TimeoutError("Tencent A-share snapshot deadline exceeded")
+        codes = [normalize_cn_code(symbol) for symbol in symbols_batch]
+        quote_map = fetch_quote_map(codes, timeout=_snapshot_timeout(config, deadline))
+        raw_rows = [parse_quote_to_market_row(raw) for raw in quote_map.values()]
+        rows.extend(_normalize_snapshot_rows(raw_rows, source="tencent-batch", fetched_at=fetched_at))
+    return _snapshot_payload(rows, source="tencent-batch", fetched_at=fetched_at)
+
+
+def _sina_snapshot(subject, config, deadline):
+    import re
+    import requests
+
+    from app.data_sources.tencent import normalize_cn_code
+
+    symbols = _snapshot_symbols(subject, config)
+    if not symbols:
+        raise ValueError("A-share snapshot requires an active local symbol universe")
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    rows: list[dict[str, Any]] = []
+    batch_size = max(1, min(int(config.get("snapshot_batch_size") or 80), 120))
+    for symbols_batch in _snapshot_batches(symbols, batch_size):
+        if datetime.now(timezone.utc) >= deadline:
+            raise TimeoutError("Sina A-share snapshot deadline exceeded")
+        codes = [normalize_cn_code(symbol).lower() for symbol in symbols_batch]
+        response = requests.get(
+            str(config.get("base_url") or "https://hq.sinajs.cn/list=") + ",".join(codes),
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"},
+            timeout=_snapshot_timeout(config, deadline),
+        )
+        response.raise_for_status()
+        text = response.content.decode("gbk", errors="replace")
+        for code, values in re.findall(r'var hq_str_([a-z0-9]+)="([^"]*)"', text, re.IGNORECASE):
+            parts = values.split(",")
+            if len(parts) < 10 or not parts[0].strip():
+                continue
+            def number(index):
+                try:
+                    return float(parts[index])
+                except (IndexError, TypeError, ValueError):
+                    return None
+            rows.extend(_normalize_snapshot_rows(({
+                "code": code[2:], "name": parts[0], "open": number(1), "previousClose": number(2),
+                "latest": number(3), "high": number(4), "low": number(5),
+                "volume": number(8), "amount": number(9),
+            },), source="sina", fetched_at=fetched_at))
+    return _snapshot_payload(rows, source="sina", fetched_at=fetched_at)
+
+
+def _sina_code(symbol: str) -> str:
+    from app.data_sources.tencent import normalize_cn_code
+
+    return normalize_cn_code(symbol).lower()
+
+
+def _sina_daily_records(symbol: str, *, adjustment: str, before_time: Any, limit: int) -> list[dict[str, Any]]:
+    import akshare as ak  # type: ignore
+
+    adjust = {"raw": "", "forward": "qfq", "backward": "hfq"}.get(str(adjustment or "").lower(), str(adjustment or ""))
+    frame = ak.stock_zh_a_daily(symbol=_sina_code(symbol), adjust=adjust)
+    records = frame.to_dict("records") if frame is not None else []
+    cutoff = datetime.fromtimestamp(int(before_time), tz=timezone.utc).date() if before_time else None
+    rows = []
+    for record in records:
+        try:
+            trade_date = date.fromisoformat(str(record.get("date"))[:10])
+            if cutoff and trade_date > cutoff:
+                continue
+            rows.append({
+                "trade_date": trade_date, "open": float(record["open"]), "high": float(record["high"]),
+                "low": float(record["low"]), "close": float(record["close"]),
+                "volume": float(record.get("volume") or 0), "amount": float(record.get("amount") or 0),
+            })
+        except (KeyError, TypeError, ValueError):
+            continue
+    return rows[-max(1, int(limit)):]
+
+
+def _sina_kline(subject, constraints, config):
+    import akshare as ak  # type: ignore
+
+    is_hk, symbol, timeframe, limit, before_time = _asia_subject(subject, constraints)
+    if is_hk:
+        raise ValueError("Sina A-share transport does not support Hong Kong equities")
+    normalized = _timeframe(timeframe)
+    adjustment = str(constraints.get("adjustment") or "raw")
+    if normalized in {"1D", "1W"}:
+        rows = _sina_daily_records(symbol, adjustment=adjustment, before_time=before_time, limit=limit * (7 if normalized == "1W" else 1) + 10)
+        if normalized == "1W":
+            grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
+            for row in rows:
+                iso = row["trade_date"].isocalendar()
+                grouped.setdefault((iso.year, iso.week), []).append(row)
+            rows = [{
+                "trade_date": items[0]["trade_date"], "open": items[0]["open"],
+                "high": max(item["high"] for item in items), "low": min(item["low"] for item in items),
+                "close": items[-1]["close"], "volume": sum(item["volume"] for item in items), "amount": sum(item["amount"] for item in items),
+            } for _, items in sorted(grouped.items())]
+        return [{"time": int(datetime.combine(row["trade_date"], datetime.min.time(), tzinfo=timezone.utc).timestamp()), **{key: row[key] for key in ("open", "high", "low", "close", "volume")}} for row in rows[-limit:]]
+    period = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1H": "60", "4H": "60"}.get(normalized)
+    if period is None:
+        raise ValueError(f"Sina does not support K-line timeframe {timeframe}")
+    frame = ak.stock_zh_a_minute(symbol=_sina_code(symbol), period=period, adjust={"forward": "qfq", "backward": "hfq"}.get(adjustment, ""))
+    records = frame.to_dict("records") if frame is not None else []
+    rows = []
+    for record in records:
+        try:
+            stamp = datetime.fromisoformat(str(record.get("day"))).replace(tzinfo=timezone.utc)
+            rows.append({"time": int(stamp.timestamp()), "open": float(record["open"]), "high": float(record["high"]), "low": float(record["low"]), "close": float(record["close"]), "volume": float(record.get("volume") or 0)})
+        except (TypeError, ValueError, KeyError):
+            continue
+    return _merge_bars(rows, 4, limit=limit) if normalized == "4H" else rows[-limit:]
+
+
+def _sina_fundamentals(subject, constraints):
+    import akshare as ak  # type: ignore
+
+    is_hk, symbol, _, _, _ = _asia_subject(subject, constraints)
+    if is_hk:
+        raise ValueError("Sina fundamentals transport does not support Hong Kong equities")
+    code = _sina_code(symbol)
+    reports = {name: ak.stock_financial_report_sina(stock=code, symbol=name) for name in ("利润表", "资产负债表", "现金流量表")}
+    def latest(name, *fields):
+        frame = reports[name]
+        if frame is None or getattr(frame, "empty", True): return None
+        row = frame.iloc[0]
+        for field in fields:
+            try:
+                value = row.get(field)
+                if value is not None: return float(value)
+            except (TypeError, ValueError): pass
+        return None
+    income = {"total_revenue": latest("利润表", "营业总收入", "营业收入"), "operating_income": latest("利润表", "营业利润"), "net_income": latest("利润表", "净利润")}
+    balance = {"total_assets": latest("资产负债表", "资产总计"), "total_liabilities": latest("资产负债表", "负债合计"), "current_assets": latest("资产负债表", "流动资产合计"), "current_liabilities": latest("资产负债表", "流动负债合计")}
+    cash = {"operating_cash_flow": latest("现金流量表", "经营活动产生的现金流量净额"), "investing_cash_flow": latest("现金流量表", "投资活动产生的现金流量净额"), "financing_cash_flow": latest("现金流量表", "筹资活动产生的现金流量净额")}
+    result = {"source": "sina", "financial_statements": {"income_statement": income, "balance_sheet": balance, "cash_flow": cash}}
+    if income["total_revenue"] and income["net_income"] is not None: result["profit_margin"] = round(income["net_income"] / income["total_revenue"] * 100, 2)
+    if balance["current_assets"] is not None and balance["current_liabilities"]: result["current_ratio"] = round(balance["current_assets"] / balance["current_liabilities"], 4)
+    return result
+
+
+def _sina_catalog(subject, constraints):
+    import akshare as ak  # type: ignore
+    from app.services.symbol_master_sync import SymbolMasterRow
+
+    market = str(subject.get("market") or constraints.get("market") or "CNStock")
+    if market != "CNStock": raise ValueError("Sina catalog only supports CNStock")
+    frame = ak.stock_zh_a_spot()
+    records = frame.to_dict("records") if frame is not None else []
+    rows = [SymbolMasterRow("CNStock", str(item.get("代码") or item.get("symbol") or "").zfill(6), str(item.get("名称") or item.get("name") or ""), "CN", "CNY") for item in records]
+    return [row for row in rows if row.symbol.isdigit() and row.name]
+
+
+def _sina_history(subject):
+    from app.services.cn_market_history.instruments import parse_cn_instrument
+    from app.services.cn_market_history.models import CNInstrumentMetadata, RawDailyBar
+    from app.services.cn_market_history.tdx_provider import DailyBarPage, _content_hash
+
+    instrument = parse_cn_instrument(str(subject.get("instrument") or "").replace(":", ""))
+    operation = str(subject.get("operation") or "")
+    if operation == "metadata":
+        payload = {"instrument": instrument.canonical, "security_type": "ordinary_share"}
+        return (CNInstrumentMetadata(instrument, "", "ordinary_share", None, None, "sina", "sina-api", _content_hash(payload)), ())
+    if operation != "daily_page":
+        raise ValueError(f"Sina history does not implement {operation}")
+    start_date, end_date = _date(subject["start_date"]), _date(subject["end_date"])
+    if end_date < start_date: raise ValueError("end_date must not precede start_date")
+    collected_at = datetime.now(timezone.utc)
+    rows = _sina_daily_records(instrument.canonical, adjustment="raw", before_time=None, limit=100000)
+    bars = tuple(
+        RawDailyBar(
+            instrument=instrument, trade_date=row["trade_date"], open=Decimal(str(row["open"])), high=Decimal(str(row["high"])),
+            low=Decimal(str(row["low"])), close=Decimal(str(row["close"])), volume=Decimal(str(row["volume"])), amount=Decimal(str(row["amount"])),
+            provider="sina", provider_version="sina-api", collected_at=collected_at,
+            content_hash=_content_hash({"instrument": instrument.canonical, "trade_date": row["trade_date"].isoformat(), **{key: str(row[key]) for key in ("open", "high", "low", "close", "volume", "amount")}}),
+        ) for row in rows if start_date <= row["trade_date"] <= end_date
+    )
+    return DailyBarPage(offset=max(0, int(subject.get("start_offset") or 0)), next_offset=len(rows), raw_count=len(rows), bars=bars, reached_start=True)
+
+
+def _sina(capability, subject, constraints, config, credentials, deadline):
+    if capability == "cn_market_snapshot": return _sina_snapshot(subject, config, deadline)
+    if capability == "cn_hk_quote":
+        # Sina's hq endpoint is also a single-security quote source for A/HK
+        # symbols. Reuse the normalized snapshot contract so callers receive
+        # the same fields regardless of provider.
+        symbols = list(subject.get("symbols") or [])
+        if not symbols and subject.get("symbol"):
+            symbols = [str(subject["symbol"])]
+        payload = _sina_snapshot({"symbols": symbols}, config, deadline)
+        rows = payload.get("rows") or []
+        return rows if subject.get("symbols") else (rows[0] if rows else {})
+    if capability == "asia_equity_kline": return _sina_kline(subject, constraints, config)
+    if capability == "cn_hk_fundamentals": return _sina_fundamentals(subject, constraints)
+    if capability == "cn_equity_history": return _sina_history(subject)
+    if capability in {"market_catalog", "symbol_master"}:
+        rows = _sina_catalog(subject, constraints)
+        if capability == "symbol_master" and subject.get("operation") == "full_sync": return rows
+        query = str(subject.get("query") or "").upper()
+        return [{"market": row.market, "symbol": row.symbol, "name": row.name, "exchange": row.exchange, "currency": row.currency} for row in rows if not query or query in row.symbol or query in row.name][:max(1, int(subject.get("limit") or 20))]
+    if capability == "symbol_reference":
+        payload = _sina_snapshot({"symbols": [str(subject.get("symbol") or "")]}, config, deadline)
+        return str(payload["rows"][0].get("name") or "") if payload.get("rows") else ""
+    raise ValueError(f"sina does not implement {capability}")
+
+
+def _eastmoney_snapshot(subject, config, deadline):
+    import requests
+
+    maximum = max(1, min(int(config.get("snapshot_max_symbols") or 6000), 7000))
+    response = requests.get(
+        str(config.get("base_url") or "https://82.push2.eastmoney.com/api/qt/clist/get"),
+        params={"pn": 1, "pz": maximum, "po": 1, "np": 1, "ut": "bd1d9ddb04089700cf9c27f6f7426281", "fltt": 2, "invt": 2, "fid": "f3", "fs": "m:1+t:2,m:1+t:23,m:0+t:6,m:0+t:80", "fields": "f12,f14,f2,f3,f4,f5,f6,f7,f15,f16,f17,f18"},
+        headers={"User-Agent": "Mozilla/5.0"}, timeout=_snapshot_timeout(config, deadline),
+    )
+    response.raise_for_status()
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    records = []
+    for item in (response.json().get("data") or {}).get("diff") or []:
+        records.append({"code": item.get("f12"), "name": item.get("f14"), "latest": item.get("f2"), "change": item.get("f4"), "changePercent": item.get("f3"), "volume": item.get("f5"), "amount": item.get("f6"), "high": item.get("f15"), "low": item.get("f16"), "open": item.get("f17"), "previousClose": item.get("f18")})
+    return _snapshot_payload(_normalize_snapshot_rows(records, source="eastmoney", fetched_at=fetched_at), source="eastmoney", fetched_at=fetched_at)
+
+
+def _easy_tdx_snapshot(subject, config, deadline):
+    from app.services.cn_market_history.instruments import CNInstrumentError, parse_cn_instrument
+    from app.services.cn_market_history.tdx_provider import TDXProvider
+
+    symbols = _snapshot_symbols(subject, config)
+    if not symbols:
+        raise ValueError("A-share snapshot requires an active local symbol universe")
+    instruments = []
+    for symbol in symbols:
+        try:
+            instruments.append(parse_cn_instrument(symbol))
+        except CNInstrumentError:
+            # The shared symbol universe can contain ETFs, BSE and other
+            # instruments outside EasyTDX's strict Shanghai/Shenzhen A-share
+            # contract. Skip them instead of failing the entire snapshot.
+            continue
+    if not instruments:
+        raise ValueError("A-share snapshot has no EasyTDX-supported symbols")
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    rows: list[dict[str, Any]] = []
+    batch_size = max(1, min(int(config.get("snapshot_batch_size") or 80), 80))
+    provider = TDXProvider()
+    provider.probe_hosts()
+    with provider:
+        for batch in _snapshot_batches(instruments, batch_size):
+            if datetime.now(timezone.utc) >= deadline:
+                raise TimeoutError("EasyTDX A-share snapshot deadline exceeded")
+            records = provider.fetch_market_quotes(batch)
+            mapped = ({"code": item.get("code"), "name": item.get("name"), "latest": item.get("price") or item.get("last"), "previousClose": item.get("last_close") or item.get("previous_close"), "open": item.get("open"), "high": item.get("high"), "low": item.get("low"), "volume": item.get("vol") or item.get("volume"), "amount": item.get("amount") or item.get("turnover") } for item in records)
+            rows.extend(_normalize_snapshot_rows(mapped, source="easy_tdx", fetched_at=fetched_at))
+    return _snapshot_payload(rows, source="easy_tdx", fetched_at=fetched_at)
+
+
 def _tencent(capability, subject, constraints, config, credentials, deadline):
     from app.data_sources.tencent import (
         fetch_kline, fetch_quote, normalize_cn_code, normalize_hk_code,
@@ -126,6 +448,8 @@ def _tencent(capability, subject, constraints, config, credentials, deadline):
         code = normalize_hk_code(symbol) if is_hk else normalize_cn_code(symbol)
         parts = fetch_quote(code, timeout=int(config.get("timeout_seconds") or 8))
         return str(parts[1]).strip() if parts and len(parts) > 1 else ""
+    if capability == "cn_market_snapshot":
+        return _tencent_snapshot(subject, config, deadline)
     if capability == "cn_hk_quote":
         symbols = list(subject.get("symbols") or [])
         if symbols:
@@ -323,6 +647,11 @@ def _yfinance(capability, subject, constraints, config, credentials, deadline):
 
 
 def _akshare(capability, subject, constraints, config, credentials, deadline):
+    if capability == "cn_hk_quote":
+        payload = _akshare("cn_market_snapshot", subject, constraints, config, credentials, deadline)
+        wanted = {str(item).split(".")[0].upper() for item in (subject.get("symbols") or [])}
+        rows = [row for row in (payload.get("rows") or []) if not wanted or str(row.get("code") or "").upper() in wanted]
+        return rows if subject.get("symbols") else (rows[0] if rows else {})
     if capability in {"market_catalog", "symbol_master"}:
         if capability == "symbol_master" and subject.get("operation") == "full_sync":
             from app.services.symbol_master_sync import fetch_cn_stock_symbols, fetch_hk_stock_symbols_akshare
@@ -397,14 +726,42 @@ def _akshare(capability, subject, constraints, config, credentials, deadline):
 
 
 def _easy_tdx(capability, subject, constraints, config, credentials, deadline):
+    if capability == "cn_market_snapshot":
+        return _easy_tdx_snapshot(subject, config, deadline)
     from app.services.cn_market_history.instruments import parse_cn_instrument
     from app.services.cn_market_history.tdx_provider import TDXProvider
 
     operation = str(subject.get("operation") or "")
-    instrument = parse_cn_instrument(str(subject.get("instrument") or ""))
     provider = TDXProvider()
     provider.probe_hosts()
     with provider:
+        if capability == "cn_hk_quote":
+            symbols = list(subject.get("symbols") or ([subject.get("symbol")] if subject.get("symbol") else []))
+            instruments = [parse_cn_instrument(str(symbol)) for symbol in symbols]
+            fetched_at = datetime.now(timezone.utc).isoformat()
+            raw = provider.fetch_market_quotes(instruments)
+            rows = _normalize_snapshot_rows(raw, source="easy_tdx", fetched_at=fetched_at)
+            return rows if subject.get("symbols") else (rows[0] if rows else {})
+        if capability == "asia_equity_kline":
+            market = str(subject.get("market") or constraints.get("market") or "CNStock")
+            if market not in {"CNStock", "CN", "A股"}:
+                raise ValueError("easy_tdx K-line transport supports A shares only")
+            instrument = parse_cn_instrument(str(subject.get("symbol") or subject.get("instrument") or ""))
+            limit = max(1, int(subject.get("limit") or constraints.get("limit") or 300))
+            end_date = date.today()
+            start_date = date(1990, 1, 1)
+            pages = provider.iter_daily_pages(instrument, start_date, end_date, start_offset=0)
+            bars = []
+            for page in pages:
+                bars.extend({
+                    "time": int(datetime.combine(bar.trade_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()),
+                    "open": float(bar.open), "high": float(bar.high), "low": float(bar.low),
+                    "close": float(bar.close), "volume": float(bar.volume), "amount": float(bar.amount),
+                } for bar in page.bars)
+                if len(bars) >= limit:
+                    break
+            return bars[-limit:]
+        instrument = parse_cn_instrument(str(subject.get("instrument") or ""))
         if capability == "cn_equity_history":
             if operation == "metadata":
                 return provider.fetch_instrument_metadata(instrument)
@@ -464,6 +821,13 @@ def _cn_exchange_official(capability, subject, constraints, config, credentials,
 
 
 def _eastmoney(capability, subject, constraints, config, credentials, deadline):
+    if capability == "cn_hk_quote":
+        payload = _eastmoney_snapshot(subject, config, deadline)
+        wanted = {str(item).split(".")[0].upper() for item in (subject.get("symbols") or [])}
+        rows = [row for row in (payload.get("rows") or []) if not wanted or str(row.get("code") or "").upper() in wanted]
+        return rows if subject.get("symbols") else (rows[0] if rows else {})
+    if capability == "cn_market_snapshot":
+        return _eastmoney_snapshot(subject, config, deadline)
     if capability != "cn_fundamental_history":
         raise ValueError(f"eastmoney does not implement {capability}")
     from app.data_sources.cn_fundamental_history import fetch_eastmoney_annual_reports
@@ -1020,6 +1384,7 @@ def bind_production_transports() -> None:
         "cninfo": _cninfo,
         "cn_exchange_official": _cn_exchange_official,
         "eastmoney": _eastmoney,
+        "sina": _sina,
         "ccxt_public_market": _ccxt_market_data,
         "binance_public": _binance_public,
         "bybit_public": _bybit_public,

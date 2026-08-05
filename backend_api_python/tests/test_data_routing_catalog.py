@@ -6,10 +6,12 @@ from pathlib import Path
 import pytest
 
 from app.services.data_routing.adapters.catalog import (
+    _DIAGNOSTIC_REQUESTS,
     AdapterTransportUnavailable,
     CatalogAdapterRuntime,
     bind_adapter_transport,
 )
+from app.services.cn_market_history.instruments import parse_cn_instrument
 from app.services.data_routing.bootstrap import load_default_data_routing_registry
 
 
@@ -49,3 +51,9 @@ def test_catalog_diagnostic_uses_bounded_representative_request():
     assert captured["subject"]["symbol"] == "600000"
     assert captured["subject"]["limit"] == 5
     assert captured["constraints"]["timeframe"] == "1D"
+
+
+def test_a_share_history_diagnostic_samples_use_parseable_instruments():
+    for capability_key in ("cn_corporate_actions", "cn_equity_history", "cn_official_adjustment_reference"):
+        subject, _ = _DIAGNOSTIC_REQUESTS[capability_key]
+        assert parse_cn_instrument(subject["instrument"]).canonical == "CNStock:600000.SH"

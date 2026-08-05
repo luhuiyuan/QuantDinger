@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import RLock
 from typing import Any, Callable, Mapping
 
@@ -23,14 +23,14 @@ _transports: dict[str, Transport] = {}
 _DIAGNOSTIC_REQUESTS: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
     "analysis_search": ({"query": "global markets", "max_results": 1, "days": 1}, {}),
     "asia_equity_kline": ({"symbol": "600000", "market": "CNStock", "limit": 5}, {"timeframe": "1D"}),
-    "cn_corporate_actions": ({"instrument": "SH:600000", "operation": "corporate_actions"}, {}),
+    "cn_corporate_actions": ({"instrument": "600000.SH", "operation": "corporate_actions"}, {}),
     "cn_corporate_announcement": ({"instrument": "600000", "start_date": "2025-01-01", "end_date": "2025-12-31"}, {}),
-    "cn_equity_history": ({"instrument": "SH:600000", "operation": "metadata"}, {}),
+    "cn_equity_history": ({"instrument": "600000.SH", "operation": "metadata"}, {}),
     "cn_fundamental_history": ({"symbol": "600000"}, {}),
     "cn_hk_fundamentals": ({"symbol": "600000", "market": "CNStock"}, {}),
     "cn_hk_quote": ({"symbol": "600000", "market": "CNStock"}, {}),
-    "cn_market_snapshot": ({"limit": 5}, {}),
-    "cn_official_adjustment_reference": ({"instrument": "SH:600000", "event_dates": []}, {}),
+    "cn_market_snapshot": ({"market": "CNStock", "symbols": ["600000", "000001", "600519"]}, {"market": "CNStock"}),
+    "cn_official_adjustment_reference": ({"instrument": "600000.SH", "event_dates": []}, {}),
     "commodity_quote": ({"symbol": "GC", "operation": "ticker"}, {}),
     "crypto_derivatives_market_data": ({"symbol": "BTC/USDT", "operation": "ticker"}, {"exchange_id": "binance", "market_type": "swap"}),
     "crypto_market_snapshot": ({"operation": "overview"}, {}),
@@ -77,6 +77,11 @@ class CatalogAdapterRuntime:
         value = credentials.get("account_id") or config.get("account_id")
         return str(value).strip() if value else None
 
+    def diagnostic_request(self, capability_key):
+        """Return the bounded catalog sample used for an empty admin diagnostic."""
+        subject, constraints = _DIAGNOSTIC_REQUESTS.get(capability_key, ({}, {}))
+        return dict(subject), dict(constraints)
+
     def diagnose(self, capability_key, subject, config, credentials):
         sample_subject, sample_constraints = _DIAGNOSTIC_REQUESTS.get(capability_key, ({}, {}))
         diagnostic_subject = {**sample_subject, **dict(subject or {})}
@@ -85,7 +90,8 @@ class CatalogAdapterRuntime:
             diagnostic_subject["operation"] = sample_subject["operation"]
         result = self.fetch(
             capability_key, diagnostic_subject, sample_constraints,
-            config, credentials, datetime.now(timezone.utc),
+            config, credentials,
+            datetime.now(timezone.utc) + timedelta(seconds=max(1, int(config.get("timeout_seconds") or 8))),
         )
         return {"ok": result.payload is not None, "capability_key": capability_key}
 
@@ -117,6 +123,10 @@ class CatalogAdapterRuntime:
             return AdapterErrorClassification("authentication_rejected", False, "permanent", "instance")
         if "timeout" in name or "connection" in name:
             return AdapterErrorClassification("transport_error", True, "transient", "capability")
+        response = getattr(error, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int):
+            return AdapterErrorClassification(f"upstream_http_{status_code}", status_code >= 500, "transient" if status_code >= 500 else "unknown", "capability")
         return AdapterErrorClassification("provider_error", False, "unknown", "capability")
 
     def estimate_quota_cost(self, capability_key, operation, units):
@@ -163,11 +173,15 @@ _CAPABILITY_DOMAINS: dict[str, tuple[str, str]] = {
 
 _ADAPTER_CAPABILITIES: dict[str, frozenset[str]] = {
     "twelve_data": frozenset({"asia_equity_kline", "cn_hk_fundamentals", "us_equity_market_data", "forex_market_data", "forex_quote", "futures_market_data", "commodity_quote"}),
-    "tencent": frozenset({"asia_equity_kline", "cn_hk_quote", "symbol_reference"}),
+    "tencent": frozenset({"asia_equity_kline", "cn_hk_quote", "cn_market_snapshot", "symbol_reference"}),
     "yfinance": frozenset({"asia_equity_kline", "us_equity_market_data", "us_fundamentals", "forex_market_data", "forex_quote", "futures_market_data", "commodity_quote", "market_index_quote", "global_heatmap", "crypto_market_snapshot", "market_sentiment", "symbol_reference"}),
-    "akshare": frozenset({"asia_equity_kline", "cn_hk_fundamentals", "cn_market_snapshot", "economic_calendar", "market_sentiment", "us_macro_release", "market_catalog", "symbol_master"}),
-    "easy_tdx": frozenset({"cn_equity_history", "cn_corporate_actions"}),
-    "eastmoney": frozenset({"cn_fundamental_history"}),
+    "akshare": frozenset({"asia_equity_kline", "cn_hk_fundamentals", "cn_hk_quote", "cn_market_snapshot", "economic_calendar", "market_sentiment", "us_macro_release", "market_catalog", "symbol_master"}),
+    "easy_tdx": frozenset({"asia_equity_kline", "cn_equity_history", "cn_corporate_actions", "cn_hk_quote", "cn_market_snapshot"}),
+    "eastmoney": frozenset({"cn_fundamental_history", "cn_hk_quote", "cn_market_snapshot"}),
+    "sina": frozenset({
+        "asia_equity_kline", "cn_equity_history", "cn_hk_fundamentals",
+        "cn_hk_quote", "cn_market_snapshot", "market_catalog", "symbol_master", "symbol_reference",
+    }),
     "cninfo": frozenset({"cn_corporate_announcement", "cn_official_adjustment_reference"}),
     "cn_exchange_official": frozenset({"cn_official_adjustment_reference"}),
     "finnhub": frozenset({"us_equity_market_data", "us_equity_quote", "economic_calendar", "equity_opportunity", "global_market_overview", "market_catalog", "symbol_master", "symbol_reference"}),
@@ -255,6 +269,7 @@ def register_catalog(registry: DataRoutingRegistry) -> None:
         "type": "object",
         "properties": {
             "base_url": {"type": "string"}, "timeout_seconds": {"type": "number"},
+            "snapshot_batch_size": {"type": "number"}, "snapshot_max_symbols": {"type": "number"},
             "account_id": {"type": "string"}, "supported_constraints": {"type": "array"},
         },
         "required": [],

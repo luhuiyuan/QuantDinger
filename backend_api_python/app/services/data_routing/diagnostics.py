@@ -71,6 +71,11 @@ class ProviderCapabilityTestService:
         unknown = sorted(set(constraints) - set(capability.allowed_constraints))
         if unknown or not adapter.runtime.supports_constraints(capability_key, constraints, entry.non_secret_config):
             raise ProviderDiagnosticError("Diagnostic constraints are unsupported", details={"constraints": unknown})
+        diagnostic_subject = dict(subject)
+        diagnostic_constraints = dict(constraints)
+        sample = getattr(adapter.runtime, "diagnostic_request", None)
+        if not diagnostic_subject and not diagnostic_constraints and callable(sample):
+            diagnostic_subject, diagnostic_constraints = sample(capability_key)
         diagnostic_id = uuid.uuid4().hex
         deadline = self.clock() + timedelta(seconds=max(1, min(float(timeout_seconds), 60)))
         self.repository.start(
@@ -104,7 +109,7 @@ class ProviderCapabilityTestService:
                     calls += 1
                     try:
                         fetch_result = adapter.runtime.fetch(
-                            capability_key, dict(subject), dict(constraints),
+                            capability_key, diagnostic_subject, diagnostic_constraints,
                             entry.non_secret_config, credentials, deadline,
                         )
                         if not isinstance(fetch_result, AdapterFetchResult):

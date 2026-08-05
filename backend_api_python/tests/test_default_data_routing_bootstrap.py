@@ -48,6 +48,11 @@ class CredentialService:
     def get_status(self, instance_id):
         return SimpleNamespace(configured=instance_id in self.configured)
 
+    def ensure_declared_capabilities(self, instance_id):
+        # Capability catalog materialization is exercised by the real repository;
+        # this bootstrap fake only needs to expose the service contract.
+        return None
+
     def submit_and_validate(self, instance_id, credentials, **values):
         self.submissions.append((instance_id, credentials, values))
         self.configured.add(instance_id)

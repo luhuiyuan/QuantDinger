@@ -61,8 +61,7 @@ def test_overview_requires_login(client):
 
 def test_overview_returns_indices_and_breadth(client, monkeypatch):
     monkeypatch.setattr(routes, "get_cn_market_overview_cache", lambda: None)
-    monkeypatch.setattr(routes, "load_persisted_cn_market_snapshot", lambda: None)
-    monkeypatch.setattr(routes, "_cn_snapshot_service", _Snapshots())
+    monkeypatch.setattr(routes, "load_persisted_cn_market_snapshot", _snapshot)
     monkeypatch.setattr(routes, "fetch_core_indices", lambda: [{"symbol": "000001.SH", "status": "available"}])
     response = client.get("/api/market/cn/overview", headers=_headers())
     body = response.get_json()["data"]
@@ -88,7 +87,7 @@ def test_overview_prefers_persisted_snapshot_without_network_refresh(client, mon
 
 def test_catalog_validates_and_returns_user_watchlist(client, monkeypatch):
     monkeypatch.setattr(routes, "query_cn_stock_snapshot_page", lambda **_kwargs: {"coverage": {"coveredCount": 0}})
-    monkeypatch.setattr(routes, "_cn_snapshot_service", _Snapshots())
+    monkeypatch.setattr(routes, "load_persisted_cn_market_snapshot", _snapshot)
     monkeypatch.setattr(routes, "load_cn_symbol_catalog", lambda **_kwargs: [{
         "instrument": "CNStock:600519.SH", "code": "600519", "symbol": "600519.SH",
         "exchange": "SH", "name": "贵州茅台",
@@ -101,6 +100,24 @@ def test_catalog_validates_and_returns_user_watchlist(client, monkeypatch):
     assert invalid.status_code == 400
     invalid_sort = client.get("/api/market/cn/stocks?sortBy=latest%3BDROP", headers=_headers())
     assert invalid_sort.status_code == 400
+
+
+def test_catalog_returns_unavailable_snapshot_without_request_refresh(client, monkeypatch):
+    monkeypatch.setattr(routes, "query_cn_stock_snapshot_page", lambda **_kwargs: {"coverage": {"coveredCount": 0}})
+    monkeypatch.setattr(routes, "load_persisted_cn_market_snapshot", lambda: None)
+    monkeypatch.setattr(routes, "load_cn_symbol_catalog", lambda **_kwargs: [])
+
+    class _MustNotRefresh:
+        def get_snapshot(self):
+            raise AssertionError("request path must not refresh the full-market provider")
+
+    monkeypatch.setattr(routes, "_cn_snapshot_service", _MustNotRefresh())
+    response = client.get("/api/market/cn/stocks?page=1&pageSize=20", headers=_headers())
+    data = response.get_json()["data"]
+    assert response.status_code == 200
+    assert data["partial"] is True
+    assert data["quotedCount"] == 0
+    assert data["snapshot"]["warning"] == "Full-market snapshot is not available yet; background refresh will retry."
 
 
 def test_detail_and_history_reject_unknown_symbol(client, monkeypatch):

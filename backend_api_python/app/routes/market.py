@@ -22,7 +22,6 @@ from app.services.market.cn_stock_market import (
     build_catalog_page,
     build_market_breadth,
     fetch_core_indices,
-    fetch_cn_quote_rows,
     load_cn_symbol,
     load_cn_symbol_catalog,
     load_cn_watchlist_symbols,
@@ -385,15 +384,11 @@ def get_cn_market_overview():
         cached_overview = get_cn_market_overview_cache()
         if cached_overview:
             return jsonify({'code': 1, 'msg': 'success', 'data': cached_overview})
-        snapshot = load_persisted_cn_market_snapshot()
-        if not snapshot:
-            try:
-                snapshot = _cn_snapshot_service.get_snapshot()
-            except CNMarketSnapshotUnavailable as exc:
-                snapshot = {
-                    'rows': [], 'asOf': None, 'source': 'unavailable',
-                    'freshness': 'unavailable', 'status': 'unavailable', 'warning': str(exc),
-                }
+        snapshot = load_persisted_cn_market_snapshot() or {
+            'rows': [], 'asOf': None, 'source': 'background-refresh-pending',
+            'freshness': 'unavailable', 'status': 'unavailable',
+            'warning': 'Full-market snapshot is not available yet; background refresh will retry.',
+        }
         breadth = build_market_breadth(snapshot.get('rows') or [])
         breadth['status'] = snapshot.get('status')
         breadth['warning'] = snapshot.get('warning')
@@ -453,34 +448,16 @@ def get_cn_stock_catalog():
                 }
                 return jsonify({'code': 1, 'msg': 'success', 'data': persisted})
         except Exception as persisted_error:
-            logger.warning("Persistent CN quote query unavailable; using request fallback: %s", persisted_error)
-        try:
-            snapshot = _cn_snapshot_service.get_snapshot()
-        except CNMarketSnapshotUnavailable as exc:
-            snapshot = {
-                'rows': [], 'asOf': None, 'source': 'unavailable',
-                'freshness': 'unavailable', 'status': 'unavailable', 'warning': str(exc),
-            }
+            logger.warning("Persistent CN quote query unavailable; returning background snapshot status: %s", persisted_error)
+        snapshot = load_persisted_cn_market_snapshot() or {
+            'rows': [], 'asOf': None, 'source': 'background-refresh-pending',
+            'freshness': 'unavailable', 'status': 'unavailable',
+            'warning': 'Full-market snapshot is not available yet; background refresh will retry.',
+        }
         catalog = load_cn_symbol_catalog(keyword=keyword, exchange=exchange)
-        if not snapshot.get('rows'):
-            if change_state:
-                quote_symbols = [item['symbol'] for item in catalog[:100]]
-            else:
-                start = (page - 1) * page_size
-                quote_symbols = [item['symbol'] for item in catalog[start:start + page_size]]
-            snapshot['rows'] = fetch_cn_quote_rows(
-                quote_symbols
-            )
-            snapshot['source'] = 'tencent-batch'
-            snapshot['asOf'] = snapshot['rows'][0].get('asOf') if snapshot['rows'] else None
-            snapshot['freshness'] = 'partial' if snapshot['rows'] else 'unavailable'
-            snapshot['status'] = 'degraded' if snapshot['rows'] else 'unavailable'
-            snapshot['partial'] = True
-            snapshot['quotedCount'] = len(snapshot['rows'])
-            snapshot['catalogCount'] = len(catalog)
-            snapshot['warning'] = snapshot.get('warning') or 'Full-market snapshot unavailable; current catalog rows use Tencent batch quotes.'
-        else:
-            snapshot['partial'] = False
+        snapshot['partial'] = not bool(snapshot.get('rows'))
+        snapshot['quotedCount'] = len(snapshot.get('rows') or [])
+        snapshot['catalogCount'] = len(catalog)
         data = build_catalog_page(
             catalog,
             snapshot,

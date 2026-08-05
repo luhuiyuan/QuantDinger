@@ -112,7 +112,7 @@ class PostgresDataSourceManagementRepository:
                     return None
                 result = dict(row)
                 cur.execute(
-                    """SELECT capability_key,eligibility_status,validation_evidence,disabled_reason,
+                    """SELECT capability_key,eligibility_status,verification_evidence,disabled_reason,
                               last_verified_at,next_verification_at FROM qd_provider_instance_capabilities
                        WHERE instance_id=%s ORDER BY capability_key""",
                     (int(instance_id),),

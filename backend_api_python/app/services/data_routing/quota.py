@@ -104,11 +104,22 @@ class SafetySlicePool:
 
 def quota_bucket_contracts(adapter: AdapterDefinition) -> dict[str, Mapping[str, Any]]:
     raw = adapter.quota_contract.get("buckets")
+    # Catalog definitions may declare one conservative fallback for all
+    # buckets.  Materialize it on each bucket so the reservation path uses
+    # the same contract shape as provider-specific bucket definitions.
+    fallback = adapter.quota_contract.get("unknown_safety_limit")
+    if fallback is None:
+        fallback = adapter.quota_contract.get("unknown_limit_safety_budget")
     if isinstance(raw, Mapping):
-        return {str(key): dict(value) for key, value in raw.items() if isinstance(value, Mapping)}
-    if isinstance(raw, (list, tuple)):
-        return {str(key): {} for key in raw}
-    return {}
+        contracts = {str(key): dict(value) for key, value in raw.items() if isinstance(value, Mapping)}
+    elif isinstance(raw, (list, tuple)):
+        contracts = {str(key): {} for key in raw}
+    else:
+        contracts = {}
+    if fallback is not None:
+        for contract in contracts.values():
+            contract.setdefault("unknown_safety_limit", fallback)
+    return contracts
 
 
 class QuotaManager:

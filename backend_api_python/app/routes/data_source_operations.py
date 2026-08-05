@@ -12,7 +12,9 @@ from app.openapi.blueprint import HumanBlueprint as Blueprint
 from app.services.data_routing.bootstrap import load_default_data_routing_registry
 from app.services.data_routing.credential_repository import PostgresProviderCredentialRepository
 from app.services.data_routing.credentials import ProviderCredentialService
-from app.services.data_routing.diagnostics import PostgresDiagnosticRepository, ProviderCapabilityTestService
+from app.services.data_routing.diagnostics import (
+    PostgresDiagnosticRepository, ProviderCapabilityTestService, ProviderDiagnosticError,
+)
 from app.services.data_routing.errors import DataRoutingError
 from app.services.data_routing.health import PostgresHealthRepository, ProviderHealthManager
 from app.services.data_routing.management_repository import PostgresDataSourceManagementRepository
@@ -22,7 +24,9 @@ from app.services.data_routing.provider_instances import PostgresProviderInstanc
 from app.services.data_routing.quota import PostgresQuotaRepository, QuotaManager
 from app.services.data_routing.router_repository import PostgresRouterSecretResolver
 from app.services.data_routing.security import StepUpRequiredError, StepUpService
-from app.services.data_routing.snapshot import PostgresRoutingSnapshotRepository, RoutingSnapshotManager
+from app.services.data_routing.snapshot import (
+    PostgresRoutingSnapshotRepository, RoutingSnapshotEntry, RoutingSnapshotManager, SecretHandle,
+)
 from app.services.data_routing.cutover import DataRoutingCutoverService, PostgresCutoverRepository
 from app.services.data_routing.legacy_import import (
     LegacyCredentialDetector, LegacyCredentialImportService, PostgresLegacyImportRepository,
@@ -66,6 +70,71 @@ def _snapshot_manager():
     manager = RoutingSnapshotManager(PostgresRoutingSnapshotRepository())
     manager.refresh_if_changed(force=True)
     return manager
+
+
+def _direct_diagnostic_entry(instance_id: int, capability_key: str) -> RoutingSnapshotEntry:
+    """Build a safe, ephemeral entry for testing an instance outside a route.
+
+    A routing revision decides which eligible instances serve production traffic.
+    It must not decide whether an administrator can test a configured instance
+    while investigating or preparing it for that revision.
+    """
+    credentials = PostgresProviderCredentialRepository()
+    context = credentials.get_instance_context(instance_id)
+    if context is None:
+        raise ProviderDiagnosticError("Provider Instance was not found", details={"instance_id": instance_id})
+    if context.lifecycle_status == "retired":
+        raise ProviderDiagnosticError("Retired Provider Instance cannot be diagnosed", details={"instance_id": instance_id})
+
+    adapter = load_default_data_routing_registry().adapters.get(context.adapter_key)
+    if adapter is None:
+        raise ProviderDiagnosticError("Provider Adapter is not registered", details={"adapter_key": context.adapter_key})
+    if capability_key not in adapter.capabilities:
+        raise ProviderDiagnosticError(
+            "Provider Instance does not declare this Data Capability",
+            details={"instance_id": instance_id, "capability_key": capability_key},
+        )
+    credential = credentials.get_active_credential(instance_id)
+    if credential is None:
+        raise ProviderDiagnosticError(
+            "Provider Instance has no active credential to run a diagnostic",
+            details={"instance_id": instance_id},
+        )
+
+    detail = PostgresDataSourceManagementRepository().get_instance(instance_id)
+    if detail is None:
+        raise ProviderDiagnosticError("Provider Instance was not found", details={"instance_id": instance_id})
+    eligibility_status = next(
+        (str(item.get("eligibility_status") or "unverified") for item in detail.get("capabilities", [])
+         if item.get("capability_key") == capability_key),
+        "unverified",
+    )
+    return RoutingSnapshotEntry(
+        position=1,
+        instance_id=instance_id,
+        instance_key=str(detail["instance_key"]),
+        adapter_key=context.adapter_key,
+        display_name=str(detail["display_name"]),
+        lifecycle_status=context.lifecycle_status,
+        eligibility_status=eligibility_status,
+        non_secret_config=context.non_secret_config,
+        eligibility_requirements={},
+        stricter_quality_profile={},
+        secret_handle=SecretHandle(credential.credential_id),
+    )
+
+
+def _diagnostic_entry(instance_id: int, capability_key: str) -> RoutingSnapshotEntry:
+    """Use the routed entry when present, otherwise diagnose the instance directly."""
+    try:
+        pinned = _snapshot_manager().pin(capability_key)
+        entry = next((item for item in pinned.entries if item.instance_id == instance_id), None)
+        if entry is not None:
+            return entry
+    except DataRoutingError:
+        # Direct diagnostics remain available when no effective route exists.
+        pass
+    return _direct_diagnostic_entry(instance_id, capability_key)
 
 
 @data_source_operations_blp.route("/step-up", methods=["POST"])
@@ -203,8 +272,7 @@ def instance_action(instance_id, action):
 def run_diagnostic(instance_id, capability_key):
     try:
         payload = _payload()
-        manager = _snapshot_manager()
-        entry = next(item for item in manager.pin(capability_key).entries if item.instance_id == instance_id)
+        entry = _diagnostic_entry(instance_id, capability_key)
         result = ProviderCapabilityTestService(
             load_default_data_routing_registry(), PostgresRouterSecretResolver(),
             PostgresDiagnosticRepository(), quota=QuotaManager(PostgresQuotaRepository()),
@@ -213,7 +281,7 @@ def run_diagnostic(instance_id, capability_key):
             constraints=dict(payload.get("constraints") or {}), requested_by=int(g.user_id),
         )
         return _ok(asdict(result))
-    except (DataRoutingError, ValueError, StopIteration) as exc:
+    except (DataRoutingError, ValueError) as exc:
         return _error(exc)
 
 

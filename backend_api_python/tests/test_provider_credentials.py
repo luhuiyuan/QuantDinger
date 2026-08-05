@@ -105,7 +105,14 @@ class Repo:
         row=next((r for r in self.rows if r.instance_id==instance_id and r.status=="active"),None); return row.secret() if row else None
     def record_pending_validation(self, credential_id, results, *, initial_credential):
         row=next(r for r in self.rows if r.credential_id==credential_id); row.validation=tuple(results)
+        for result in results:
+            key = (row.instance_id, result.capability_key)
+            if self.capabilities.get(key) != "disabled":
+                self.capabilities[key] = "ineligible" if result.outcome == "ineligible" else "unverified"
         if initial_credential: self.instances[row.instance_id]=replace(self.instances[row.instance_id], lifecycle_status="validation_failed")
+    def ensure_declared_capabilities(self, instance_id, *, adapter_version, capability_versions):
+        for key in capability_versions:
+            self.capabilities.setdefault((instance_id, key), "unverified")
     def find_account_identity_conflict(self, adapter_key, identity, *, exclude_instance_id): return self.other_identity
     def find_other_unidentified_active(self, adapter_key, *, exclude_instance_id): return self.other_unidentified
     def activate_validated_pending(self, **values):
@@ -207,6 +214,17 @@ def test_failed_rotation_keeps_old_active_and_pending_for_correction(setup):
     active=next(r for r in repo.rows if r.status=="active"); pending=next(r for r in repo.rows if r.status=="pending")
     assert active.ciphertext and pending.ciphertext
     assert "leaked-new-secret" not in repr(pending.validation) and "new-secret" not in repr(repo.audits)
+
+
+def test_initial_validation_failure_persists_unverified_capabilities(setup):
+    service, repo, runtime = setup
+    runtime.results = {"quote": RuntimeError("network unavailable"), "history": RuntimeError("network unavailable")}
+
+    with pytest.raises(ProviderCapabilityValidationError):
+        service.submit_and_validate(1, {"token": "new-secret"}, actor_user_id=7, reason="initial")
+
+    assert repo.instances[1].lifecycle_status == "validation_failed"
+    assert repo.capabilities == {(1, "quote"): "unverified", (1, "history"): "unverified"}
 
 
 def test_successful_rotation_destroys_old_ciphertext_and_rejects_cross_account(setup):

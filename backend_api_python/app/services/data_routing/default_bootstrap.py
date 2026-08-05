@@ -16,14 +16,14 @@ BOOTSTRAP_POLICY_REASON = "bootstrap verified default routing policy"
 
 DEFAULT_ROUTING_PREFERENCES: Mapping[str, tuple[str, ...]] = {
     "analysis_search": ("gdelt", "jina", "searxng"),
-    "asia_equity_kline": ("tencent", "yfinance", "akshare"),
+    "asia_equity_kline": ("tencent", "sina", "easy_tdx", "yfinance", "akshare"),
     "cn_corporate_actions": ("easy_tdx",),
     "cn_corporate_announcement": ("cninfo",),
-    "cn_equity_history": ("easy_tdx",),
+    "cn_equity_history": ("easy_tdx", "sina"),
     "cn_fundamental_history": ("eastmoney",),
-    "cn_hk_fundamentals": ("akshare",),
-    "cn_hk_quote": ("tencent",),
-    "cn_market_snapshot": ("akshare",),
+    "cn_hk_fundamentals": ("akshare", "sina"),
+    "cn_hk_quote": ("tencent", "sina", "easy_tdx", "eastmoney", "akshare"),
+    "cn_market_snapshot": ("eastmoney", "akshare", "sina", "tencent", "easy_tdx"),
     "cn_official_adjustment_reference": ("cninfo", "cn_exchange_official"),
     "commodity_quote": ("yfinance",),
     "crypto_derivatives_market_data": ("ccxt_public_market",),
@@ -36,12 +36,12 @@ DEFAULT_ROUTING_PREFERENCES: Mapping[str, tuple[str, ...]] = {
     "futures_market_data": ("yfinance",),
     "global_heatmap": ("yfinance",),
     "global_market_overview": ("coingecko", "binance_public"),
-    "market_catalog": ("akshare", "ccxt_public_market", "moex"),
+    "market_catalog": ("akshare", "sina", "ccxt_public_market", "moex"),
     "market_index_quote": ("yfinance",),
     "market_sentiment": ("cnn_fear_greed", "akshare", "yfinance"),
     "moex_market_data": ("moex",),
-    "symbol_master": ("akshare", "nasdaq_trader", "ccxt_public_market", "moex", "stooq"),
-    "symbol_reference": ("tencent", "yfinance", "moex"),
+    "symbol_master": ("akshare", "sina", "nasdaq_trader", "ccxt_public_market", "moex", "stooq"),
+    "symbol_reference": ("tencent", "sina", "yfinance", "moex"),
     "us_equity_market_data": ("yfinance",),
     "us_fundamentals": ("yfinance",),
     "us_macro_release": ("akshare",),
@@ -160,6 +160,11 @@ class DefaultRoutingBootstrapService:
         if dry_run:
             return DefaultRoutingBootstrapResult(dry_run=True, planned_adapters=planned)
 
+        # A credential can be active while only a subset of an Adapter's
+        # capabilities has been verified (for example after the catalog
+        # grows).  Do not mistake that state for a healthy default route.
+        eligible_before = self.bootstrap_repository.list_eligible_instances()
+
         created: list[str] = []
         validated: list[str] = []
         failures: list[tuple[str, str]] = []
@@ -180,8 +185,15 @@ class DefaultRoutingBootstrapService:
                 )
                 by_adapter[adapter_key] = instance
                 created.append(adapter_key)
+            # The catalog is user-visible even when this host cannot reach the
+            # upstream. Live validation only changes eligibility.
+            self.credential_service.ensure_declared_capabilities(instance.instance_id)
             status = self.credential_service.get_status(instance.instance_id)
-            if status.configured:
+            all_capabilities_verified = all(
+                eligible_before.get(capability_key, {}).get(adapter_key) == instance.instance_id
+                for capability_key in adapter.capabilities
+            )
+            if status.configured and all_capabilities_verified:
                 continue
             if instance.lifecycle_status == "validation_failed" and not retry_failed:
                 failures.append((adapter_key, "validation_failed_retry_not_requested"))

@@ -89,6 +89,7 @@ class ProviderCredentialRepository(Protocol):
     def destroy_pending_credential(self, credential_id: int, *, actor_user_id: int | None, reason: str) -> None: ...
     def get_active_credential(self, instance_id: int) -> StoredCredentialSecret | None: ...
     def record_pending_validation(self, credential_id: int, results: Sequence[CapabilityVerification], *, initial_credential: bool) -> None: ...
+    def ensure_declared_capabilities(self, instance_id: int, *, adapter_version: str, capability_versions: Mapping[str, str]) -> None: ...
     def find_account_identity_conflict(self, adapter_key: str, identity: str, *, exclude_instance_id: int) -> int | None: ...
     def find_other_unidentified_active(self, adapter_key: str, *, exclude_instance_id: int) -> int | None: ...
     def activate_validated_pending(self, *, instance: CredentialInstanceContext, pending: StoredCredentialSecret, provider_account_identity: str | None, results: Sequence[CapabilityVerification], actor_user_id: int | None, reason: str) -> CredentialStatus: ...
@@ -161,6 +162,15 @@ class ProviderCredentialService:
             raise ProviderCredentialError("Provider Adapter is unavailable", details={"adapter_key": instance.adapter_key})
         return instance, adapter
 
+    def ensure_declared_capabilities(self, instance_id: int) -> None:
+        """Materialize the adapter catalog independently of live availability."""
+        instance, adapter = self._instance_and_adapter(instance_id)
+        self.repository.ensure_declared_capabilities(
+            instance_id,
+            adapter_version=adapter.version,
+            capability_versions={key: self.registry.capabilities[key].version for key in adapter.capabilities},
+        )
+
     @staticmethod
     def _verification_from_result(capability_key: str, raw: Any) -> CapabilityVerification:
         evidence = _safe_diagnostic_evidence(raw)
@@ -186,7 +196,17 @@ class ProviderCredentialService:
                 evidence = {**dict(verified.evidence), "capability_version": self.registry.capabilities[capability_key].version}
                 output.append(CapabilityVerification(verified.capability_key, verified.outcome, evidence))
             except Exception as exc:
-                output.append(CapabilityVerification(capability_key, "transient_failure", {"code": type(exc).__name__}))
+                classification = adapter.runtime.classify_error(capability_key, exc)
+                output.append(CapabilityVerification(
+                    capability_key,
+                    "transient_failure",
+                    {
+                        "code": classification.category,
+                        "retryable": classification.retryable,
+                        "permanence": classification.permanence,
+                        "scope": classification.scope_hint,
+                    },
+                ))
         return tuple(output)
 
     def submit_and_validate(
@@ -201,6 +221,11 @@ class ProviderCredentialService:
         if not str(reason or "").strip():
             raise ProviderCredentialError("credential change reason is required")
         instance, adapter = self._instance_and_adapter(instance_id)
+        self.repository.ensure_declared_capabilities(
+            instance_id,
+            adapter_version=adapter.version,
+            capability_versions={key: self.registry.capabilities[key].version for key in adapter.capabilities},
+        )
         secret = _validate_secret_schema(adapter.credential_schema, credentials)
         canonical = _canonical_secret(secret)
         if secret:

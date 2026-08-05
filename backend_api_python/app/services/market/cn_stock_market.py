@@ -463,37 +463,16 @@ class CNStockDetailService:
                     "warning": None,
                 },
             }
-        try:
-            snapshot = self.snapshot_service.get_snapshot()
-        except CNMarketSnapshotUnavailable as exc:
-            try:
-                fallback_rows = fetch_cn_quote_rows([identity["symbol"]])
-            except Exception as fallback_error:
-                raise CNMarketSnapshotUnavailable(
-                    f"A-share snapshot unavailable; Tencent quote fallback failed: {fallback_error}"
-                ) from fallback_error
-            snapshot = {
-                "rows": fallback_rows,
-                "asOf": fallback_rows[0].get("asOf") if fallback_rows else None,
-                "source": "tencent-batch" if fallback_rows else "unavailable",
-                "freshness": "fresh" if fallback_rows else "unavailable",
-                "status": "available" if fallback_rows else "unavailable",
-                "warning": str(exc),
-            }
-        quote = next(
-            (row for row in snapshot.get("rows") or [] if row.get("instrument") == identity["instrument"]),
-            None,
-        )
         return {
             **identity,
-            "quote": quote,
-            "quoteStatus": "available" if quote and quote.get("latest") is not None else "unavailable",
+            "quote": None,
+            "quoteStatus": "unavailable",
             "watchlisted": bool(watchlisted),
             "snapshot": {
-                "asOf": snapshot.get("asOf"),
-                "source": snapshot.get("source"),
-                "freshness": snapshot.get("freshness"),
-                "warning": snapshot.get("warning"),
+                "asOf": None,
+                "source": "background-refresh-pending",
+                "freshness": "unavailable",
+                "warning": "Quote is not available yet; background refresh will retry.",
             },
         }
 
