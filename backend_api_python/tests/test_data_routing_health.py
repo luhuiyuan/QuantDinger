@@ -202,5 +202,29 @@ def test_capability_diagnostic_bypasses_routing_and_does_not_mutate_production_c
     )
 
     assert result.succeeded and runtime.calls == 1
+    assert result.request_summary == {"subject": {"symbol": "A"}, "constraints": {}}
+    assert result.sample == {
+        "kind": "quote", "columns": ["price", "symbol"],
+        "rows": [{"price": 12, "symbol": "A"}], "truncated": False,
+    }
+    assert result.duration_ms >= 0
     assert health_repo.states[(1, "quote")].circuit_state == "open"
     assert diagnostics.rows[result.diagnostic_id]["status"] == "succeeded"
+
+
+def test_diagnostic_sample_removes_secrets_and_is_bounded():
+    clock = Clock()
+    rows = [{"symbol": str(index), "token": "must-not-leak", "price": index} for index in range(12)]
+    runtime = Runtime(clock, [rows])
+    router, _ = build_router({"only": (runtime, 0)})
+    diagnostics = DiagnosticRepo()
+
+    result = ProviderCapabilityTestService(router.registry, Resolver(), diagnostics, clock=clock).run(
+        router.snapshots.pin("quote").entries[0], capability_key="quote",
+        subject={"symbol": "A", "api_key": "must-not-leak"}, constraints={}, requested_by=7,
+    )
+
+    assert len(result.sample["rows"]) == 10
+    assert result.sample["truncated"] is True
+    assert all("token" not in row for row in result.sample["rows"])
+    assert "api_key" not in result.request_summary["subject"]

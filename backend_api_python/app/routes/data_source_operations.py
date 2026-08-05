@@ -285,6 +285,16 @@ def run_diagnostic(instance_id, capability_key):
         return _error(exc)
 
 
+@data_source_operations_blp.route("/instances/<int:instance_id>/diagnostics", methods=["GET"])
+@login_required
+@permission_required("data_sources:diagnostics")
+def latest_diagnostics(instance_id):
+    try:
+        return _ok({"items": PostgresDiagnosticRepository().latest_for_instance(instance_id)})
+    except (DataRoutingError, ValueError) as exc:
+        return _error(exc)
+
+
 @data_source_operations_blp.route("/health/<int:state_id>/quarantine", methods=["POST"])
 @login_required
 @permission_required("data_sources:diagnostics")

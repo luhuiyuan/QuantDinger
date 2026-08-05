@@ -5,6 +5,7 @@ import pytest
 from app.routes import data_source_operations as routes
 from app.services.data_routing.credentials import CredentialInstanceContext, StoredCredentialSecret
 from app.services.data_routing.diagnostics import ProviderDiagnosticError
+from app.services.data_routing.diagnostics import PostgresDiagnosticRepository
 
 
 class _Credentials:
@@ -70,3 +71,34 @@ def test_direct_diagnostic_entry_rejects_retired_instance(monkeypatch):
 
     with pytest.raises(ProviderDiagnosticError, match="Retired"):
         routes._direct_diagnostic_entry(11, "asia_equity_kline")
+
+
+def test_latest_diagnostics_returns_only_safe_persisted_fields():
+    class Cursor:
+        def execute(self, query, params):
+            assert "DISTINCT ON (capability_key)" in query
+            assert params == (11,)
+
+        def fetchall(self):
+            return [{
+                "diagnostic_id": "test-1", "instance_id": 11, "capability_key": "asia_equity_kline",
+                "status": "succeeded", "created_at": "created", "completed_at": "completed",
+                "sanitized_result": {
+                    "succeeded": True, "sample": {"rows": [{"close": 10}]},
+                    "request_summary": {"subject": {"symbol": "600000"}}, "unexpected": "never returned",
+                },
+            }]
+
+        def close(self):
+            return None
+
+    class Connection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def cursor(self): return Cursor()
+
+    item = PostgresDiagnosticRepository(lambda: Connection()).latest_for_instance(11)[0]
+
+    assert item["diagnostic_id"] == "test-1"
+    assert item["sample"] == {"rows": [{"close": 10}]}
+    assert "unexpected" not in item

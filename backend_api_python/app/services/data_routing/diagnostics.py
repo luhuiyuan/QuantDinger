@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Mapping, Protocol
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .errors import DataRoutingError
 from .models import AdapterErrorClassification, AdapterFetchResult
@@ -31,6 +32,62 @@ class ProviderDiagnosticResult:
     quality_failures: tuple[str, ...]
     warnings: tuple[Mapping[str, Any], ...]
     acquired_at: datetime | None
+    request_summary: Mapping[str, Any] = field(default_factory=dict)
+    sample: Mapping[str, Any] | None = None
+    duration_ms: int = 0
+
+
+_SENSITIVE_FIELD_PARTS = frozenset(("secret", "credential", "password", "token", "api_key", "authorization", "cookie"))
+_SAMPLE_ROW_LIMIT = 10
+_SAMPLE_COLUMN_LIMIT = 16
+
+
+def _safe_sample_value(value: Any, *, depth: int = 0) -> Any:
+    """Return a bounded JSON-safe value without credential-like fields."""
+    if depth >= 4:
+        return "[truncated]"
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:512]
+    if isinstance(value, Mapping):
+        return {
+            str(key): _safe_sample_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:30]
+            if not any(part in str(key).lower() for part in _SENSITIVE_FIELD_PARTS)
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_safe_sample_value(item, depth=depth + 1) for item in value[:30]]
+    return str(value)[:512]
+
+
+def _sample_preview(normalized: Any, *, kind: str) -> Mapping[str, Any]:
+    """Shape normalized data into a small, provider-neutral admin preview."""
+    if isinstance(normalized, Mapping) and isinstance(normalized.get("rows"), Sequence):
+        source_rows = normalized["rows"]
+    elif isinstance(normalized, Mapping) and isinstance(normalized.get("data"), Sequence):
+        source_rows = normalized["data"]
+    elif isinstance(normalized, Sequence) and not isinstance(normalized, (str, bytes, bytearray)):
+        source_rows = normalized
+    else:
+        source_rows = [normalized]
+    rows = []
+    columns = []
+    for source in source_rows[:_SAMPLE_ROW_LIMIT]:
+        safe = _safe_sample_value(source)
+        row = safe if isinstance(safe, Mapping) else {"value": safe}
+        rows.append(row)
+        for key in row:
+            if key not in columns and len(columns) < _SAMPLE_COLUMN_LIMIT:
+                columns.append(key)
+    return {
+        "kind": kind,
+        "columns": columns,
+        "rows": rows,
+        "truncated": len(source_rows) > _SAMPLE_ROW_LIMIT,
+    }
 
 
 class DiagnosticRepository(Protocol):
@@ -64,6 +121,7 @@ class ProviderCapabilityTestService:
         requested_by: int | None,
         timeout_seconds: float = 10,
     ) -> ProviderDiagnosticResult:
+        started_at = time.monotonic()
         capability = self.registry.capabilities.get(capability_key)
         adapter = self.registry.adapters.get(entry.adapter_key)
         if capability is None or adapter is None or capability_key not in adapter.capabilities:
@@ -93,6 +151,8 @@ class ProviderCapabilityTestService:
                 result = ProviderDiagnosticResult(
                     diagnostic_id, entry.instance_id, capability_key, False,
                     decision.reason or "quota_exhausted", (), (), None,
+                    request_summary=_safe_sample_value({"subject": diagnostic_subject, "constraints": diagnostic_constraints}),
+                    duration_ms=round((time.monotonic() - started_at) * 1000),
                 )
                 self.repository.complete(diagnostic_id, status="failed", result=self._safe(result))
                 return result
@@ -131,6 +191,8 @@ class ProviderCapabilityTestService:
             result = ProviderDiagnosticResult(
                 diagnostic_id, entry.instance_id, capability_key, False,
                 classification.category, (), (), None,
+                request_summary=_safe_sample_value({"subject": diagnostic_subject, "constraints": diagnostic_constraints}),
+                duration_ms=round((time.monotonic() - started_at) * 1000),
             )
             self.repository.complete(diagnostic_id, status="failed", result=self._safe(result))
             return result
@@ -146,11 +208,16 @@ class ProviderCapabilityTestService:
                 "" if quality.passed else "quality_gate_failed", quality.hard_failures,
                 tuple({"code": item.code, "message": item.message} for item in quality.warnings),
                 fetch_result.acquired_at,
+                _safe_sample_value({"subject": diagnostic_subject, "constraints": diagnostic_constraints}),
+                _sample_preview(normalized, kind=capability.semantic_family),
+                round((time.monotonic() - started_at) * 1000),
             )
         except Exception:
             result = ProviderDiagnosticResult(
                 diagnostic_id, entry.instance_id, capability_key, False,
                 "normalization_or_quality_error", ("normalization_or_quality_error",), (), None,
+                request_summary=_safe_sample_value({"subject": diagnostic_subject, "constraints": diagnostic_constraints}),
+                duration_ms=round((time.monotonic() - started_at) * 1000),
             )
         self.repository.complete(
             diagnostic_id, status="succeeded" if result.succeeded else "failed", result=self._safe(result)
@@ -165,6 +232,9 @@ class ProviderCapabilityTestService:
             "quality_failures": list(result.quality_failures)[:50],
             "warnings": list(result.warnings)[:50],
             "acquired_at": result.acquired_at.isoformat() if result.acquired_at else None,
+            "request_summary": dict(result.request_summary),
+            "sample": dict(result.sample) if result.sample else None,
+            "duration_ms": result.duration_ms,
         }
 
 
@@ -205,3 +275,44 @@ class PostgresDiagnosticRepository:
                 db.commit()
             finally:
                 cur.close()
+
+    def latest_for_instance(self, instance_id: int) -> list[dict[str, Any]]:
+        """Return the latest completed, sanitized diagnostic for each capability."""
+        with self.connection_factory() as db:
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    """SELECT DISTINCT ON (capability_key)
+                              diagnostic_id,instance_id,capability_key,status,sanitized_result,created_at,completed_at
+                       FROM qd_provider_diagnostics
+                       WHERE instance_id=%s AND status IN ('succeeded','failed')
+                       ORDER BY capability_key,completed_at DESC NULLS LAST,created_at DESC,diagnostic_id DESC""",
+                    (int(instance_id),),
+                )
+                rows = cur.fetchall() or []
+            finally:
+                cur.close()
+        allowed = {
+            "succeeded", "error_category", "quality_failures", "warnings", "acquired_at",
+            "request_summary", "sample", "duration_ms",
+        }
+        items = []
+        for row in rows:
+            value = dict(row)
+            raw_result = value.pop("sanitized_result", {})
+            if isinstance(raw_result, str):
+                try:
+                    raw_result = json.loads(raw_result)
+                except ValueError:
+                    raw_result = {}
+            result = dict(raw_result) if isinstance(raw_result, Mapping) else {}
+            items.append({
+                "diagnostic_id": value["diagnostic_id"],
+                "instance_id": value["instance_id"],
+                "capability_key": value["capability_key"],
+                "status": value["status"],
+                "created_at": value["created_at"],
+                "completed_at": value["completed_at"],
+                **{key: result[key] for key in allowed if key in result},
+            })
+        return items
