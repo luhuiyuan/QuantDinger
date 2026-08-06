@@ -214,7 +214,7 @@ def test_capability_diagnostic_bypasses_routing_and_does_not_mutate_production_c
 
 def test_diagnostic_sample_removes_secrets_and_is_bounded():
     clock = Clock()
-    rows = [{"symbol": str(index), "token": "must-not-leak", "price": index} for index in range(12)]
+    rows = [{"symbol": str(index), "token": "must-not-leak", "raw": {"endpoint": "must-not-leak"}, "price": index} for index in range(12)]
     runtime = Runtime(clock, [rows])
     router, _ = build_router({"only": (runtime, 0)})
     diagnostics = DiagnosticRepo()
@@ -227,4 +227,5 @@ def test_diagnostic_sample_removes_secrets_and_is_bounded():
     assert len(result.sample["rows"]) == 10
     assert result.sample["truncated"] is True
     assert all("token" not in row for row in result.sample["rows"])
+    assert all("raw" not in row for row in result.sample["rows"])
     assert "api_key" not in result.request_summary["subject"]

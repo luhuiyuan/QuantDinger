@@ -12,6 +12,11 @@ BOOTSTRAP_DISABLED_REASON = (
 )
 BOOTSTRAP_INSTANCE_REASON = "bootstrap default credentialless provider instance"
 BOOTSTRAP_POLICY_REASON = "bootstrap verified default routing policy"
+CN_A_ROUTE_CAPABILITIES = frozenset({
+    "asia_equity_kline", "cn_corporate_actions", "cn_corporate_announcement",
+    "cn_equity_history", "cn_fundamental_history", "cn_hk_fundamentals",
+    "cn_hk_quote", "cn_market_snapshot", "cn_official_adjustment_reference",
+})
 
 
 DEFAULT_ROUTING_PREFERENCES: Mapping[str, tuple[str, ...]] = {
@@ -209,26 +214,54 @@ class DefaultRoutingBootstrapService:
             except Exception as exc:
                 failures.append((adapter_key, type(exc).__name__))
 
+        reconciled = self.reconcile_verified_routes(actor_user_id=actor_user_id)
+        return DefaultRoutingBootstrapResult(
+            dry_run=False,
+            planned_adapters=planned,
+            created_adapters=tuple(created),
+            validated_adapters=tuple(validated),
+            failed_adapters=tuple(failures),
+            published_capabilities=reconciled.published_capabilities,
+            disabled_capabilities=reconciled.disabled_capabilities,
+            preserved_capabilities=reconciled.preserved_capabilities,
+        )
+
+    def reconcile_verified_routes(
+        self,
+        *,
+        actor_user_id: int | None = None,
+        capability_keys: frozenset[str] | None = None,
+    ) -> DefaultRoutingBootstrapResult:
+        """Reconcile system-managed default policies from active eligible Instances.
+
+        Only policies published by this bootstrap (or disabled by its standard
+        no-provider reason) are changed. Explicit operator policies remain
+        untouched while newly verified default providers become fallbacks.
+        """
         eligible = self.bootstrap_repository.list_eligible_instances()
         published: list[str] = []
         disabled: list[str] = []
         preserved: list[str] = []
-        for capability_key in sorted(self.registry.capabilities):
+        allowed_capabilities = capability_keys or frozenset(self.registry.capabilities)
+        for capability_key in sorted(set(self.registry.capabilities) & set(allowed_capabilities)):
             state = self.policy_repository.get_policy(capability_key)
-            if state is not None and (state.effective_revision is not None or state.draft_revision is not None):
+            effective = state.effective_revision if state is not None else None
+            managed_effective = effective is not None and getattr(effective, "change_reason", "") == BOOTSTRAP_POLICY_REASON
+            managed_disabled = state is not None and not state.enabled and state.disabled_reason == BOOTSTRAP_DISABLED_REASON
+            if state is not None and state.draft_revision is not None:
                 preserved.append(capability_key)
                 continue
-            if (
-                state is not None
-                and not state.enabled
-                and state.disabled_reason
-                and state.disabled_reason != BOOTSTRAP_DISABLED_REASON
-            ):
+            if state is not None and not managed_effective and not managed_disabled:
                 preserved.append(capability_key)
                 continue
             available = dict(eligible.get(capability_key) or {})
             preferred = [key for key in self.preferences.get(capability_key, ()) if key in available]
             preferred.extend(sorted(key for key in available if key not in preferred))
+            current_ids = tuple(entry.instance_id for entry in getattr(effective, "entries", ()))
+            desired_ids = tuple(available[key] for key in preferred)
+            if desired_ids == current_ids and effective is not None:
+                preserved.append(capability_key)
+                continue
             if preferred:
                 expected_version = state.policy_version if state is not None else None
                 draft = self.policy_service.save_draft(
@@ -254,13 +287,8 @@ class DefaultRoutingBootstrapService:
                 disabled.append(capability_key)
             else:
                 preserved.append(capability_key)
-
         return DefaultRoutingBootstrapResult(
             dry_run=False,
-            planned_adapters=planned,
-            created_adapters=tuple(created),
-            validated_adapters=tuple(validated),
-            failed_adapters=tuple(failures),
             published_capabilities=tuple(published),
             disabled_capabilities=tuple(disabled),
             preserved_capabilities=tuple(preserved),

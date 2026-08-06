@@ -38,6 +38,7 @@ class ProviderDiagnosticResult:
 
 
 _SENSITIVE_FIELD_PARTS = frozenset(("secret", "credential", "password", "token", "api_key", "authorization", "cookie"))
+_NON_PREVIEW_FIELD_NAMES = frozenset(("raw", "request_context", "endpoint", "url", "traceback", "stack"))
 _SAMPLE_ROW_LIMIT = 10
 _SAMPLE_COLUMN_LIMIT = 16
 
@@ -56,7 +57,8 @@ def _safe_sample_value(value: Any, *, depth: int = 0) -> Any:
         return {
             str(key): _safe_sample_value(item, depth=depth + 1)
             for key, item in list(value.items())[:30]
-            if not any(part in str(key).lower() for part in _SENSITIVE_FIELD_PARTS)
+            if str(key).lower() not in _NON_PREVIEW_FIELD_NAMES
+            and not any(part in str(key).lower() for part in _SENSITIVE_FIELD_PARTS)
         }
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_safe_sample_value(item, depth=depth + 1) for item in value[:30]]

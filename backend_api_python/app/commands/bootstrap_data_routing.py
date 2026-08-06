@@ -70,6 +70,10 @@ def _parser() -> argparse.ArgumentParser:
         "--timeout-seconds", type=int, default=5,
         help="Per-transport timeout hint stored on newly created public Instances (1-30, default 5).",
     )
+    parser.add_argument(
+        "--reconcile-verified-a-share-routes", action="store_true",
+        help="Publish only system-managed A-share routes from currently active eligible Instances; does not revalidate credentials.",
+    )
     return parser
 
 
@@ -78,11 +82,19 @@ def main(argv: Sequence[str] | None = None, *, service_factory=build_default_boo
     if args.actor_user_id is not None and args.actor_user_id <= 0:
         raise SystemExit("--actor-user-id must be a positive integer")
     service = service_factory(dry_run=args.dry_run, timeout_seconds=args.timeout_seconds)
-    result = service.bootstrap(
-        actor_user_id=args.actor_user_id,
-        retry_failed=args.retry_failed,
-        dry_run=args.dry_run,
-    )
+    if args.reconcile_verified_a_share_routes:
+        if args.dry_run:
+            raise SystemExit("--dry-run cannot be combined with --reconcile-verified-a-share-routes")
+        from app.services.data_routing.default_bootstrap import CN_A_ROUTE_CAPABILITIES
+        result = service.reconcile_verified_routes(
+            actor_user_id=args.actor_user_id, capability_keys=CN_A_ROUTE_CAPABILITIES,
+        )
+    else:
+        result = service.bootstrap(
+            actor_user_id=args.actor_user_id,
+            retry_failed=args.retry_failed,
+            dry_run=args.dry_run,
+        )
     print(json.dumps(asdict(result), ensure_ascii=False, sort_keys=True))
     return result
 

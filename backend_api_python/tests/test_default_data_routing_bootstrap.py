@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.services.data_routing.default_bootstrap import (
-    BOOTSTRAP_DISABLED_REASON,
+    BOOTSTRAP_DISABLED_REASON, BOOTSTRAP_POLICY_REASON,
     BootstrapProviderInstance,
     DefaultRoutingBootstrapService,
 )
@@ -202,3 +202,34 @@ def test_dry_run_reports_plan_without_mutating_state():
     assert repository.instances == []
     assert instances.created == [] and credentials.submissions == []
     assert policies.saved == [] and policies.disabled == []
+
+
+def test_reconcile_updates_only_bootstrap_managed_policy_with_new_eligible_instance():
+    service, repository, _, _, policy_repository, policies = service_fixture()
+    repository.eligible = {"quote": {"public_a": 7}}
+    policy_repository.states["quote"] = SimpleNamespace(
+        policy_version=8, enabled=True, disabled_reason="",
+        effective_revision=SimpleNamespace(change_reason=BOOTSTRAP_POLICY_REASON, entries=(SimpleNamespace(instance_id=3),)),
+        draft_revision=None,
+    )
+
+    result = service.reconcile_verified_routes(actor_user_id=1, capability_keys=frozenset({"quote"}))
+
+    assert result.published_capabilities == ("quote",)
+    assert policies.saved[0][0] == "quote"
+    assert policies.saved[0][1] == ({"instance_id": 7},)
+
+
+def test_reconcile_preserves_operator_owned_policy():
+    service, repository, _, _, policy_repository, policies = service_fixture()
+    repository.eligible = {"quote": {"public_a": 7}}
+    policy_repository.states["quote"] = SimpleNamespace(
+        policy_version=8, enabled=True, disabled_reason="",
+        effective_revision=SimpleNamespace(change_reason="operator selected providers", entries=(SimpleNamespace(instance_id=3),)),
+        draft_revision=None,
+    )
+
+    result = service.reconcile_verified_routes(actor_user_id=1, capability_keys=frozenset({"quote"}))
+
+    assert result.preserved_capabilities == ("quote",)
+    assert policies.saved == []
