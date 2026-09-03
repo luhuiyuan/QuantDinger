@@ -25,7 +25,12 @@ _DIAGNOSTIC_REQUESTS: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
     "asia_equity_kline": ({"symbol": "600000", "market": "CNStock", "limit": 5}, {"timeframe": "1D"}),
     "cn_corporate_actions": ({"instrument": "600000.SH", "operation": "corporate_actions"}, {}),
     "cn_corporate_announcement": ({"instrument": "600000", "start_date": "2025-01-01", "end_date": "2025-12-31"}, {}),
-    "cn_equity_history": ({"instrument": "600000.SH", "operation": "metadata"}, {}),
+    # Use a bounded real daily-bar page so this diagnostic verifies market data,
+    # rather than only the provider's instrument metadata endpoint.
+    "cn_equity_history": ({
+        "instrument": "600000.SH", "operation": "daily_page",
+        "start_date": "2025-01-01", "end_date": "2025-12-31", "start_offset": 0,
+    }, {}),
     "cn_fundamental_history": ({"symbol": "600000"}, {}),
     "cn_hk_fundamentals": ({"symbol": "600000", "market": "CNStock"}, {}),
     "cn_hk_quote": ({"symbol": "600000", "market": "CNStock"}, {}),
@@ -221,6 +226,9 @@ _SECRET_ADAPTERS = frozenset({
 
 def _quality_gate(value: Any) -> tuple[str, ...]:
     if value is None or value == [] or value == {}:
+        return ("empty_provider_result",)
+    bars = getattr(value, "bars", None)
+    if bars is not None and len(bars) == 0:
         return ("empty_provider_result",)
     return ()
 

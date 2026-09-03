@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+import json
+import math
 
 import pytest
 
@@ -6,6 +8,7 @@ from app.routes import data_source_operations as routes
 from app.services.data_routing.credentials import CredentialInstanceContext, StoredCredentialSecret
 from app.services.data_routing.diagnostics import ProviderDiagnosticError
 from app.services.data_routing.diagnostics import PostgresDiagnosticRepository
+from app.services.data_routing.diagnostics import _safe_sample_value, _sample_preview
 
 
 class _Credentials:
@@ -102,3 +105,73 @@ def test_latest_diagnostics_returns_only_safe_persisted_fields():
     assert item["diagnostic_id"] == "test-1"
     assert item["sample"] == {"rows": [{"close": 10}]}
     assert "unexpected" not in item
+
+
+def test_successful_diagnostic_marks_its_capability_eligible_without_touching_health_state():
+    class Cursor:
+        def __init__(self):
+            self.queries = []
+
+        def execute(self, query, params):
+            self.queries.append((query, params))
+
+        def close(self):
+            return None
+
+    class Connection:
+        def __init__(self):
+            self.cursor_instance = Cursor()
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def cursor(self):
+            return self.cursor_instance
+
+        def commit(self):
+            self.committed = True
+
+    connection = Connection()
+    PostgresDiagnosticRepository(lambda: connection).complete(
+        "test-1", status="succeeded", result={"succeeded": True},
+    )
+
+    assert connection.committed is True
+    assert len(connection.cursor_instance.queries) == 2
+    update_query, update_params = connection.cursor_instance.queries[1]
+    assert "UPDATE qd_provider_instance_capabilities" in update_query
+    assert "eligibility_status='eligible'" in update_query
+    assert "qd_provider_health_states" not in update_query
+    assert update_params == ("test-1", "test-1")
+
+
+def test_daily_bar_page_diagnostic_preview_contains_structured_ohlc_rows():
+    from datetime import date, datetime, timezone
+    from decimal import Decimal
+
+    from app.services.cn_market_history.instruments import parse_cn_instrument
+    from app.services.cn_market_history.models import RawDailyBar
+    from app.services.cn_market_history.tdx_provider import DailyBarPage
+
+    bar = RawDailyBar(
+        instrument=parse_cn_instrument("600000.SH"), trade_date=date(2025, 1, 2),
+        open=Decimal("10"), high=Decimal("11"), low=Decimal("9"), close=Decimal("10.5"),
+        volume=Decimal("100"), amount=Decimal("1000"), provider="easy_tdx",
+        provider_version="test", content_hash="hash", collected_at=datetime.now(timezone.utc),
+    )
+    page = DailyBarPage(offset=0, next_offset=1, raw_count=1, bars=(bar,), reached_start=True)
+    preview = _sample_preview(page, kind="history")
+    assert {"trade_date", "open", "high", "low", "close", "volume"}.issubset(preview["columns"])
+    assert preview["rows"][0]["trade_date"] == "2025-01-02"
+    assert preview["rows"][0]["close"] == "10.5"
+
+
+def test_diagnostic_preview_is_json_safe_for_non_finite_provider_values():
+    preview = _safe_sample_value({"cash_dividend": math.nan, "rights_price": math.inf})
+
+    assert preview == {"cash_dividend": None, "rights_price": None}
+    json.dumps(preview, allow_nan=False)

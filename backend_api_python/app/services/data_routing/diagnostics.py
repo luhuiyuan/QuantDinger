@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
@@ -38,7 +39,7 @@ class ProviderDiagnosticResult:
 
 
 _SENSITIVE_FIELD_PARTS = frozenset(("secret", "credential", "password", "token", "api_key", "authorization", "cookie"))
-_NON_PREVIEW_FIELD_NAMES = frozenset(("raw", "request_context", "endpoint", "url", "traceback", "stack"))
+_NON_PREVIEW_FIELD_NAMES = frozenset(("raw", "raw_payload", "request_context", "endpoint", "url", "traceback", "stack"))
 _SAMPLE_ROW_LIMIT = 10
 _SAMPLE_COLUMN_LIMIT = 16
 
@@ -49,8 +50,12 @@ def _safe_sample_value(value: Any, *, depth: int = 0) -> Any:
         return "[truncated]"
     if isinstance(value, (datetime, date)):
         return value.isoformat()
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, (bool, int)):
         return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if is_dataclass(value):
+        return _safe_sample_value(asdict(value), depth=depth)
     if isinstance(value, str):
         return value[:512]
     if isinstance(value, Mapping):
@@ -73,6 +78,10 @@ def _sample_preview(normalized: Any, *, kind: str) -> Mapping[str, Any]:
         source_rows = normalized["data"]
     elif isinstance(normalized, Sequence) and not isinstance(normalized, (str, bytes, bytearray)):
         source_rows = normalized
+    elif isinstance(getattr(normalized, "bars", None), Sequence):
+        # DailyBarPage is the normalized history transport contract. Show its
+        # bounded bars directly instead of serializing the page object repr.
+        source_rows = normalized.bars
     else:
         source_rows = [normalized]
     rows = []
@@ -274,6 +283,31 @@ class PostgresDiagnosticRepository:
                        WHERE diagnostic_id=%s AND status IN ('queued','running')""",
                     (status, json.dumps(dict(result), sort_keys=True), diagnostic_id),
                 )
+                # An interactive capability diagnostic is verification evidence
+                # for that capability.  It must not change circuit state (that
+                # remains governed by routed requests and recovery probes), but
+                # a successful diagnostic should clear stale transient
+                # verification evidence so an operator can make the instance
+                # eligible without replacing otherwise valid credentials.
+                if bool(result.get("succeeded")):
+                    cur.execute(
+                        """UPDATE qd_provider_instance_capabilities capability
+                           SET eligibility_status='eligible',
+                               verification_evidence=jsonb_build_object(
+                                   'code','diagnostic_succeeded',
+                                   'status','eligible',
+                                   'diagnostic_id',%s
+                               ),
+                               last_verified_at=NOW(),
+                               next_verification_at=NOW()+INTERVAL '7 days',
+                               updated_at=NOW()
+                           FROM qd_provider_diagnostics diagnostic
+                           WHERE diagnostic.diagnostic_id=%s
+                             AND capability.instance_id=diagnostic.instance_id
+                             AND capability.capability_key=diagnostic.capability_key
+                             AND capability.eligibility_status<>'disabled'""",
+                        (diagnostic_id, diagnostic_id),
+                    )
                 db.commit()
             finally:
                 cur.close()

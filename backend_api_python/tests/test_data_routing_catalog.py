@@ -57,3 +57,12 @@ def test_a_share_history_diagnostic_samples_use_parseable_instruments():
     for capability_key in ("cn_corporate_actions", "cn_equity_history", "cn_official_adjustment_reference"):
         subject, _ = _DIAGNOSTIC_REQUESTS[capability_key]
         assert parse_cn_instrument(subject["instrument"]).canonical == "CNStock:600000.SH"
+
+
+def test_a_share_history_diagnostic_uses_a_bounded_daily_page():
+    subject, constraints = _DIAGNOSTIC_REQUESTS["cn_equity_history"]
+    assert subject["operation"] == "daily_page"
+    assert subject["start_date"] == "2025-01-01"
+    assert subject["end_date"] == "2025-12-31"
+    assert subject["start_offset"] == 0
+    assert constraints == {}

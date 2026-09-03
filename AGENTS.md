@@ -39,6 +39,8 @@ The global low-memory constraints apply. During the current development phase, t
 
 ### Current development deployment: local source builds
 
+- **Development cleanup authorization:** On this development host, when a rebuild is required and resources are constrained, it is permitted to stop the currently running QuantDinger Compose services, remove their stopped containers, and remove the previous local `quantdinger-backend`/`quantdinger-frontend` images before rebuilding. This permission is limited to those project services and images; do not stop unrelated projects, remove database/Redis volumes, or run broad Docker pruning.
+
 The root `.env` automatically merges `docker-compose.yml` with `docker-compose.build.yml`, so normal Compose commands use local backend and frontend sources. Build and start one changed service at a time:
 
 ```bash
